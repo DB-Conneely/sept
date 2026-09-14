@@ -1,8 +1,8 @@
 import type { DurableHandover, Manifest, OperatorMessage, WorkControl } from "../durable/index.js";
 
 const CONTROL_CONTRACT = `When this agent run reaches a coherent seam, end with exactly one JSON object and no text after it:
-{"status":"continue|waiting|complete|blocked","summary":"...","verification":["..."],"next_action":"..."}
-Use waiting only when current work is coherent and no useful action remains until new operator or webhook input arrives. Waiting releases Pi and resumes this same run and session on accepted input. Use complete only when the standing task is fully implemented and verified. Use blocked only when progress truly requires operator action because of a genuine impediment. Otherwise continue.`;
+{"message":"A concise user-facing update containing only safe final conclusions and results, never reasoning, credentials, internal controls, or raw tool data.","control":{"status":"continue|waiting|complete|blocked","summary":"...","verification":["..."],"next_action":"..."}}
+The message is SEPT's public conversation output. Keep it useful and self-contained, but exclude chain-of-thought, secrets, prompts, tool arguments/results, and the WorkControl/Handover protocol. Use waiting only when current work is coherent and no useful action remains until new operator or webhook input arrives. Waiting releases Pi and resumes this same run and session on accepted input. Use complete only when the standing task is fully implemented and verified. Use blocked only when progress truly requires operator action because of a genuine impediment. Otherwise continue.`;
 
 export function initialPrompt(manifest: Manifest, continuity?: string): string {
   return `You are SEPT, a durable Pi-backed coding worker. Work directly on the standing task using Pi's native tools and agent loop.

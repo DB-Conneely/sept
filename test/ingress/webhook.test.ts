@@ -30,6 +30,7 @@ class CompletingHost implements SessionHost {
   prompts: string[] = [];
   async run(prompt: string): Promise<SessionRunResult> { this.prompts.push(prompt); return complete; }
   async newSession(): Promise<{ predecessorId: string; predecessorFile?: string; successorId: string; successorFile?: string }> { throw new Error("unexpected session replacement"); }
+  async abort(): Promise<void> {}
   async close(): Promise<void> {}
 }
 
@@ -405,7 +406,7 @@ test("worker restart keeps a waiting run dormant with its slot and session ident
   try {
     await waitForWorker(base, "waiting");
     const health = await fetch(`${base}/health`, { headers: auth });
-    assert.deepEqual(await health.json(), { status: "ok", worker: "waiting", activeRunId: store.runId, runtime: "pi-sdk" });
+    assert.deepEqual(await health.json(), { status: "ok", worker: "waiting", readiness: "accepting", acceptingWork: true, activeRunId: store.runId, runtime: "pi-sdk" });
     await new Promise((resolve) => setTimeout(resolve, 25));
     assert.equal(creations, 0);
     const newTask = await fetch(`${base}/v1/tasks`, {

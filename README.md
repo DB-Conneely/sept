@@ -1,6 +1,6 @@
 # SEPT
 
-SEPT is a small, durable, single-slot coding worker built directly on the official Pi TypeScript SDK. Pi owns provider authentication, model access, the coding-agent tool loop, session history, events, context accounting, steering, and fresh-session creation. SEPT adds only durable task/operator/handover records, a context-rotation policy, strict limits, an authenticated HTTP worker, and one provider-neutral webhook ingress.
+SEPT is a small, durable, single-slot coding worker built directly on the official Pi TypeScript SDK. Pi owns provider authentication, model access, the coding-agent tool loop, session history, events, context accounting, steering, native abort, and fresh-session creation. SEPT adds only durable task/operator/handover and conversation records, drain/cancel lifecycle control, a context-rotation policy, strict limits, an authenticated HTTP worker, and one provider-neutral webhook ingress.
 
 SEPT does not contain a separate provider abstraction, a TUI, or a Codex CLI/app-server transport.
 
@@ -40,7 +40,9 @@ SEPT_TOKEN='a-long-random-secret' ./sept worker \
   --workspace-root /absolute/assigned/workspaces
 ```
 
-Every route, including `/health`, requires `Authorization: Bearer $SEPT_TOKEN`; bearer tokens are not accepted as CLI options. The worker accepts one resident run and one process owns a state root at a time, including against concurrent `sept run` commands. Its configured state root must be on persistent storage in server operation; durable manifests, state, events, operator evidence, logs, Pi session files, and handovers live beneath that root. Server workspaces are canonicalized, must be directories beneath `--workspace-root` (default: the worker's launch directory), and cannot escape through symlinks. An agent can return `waiting` after checkpointing coherent work; SEPT then closes Pi/controller resources, reports `worker: "waiting"`, and preserves that run's session and slot without further invocations. An authenticated operator or webhook message is durably queued before acknowledgement and wakes the same Pi session. On restart, a waiting run stays dormant unless a queued wake was interrupted; active and interrupted-wake runs are adopted safely, and ambiguous or malformed format-version-2 run state is rejected. Input racing `complete`, `blocked`, or `waiting` defers the transition so accepted messages are delivered when another invocation remains available; admission fails before persistence at exhausted invocation/timeout boundaries and during an invocation in the final permitted epoch. `timeoutSeconds` counts Pi invocation wall time rather than dormant run age, while invocation and epoch caps remain hard. SIGINT/SIGTERM stops HTTP admission, lets the current Pi invocation reach its next durable checkpoint/handover/terminal boundary, closes Pi, releases both leases, and leaves nonterminal work active for restart adoption.
+Every route, including `/health`, requires `Authorization: Bearer $SEPT_TOKEN`; bearer tokens are not accepted as CLI options. The worker accepts one resident run and one process owns a state root at a time, including against concurrent `sept run` commands. Its configured state root must be on persistent storage in server operation; durable worker readiness, manifests, state, events, operator evidence, bounded conversations, logs, Pi session files, and handovers live beneath that root. Server workspaces are canonicalized, must be directories beneath `--workspace-root` (default: the worker's launch directory), and cannot escape through symlinks. An agent can return `waiting` after checkpointing coherent work; SEPT then closes Pi/controller resources, reports `worker: "waiting"`, and preserves that run's session and slot without further invocations. An authenticated operator or webhook message is durably queued before acknowledgement and wakes the same Pi session. On restart, a waiting run stays dormant unless a queued wake was interrupted; active and interrupted-wake runs are adopted safely, and ambiguous or malformed format-version-2 run state is rejected. Input racing `complete`, `blocked`, or `waiting` defers the transition so accepted messages are delivered when another invocation remains available; admission fails before persistence at exhausted invocation/timeout boundaries and during an invocation in the final permitted epoch. `timeoutSeconds` counts Pi invocation wall time rather than dormant run age, while invocation and epoch caps remain hard. SIGINT/SIGTERM stops HTTP admission, lets the current Pi invocation reach its next durable checkpoint/handover/terminal boundary, closes Pi, releases both leases, and leaves nonterminal work active for restart adoption. This graceful process stop is separate from `POST /v1/drain`: drain is fsynced at the state root, rejects new tasks and messages, lets previously accepted input settle to waiting or terminal, reports `draining` then `drained`, and remains drained across restart. `POST /v1/tasks/:runId/cancel` first persists targeted cancellation intent, then calls Pi's native `session.abort()` so model requests and tools receive cancellation; restart completes any interrupted cancellation and late controller output cannot replace `cancelled`.
+
+Each run also has one bounded `conversation.jsonl`. `GET /v1/tasks/:runId/conversation` replays stable cursor-addressed user, assistant, state, and terminal events; `GET /v1/tasks/:runId/stream` provides authenticated SSE replay/live delivery from `after=<cursor>`. Cursor inputs are validated without coercion, retention gaps return `410`, and transcript terminal metadata remains authoritative outside the requested page. Initial task and operator text are preserved exactly, including restart recovery of the durable queue-to-conversation seam. Assistant conversation text comes only from the validated public `message` field in SEPT's response envelope—not Pi reasoning, tool events, WorkControl/Handover data, or operational logs—and fails closed on unsafe controls or recognizable credential material. Validated progress immediately before Pi context steering remains visible across the fresh-session rotation. Streams close at terminal state and send bounded disconnect metadata on shutdown, stream lifetime, cursor expiry, or backpressure.
 
 ```bash
 SEPT_TOKEN='a-long-random-secret' ./sept health --url http://127.0.0.1:8090/health
@@ -48,6 +50,15 @@ SEPT_TOKEN='a-long-random-secret' ./sept health --url http://127.0.0.1:8090/heal
 curl -X POST -H "Authorization: Bearer $SEPT_TOKEN" -H 'Content-Type: application/json' \
   http://127.0.0.1:8090/v1/tasks \
   -d '{"task":"Fix and verify the issue","role":"Repository maintainer","workspace":"/workspace"}'
+
+curl -N -H "Authorization: Bearer $SEPT_TOKEN" \
+  'http://127.0.0.1:8090/v1/tasks/RUN_ID/stream?after=0'
+
+curl -X POST -H "Authorization: Bearer $SEPT_TOKEN" \
+  http://127.0.0.1:8090/v1/tasks/RUN_ID/cancel
+
+curl -X POST -H "Authorization: Bearer $SEPT_TOKEN" \
+  http://127.0.0.1:8090/v1/drain
 ```
 
 ## Provider-neutral webhook
@@ -60,7 +71,7 @@ curl -X POST -H "Authorization: Bearer $SEPT_TOKEN" -H 'Content-Type: applicatio
   -d '{"version":1,"eventId":"alert-123","source":"monitoring-edge","kind":"task","task":{"task":"Investigate and verify the alert","workspace":"/workspace"}}'
 ```
 
-See [docs/worker-api.md](docs/worker-api.md) for the exact schemas, limits, retry behavior, and operator-message form.
+See [docs/worker-api.md](docs/worker-api.md) for the exact schemas, limits, retry behavior, and operator-message form. The verified Part 1 delivery and mandatory Part 2 decision brief are in [docs/part-1-report.md](docs/part-1-report.md).
 
 ## Module ownership
 
@@ -119,4 +130,4 @@ npm audit --omit=dev
 docker build -t sept:local .
 ```
 
-The acceptance suite drives the production `PiSessionHost` and installed `./sept` worker with deterministic local provider doubles. It proves atomic tool-batch completion, native steering preemption, provider-reported context triggering without a local text heuristic, durable-before-successor ordering, fresh session IDs, no same-session compaction, disabled project extension execution, restart continuity, graceful active SIGTERM, cross-process state-root ownership, strict caps, bounded queues/retrieval/logs, canonical workspace confinement, fail-closed HTTP authentication, strict direct/webhook validation, exact operator text, durable retry deduplication, collision handling, task/message routing, wired trace parentage/events, bounded metric labels, correlated JSON logs, payload exclusion, and contained exporter failure.
+The acceptance suite drives the production `PiSessionHost` and installed `./sept` worker with deterministic local provider doubles. It proves atomic tool-batch completion, native steering preemption, provider-reported context triggering without a local text heuristic, durable-before-successor ordering, fresh session IDs, pre-rotation conversation continuity, no same-session compaction, disabled project extension execution, restart continuity, graceful active SIGTERM, restart while durably draining, Pi-native model/tool cancellation and provider-response abort, bounded transcript replay/SSE reconnect/expiry/backpressure/capacity/shutdown behavior, terminal metadata outside replay pages, queue-to-conversation crash recovery, wait/wake conversation continuity, cross-process state-root ownership, strict caps and cursors, bounded queues/retrieval/logs, canonical workspace confinement, fail-closed HTTP authentication, strict direct/webhook validation, exact operator text, durable retry deduplication, collision handling, task/message routing, wired trace parentage/events, bounded metric labels, correlated JSON logs, payload exclusion, and contained exporter failure.

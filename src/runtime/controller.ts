@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { RunStore, SeptError, parseJsonObject, validateHandover, validateWork, type Manifest, type WorkControl } from "../durable/index.js";
+import { RunStore, SeptError, parseJsonObject, validateHandover, validateWorkResponse, type Manifest, type WorkControl } from "../durable/index.js";
 import type { Observability } from "../observability/index.js";
 import { classifyError, NOOP_TELEMETRY } from "../observability/index.js";
 import { continuationPrompt, findSuccessorSession, initialPrompt, PiSessionHost, successorPrompt, type SessionHost } from "../pi-integration/index.js";
@@ -7,6 +7,9 @@ import { continuationPrompt, findSuccessorSession, initialPrompt, PiSessionHost,
 export type HostFactory = (manifest: Manifest, store: RunStore, agentDir: string, existingSessionFile?: string, telemetry?: Observability) => Promise<SessionHost>;
 
 export class CycleController {
+  private host?: SessionHost;
+  private abortRequested = false;
+
   constructor(
     private readonly store: RunStore,
     private readonly agentDir: string,
@@ -17,6 +20,11 @@ export class CycleController {
 
   async run(): Promise<void> {
     return this.telemetry.span("sept.controller.run", { "sept.run.id": this.store.runId }, async () => this.control());
+  }
+
+  async abort(): Promise<void> {
+    this.abortRequested = true;
+    await this.host?.abort();
   }
 
   private async control(): Promise<void> {
@@ -41,11 +49,17 @@ export class CycleController {
         "sept.epoch": snapshot.epoch,
         "sept.adoption": existing ? "existing" : "new",
       }, async () => this.hostFactory(manifest, this.store, this.agentDir, existing, this.telemetry));
+      this.host = host;
+      if (this.abortRequested || this.store.snapshot().status === "cancelling") {
+        await host.abort();
+        return;
+      }
 
       if ((snapshot.phase === "handover_durable" || snapshot.phase === "replacing") && host.sessionId === snapshot.predecessorSessionId) {
         this.enforceEpochCap(manifest, snapshot);
         this.store.update({ phase: "replacing" });
         const replacement = await this.telemetry.span("sept.pi.session.rotate", { "sept.run.id": this.store.runId, "sept.epoch": snapshot.epoch }, async () => host!.newSession());
+        if (this.cancellationRequested()) return;
         this.store.update({ phase: "running", epoch: snapshot.epoch + 1, activeSessionId: replacement.successorId, activeSessionFile: replacement.successorFile });
         this.store.event("successor_session_started", replacement);
         this.telemetry.sessionOpened("replaced");
@@ -110,6 +124,7 @@ export class CycleController {
             return invocationResult;
           });
           const duration = Date.now() - invocationStarted;
+          if (this.cancellationRequested()) return;
           this.telemetry.invocationFinished(duration, "success", result.steered);
           this.telemetry.log("pi.invocation.finished", { "sept.run.id": this.store.runId, "sept.epoch": snapshot.epoch, "sept.invocation": invocation, "sept.outcome": "success", "sept.rotation": result.steered, "sept.queue.depth": messages.length, duration_ms: duration });
         } catch (error) {
@@ -123,6 +138,12 @@ export class CycleController {
         if (result.steered) {
           this.telemetry.event("sept.rotation.requested", { "sept.epoch": snapshot.epoch, "sept.invocation": invocation });
           this.telemetry.log("pi.rotation.requested", { "sept.run.id": this.store.runId, "sept.epoch": snapshot.epoch, "sept.invocation": invocation });
+          if (result.preRotationText) {
+            let preRotationResponse: ReturnType<typeof validateWorkResponse> | undefined;
+            try { preRotationResponse = validateWorkResponse(parseJsonObject(result.preRotationText)); }
+            catch { this.store.event("conversation_message_deferred", { epoch: snapshot.epoch, invocation, reason: "invalid_pre_rotation_response" }); }
+            if (preRotationResponse?.message) this.store.conversationMessage(`assistant-${snapshot.epoch}-${invocation}`, "assistant", preRotationResponse.message);
+          }
           const handover = validateHandover(parseJsonObject(result.text));
           const predecessorId = host.sessionId;
           const predecessorFile = host.sessionFile;
@@ -134,6 +155,7 @@ export class CycleController {
           if (this.shouldStop()) return;
           this.store.update({ phase: "replacing" });
           const replacement = await this.telemetry.span("sept.pi.session.rotate", { "sept.run.id": this.store.runId, "sept.epoch": snapshot.epoch }, async () => host!.newSession());
+          if (this.cancellationRequested()) return;
           this.store.update({ phase: "running", epoch: snapshot.epoch + 1, activeSessionId: replacement.successorId, activeSessionFile: replacement.successorFile });
           this.store.event("successor_session_started", replacement);
           this.telemetry.sessionOpened("replaced");
@@ -142,7 +164,9 @@ export class CycleController {
           control = undefined;
           continue;
         }
-        control = validateWork(parseJsonObject(result.text));
+        const response = validateWorkResponse(parseJsonObject(result.text));
+        control = response.control;
+        if (response.message) this.store.conversationMessage(`assistant-${snapshot.epoch}-${invocation}`, "assistant", response.message);
         this.store.checkpoint(control, messages, host.sessionId);
         this.telemetry.setQueueDepth(this.store.pendingMessages().length);
         this.telemetry.event("sept.checkpoint.durable", { "sept.outcome": control.status, "sept.epoch": snapshot.epoch, "sept.invocation": invocation, "sept.queue.depth": messages.length });
@@ -168,18 +192,21 @@ export class CycleController {
         if (control.status === "complete") {
           this.store.update({ status: "complete", phase: "terminal", reason: control.summary, terminalCause: undefined });
           this.store.event("run_completed", { summary: control.summary, verification: control.verification });
+          this.store.ensureTerminalConversation();
           this.telemetry.runOutcome("complete");
           this.telemetry.setRunState("complete", snapshot.epoch, invocation, 0);
           this.telemetry.log("run.completed", { "sept.run.id": this.store.runId, "sept.run.state": "complete", "sept.epoch": snapshot.epoch, "sept.invocation": invocation, "sept.outcome": "complete" });
         } else if (control.status === "blocked") {
           this.store.update({ status: "blocked", phase: "terminal", reason: control.summary, terminalCause: "agent_blocked" });
           this.store.event("run_blocked", { summary: control.summary, nextAction: control.next_action });
+          this.store.ensureTerminalConversation();
           this.telemetry.runOutcome("blocked");
           this.telemetry.setRunState("blocked", snapshot.epoch, invocation, 0);
           this.telemetry.log("run.blocked", { "sept.run.id": this.store.runId, "sept.run.state": "blocked", "sept.epoch": snapshot.epoch, "sept.invocation": invocation, "sept.outcome": "blocked" });
         } else if (control.status === "waiting") {
           this.store.update({ status: "waiting", phase: "waiting", reason: control.summary, terminalCause: undefined });
           this.store.event("run_waiting", { summary: control.summary, nextAction: control.next_action, sessionId: host.sessionId, sessionFile: host.sessionFile });
+          this.store.conversationState(`waiting-${snapshot.epoch}-${invocation}`, "waiting");
           this.telemetry.setRunState("waiting", snapshot.epoch, invocation, 0);
           this.telemetry.log("run.waiting", { "sept.run.id": this.store.runId, "sept.run.state": "waiting", "sept.epoch": snapshot.epoch, "sept.invocation": invocation, "sept.outcome": "waiting" });
         } else if (this.shouldStop()) {
@@ -195,6 +222,7 @@ export class CycleController {
         const terminalCause = error instanceof LimitError ? error.cause : "controller_failure";
         this.store.update({ status: outcome, phase: "terminal", reason: message, terminalCause });
         this.store.event(outcome === "blocked" ? "run_blocked" : "run_failed", { reason: message });
+        this.store.ensureTerminalConversation();
         this.telemetry.runOutcome(outcome);
         const snapshot = this.store.snapshot();
         this.telemetry.setRunState(outcome, snapshot.epoch, snapshot.invocations, this.store.pendingMessages().length);
@@ -207,10 +235,22 @@ export class CycleController {
           .then(() => this.telemetry.log("pi.session.closed", { "sept.run.id": this.store.runId, "sept.outcome": "success" }))
           .catch((error) => this.telemetry.log("pi.session.closed", { "sept.run.id": this.store.runId, "sept.outcome": "failure", "error.type": classifyError(error) }, "warn"));
       }
+      this.host = undefined;
+      if (this.store.snapshot().status === "cancelling") {
+        const cancelled = this.store.finishCancellation();
+        this.telemetry.runOutcome("cancelled");
+        this.telemetry.setRunState("cancelled", cancelled.epoch, cancelled.invocations, this.store.pendingMessages().length);
+        this.telemetry.log("run.cancelled", { "sept.run.id": this.store.runId, "sept.run.state": "cancelled", "sept.outcome": "cancelled" });
+      }
       this.telemetry.spanSync("sept.controller.lease", { "sept.run.id": this.store.runId, "sept.outcome": "release" }, release);
       this.telemetry.log("controller.lease.released", { "sept.run.id": this.store.runId });
       this.telemetry.log("controller.stopped", { "sept.run.id": this.store.runId, "sept.run.state": this.store.snapshot().status });
     }
+  }
+
+  private cancellationRequested(): boolean {
+    const status = this.store.snapshot().status;
+    return status === "cancelling" || status === "cancelled";
   }
 
   private enforceEpochCap(manifest: Manifest, snapshot: ReturnType<RunStore["snapshot"]>): void {
@@ -228,7 +268,7 @@ export class CycleController {
     let timer: NodeJS.Timeout | undefined;
     try {
       return await Promise.race([
-        host.run(prompt, manifest.thresholdPercent, manifest.handoverReserveTokens),
+        host.run(prompt),
         new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new LimitError("timeout", `Active execution timeout reached (${manifest.timeoutSeconds}s)`)), remaining); }),
       ]);
     } finally {

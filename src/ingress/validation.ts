@@ -2,7 +2,7 @@ import { realpathSync, statSync } from "node:fs";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { DEFAULTS, SeptError, type Manifest } from "../durable/index.js";
 
-export const TASK_KEYS = ["handoverReserveTokens", "maxEpochs", "maxInvocations", "model", "provider", "role", "task", "thinking", "thresholdPercent", "timeoutSeconds", "workspace"] as const;
+export const TASK_KEYS = ["maxEpochs", "maxInvocations", "model", "provider", "role", "task", "thinking", "timeoutSeconds", "workspace"] as const;
 const UNSAFE_CONTROLS = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/;
 
 function record(value: unknown, name: string): Record<string, unknown> {
@@ -50,11 +50,12 @@ export function validateMessageBody(value: unknown): string {
   return validateOperatorMessage(input.message);
 }
 
-export function validateRequest(value: unknown, piVersion: string, workspaceRoot?: string): Omit<Manifest, "runId" | "createdAt"> {
+export function validateRequest(value: unknown, piVersion: string, workspaceRoot?: string, selected?: { provider: string; model: string }): Omit<Manifest, "runId" | "createdAt"> {
   const input = record(value, "task request");
   assertKnownKeys(input, TASK_KEYS, "task request");
   const task = safeText(input.task, "task", 32_768);
   const role = input.role === undefined ? "" : safeText(input.role, "role", 4096, true);
+  if ((input.provider === undefined) !== (input.model === undefined)) throw new SeptError("provider and model must be selected together");
   for (const field of ["workspace", "provider", "model"] as const) {
     const fieldValue = input[field];
     if (fieldValue !== undefined) {
@@ -72,21 +73,17 @@ export function validateRequest(value: unknown, piVersion: string, workspaceRoot
     if (child === ".." || child.startsWith(`..${sep}`) || isAbsolute(child)) throw new SeptError("workspace is outside the configured workspace root");
   }
 
-  const thresholdPercent = boundedNumber(input.thresholdPercent, DEFAULTS.thresholdPercent, "thresholdPercent", 1, 95);
-  const handoverReserveTokens = boundedNumber(input.handoverReserveTokens, DEFAULTS.handoverReserveTokens, "handoverReserveTokens", 1000, 1_000_000);
   const maxInvocations = boundedNumber(input.maxInvocations, DEFAULTS.maxInvocations, "maxInvocations", 1, 10000);
   const maxEpochs = boundedNumber(input.maxEpochs, DEFAULTS.maxEpochs, "maxEpochs", 1, 1000);
   const timeoutSeconds = boundedNumber(input.timeoutSeconds, DEFAULTS.timeoutSeconds, "timeoutSeconds", 1, 604800);
   return {
-    formatVersion: 2,
+    formatVersion: 3,
     task,
     role,
     workspace,
-    provider: input.provider as string | undefined ?? DEFAULTS.provider,
-    model: input.model as string | undefined ?? DEFAULTS.model,
+    provider: input.provider as string | undefined ?? selected?.provider ?? DEFAULTS.provider,
+    model: input.model as string | undefined ?? selected?.model ?? DEFAULTS.model,
     thinking: input.thinking as Manifest["thinking"] | undefined ?? DEFAULTS.thinking,
-    thresholdPercent,
-    handoverReserveTokens,
     maxInvocations,
     maxEpochs,
     timeoutSeconds,

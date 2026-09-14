@@ -1,8 +1,9 @@
 import { timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { QueueCapacityError, SeptError, type TaskRequest } from "../durable/index.js";
+import { ConversationCursorExpiredError, MAX_CONVERSATION_STREAMS, QueueCapacityError, SeptError, type ConversationEvent, type TaskRequest } from "../durable/index.js";
 import type { Observability } from "../observability/index.js";
 import { classifyError, NOOP_TELEMETRY } from "../observability/index.js";
+import { readModelSelection, type ModelSelection } from "../pi-integration/index.js";
 import { type HostFactory, RunNotFoundError, WorkerConflictError, WorkerRuntime } from "../runtime/index.js";
 import { RequestError } from "./errors.js";
 import { canonicalWorkspaceRoot, validateMessageBody, validateRequest } from "./validation.js";
@@ -27,16 +28,19 @@ export class SeptService {
   private readonly worker: WorkerRuntime;
   private readonly webhooks: WebhookRouter;
   private readonly workspaceRoot: string;
+  private readonly modelSelection: ModelSelection | undefined;
   private listening = false;
   private ready = false;
   private stopPromise?: Promise<void>;
+  private readonly streams = new Set<(reason: "server_shutdown") => void>();
 
   constructor(private readonly options: ServiceOptions) {
     if (!options.token) throw new SeptError("SEPT_TOKEN is required; refusing to start without bearer authentication");
     this.observability = options.telemetry ?? NOOP_TELEMETRY;
     this.workspaceRoot = canonicalWorkspaceRoot(options.workspaceRoot ?? process.cwd());
+    this.modelSelection = readModelSelection(options.agentDir);
     this.worker = new WorkerRuntime({ stateRoot: options.stateRoot, agentDir: options.agentDir, workspaceRoot: this.workspaceRoot, hostFactory: options.hostFactory, observability: this.observability });
-    this.webhooks = new WebhookRouter(options.stateRoot, options.piVersion, this.workspaceRoot, this.worker, this.observability);
+    this.webhooks = new WebhookRouter(options.stateRoot, options.piVersion, this.workspaceRoot, this.worker, this.observability, this.modelSelection);
     this.server = createServer((request, response) => void this.route(request, response));
   }
 
@@ -73,6 +77,7 @@ export class SeptService {
     this.ready = false;
     this.stopPromise ??= this.observability.span("sept.worker.stop", {}, async () => {
       let closeError: unknown;
+      for (const disconnect of [...this.streams]) disconnect("server_shutdown");
       try { await this.closeServer(); } catch (error) { closeError = error; }
       await this.worker.stop();
       if (closeError) throw closeError;
@@ -124,11 +129,15 @@ export class SeptService {
       if (!this.ready) return json(response, 503, { error: "worker is not ready" });
       if (request.method === "GET" && url.pathname === "/health") {
         const status = this.worker.status();
-        return json(response, 200, { status: "ok", worker: status.worker, activeRunId: status.activeRunId, runtime: "pi-sdk" });
+        return json(response, 200, { status: "ok", worker: status.worker, readiness: status.readiness, acceptingWork: status.acceptingWork, activeRunId: status.activeRunId, runtime: "pi-sdk" });
+      }
+      if (request.method === "POST" && url.pathname === "/v1/drain") {
+        await emptyBody(request);
+        return json(response, 202, this.worker.drain());
       }
       if (request.method === "POST" && url.pathname === "/v1/tasks") {
         const input = await body<TaskRequest>(request, 256 * 1024);
-        const result = this.worker.createTask(validateRequest(input, this.options.piVersion, this.workspaceRoot));
+        const result = this.worker.createTask(validateRequest(input, this.options.piVersion, this.workspaceRoot, this.modelSelection));
         return json(response, 202, result);
       }
       if (request.method === "POST" && url.pathname === "/v1/webhooks") {
@@ -136,7 +145,7 @@ export class SeptService {
         const result = this.webhooks.receive(input);
         return json(response, result.status, result.body);
       }
-      const match = url.pathname.match(/^\/v1\/tasks\/([A-Za-z0-9_-]+)(?:\/(events|log|messages))?$/);
+      const match = url.pathname.match(/^\/v1\/tasks\/([A-Za-z0-9_-]+)(?:\/(events|log|messages|conversation|stream|cancel))?$/);
       if (!match) return json(response, 404, { error: "not found" });
       let store;
       try { store = this.worker.findRun(match[1]); }
@@ -144,12 +153,29 @@ export class SeptService {
       const resource = match[2];
       if (request.method === "GET" && !resource) return json(response, 200, { manifest: store.manifest(), state: store.snapshot() });
       if (request.method === "GET" && resource === "events") {
-        const after = integer(url.searchParams.get("after"), 0);
-        const limit = integer(url.searchParams.get("limit"), 250);
+        const after = queryInteger(url.searchParams, "after", 0, 0, Number.MAX_SAFE_INTEGER);
+        const limit = queryInteger(url.searchParams, "limit", 250, 1, 1000);
         const events = store.events(after, limit);
         return json(response, 200, { events, nextCursor: events.at(-1)?.seq ?? after });
       }
       if (request.method === "GET" && resource === "log") return text(response, 200, store.logTail());
+      if (request.method === "GET" && resource === "conversation") {
+        const after = queryInteger(url.searchParams, "after", 0, 0, Number.MAX_SAFE_INTEGER);
+        const limit = queryInteger(url.searchParams, "limit", 100, 1, 250);
+        const page = store.conversation(after, limit);
+        const status = store.snapshot().status;
+        const terminal = status === "cancelled" || status === "complete" || status === "blocked" || status === "failed" ? { status } : null;
+        return json(response, 200, { ...page, terminal });
+      }
+      if (request.method === "GET" && resource === "stream") {
+        const after = queryInteger(url.searchParams, "after", 0, 0, Number.MAX_SAFE_INTEGER);
+        return this.streamConversation(request, response, store, after);
+      }
+      if (request.method === "POST" && resource === "cancel") {
+        await emptyBody(request);
+        const result = await this.worker.cancel(store);
+        return json(response, result.status === "cancelling" ? 202 : 200, result);
+      }
       if (request.method === "POST" && resource === "messages") {
         const input = await body<unknown>(request, 256 * 1024);
         const message = this.worker.sendMessage(store, validateMessageBody(input));
@@ -157,17 +183,88 @@ export class SeptService {
       }
       return json(response, 405, { error: "method not allowed" });
     } catch (error) {
-      const status = error instanceof RequestError ? error.status : error instanceof RunNotFoundError ? 404 : error instanceof WorkerConflictError ? 409 : error instanceof QueueCapacityError ? 429 : error instanceof SeptError || error instanceof SyntaxError ? 400 : 500;
+      const status = error instanceof RequestError ? error.status : error instanceof RunNotFoundError ? 404 : error instanceof ConversationCursorExpiredError ? 410 : error instanceof WorkerConflictError ? 409 : error instanceof QueueCapacityError ? 429 : error instanceof SeptError || error instanceof SyntaxError ? 400 : 500;
       const message = error instanceof RequestError || error instanceof SeptError ? error.message : error instanceof SyntaxError ? "request body must be valid JSON" : "internal error";
       return json(response, status, { error: message });
     }
   }
+
+  private streamConversation(request: IncomingMessage, response: ServerResponse, store: ReturnType<WorkerRuntime["findRun"]>, after: number): void {
+    if (this.streams.size >= MAX_CONVERSATION_STREAMS) throw new WorkerConflictError("conversation stream capacity exceeded");
+    store.conversation(after, 1);
+    response.writeHead(200, {
+      "Content-Type": "text/event-stream; charset=utf-8",
+      "Cache-Control": "no-store",
+      Connection: "keep-alive",
+      "X-Accel-Buffering": "no",
+    });
+    response.write("retry: 1000\n\n");
+    let cursor = after;
+    let closed = false;
+    let polling: NodeJS.Timeout | undefined;
+    let heartbeat: NodeJS.Timeout | undefined;
+    let lifetime: NodeJS.Timeout | undefined;
+    const send = (event: ConversationEvent): boolean => {
+      const accepted = response.write(`id: ${event.cursor}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
+      cursor = event.cursor;
+      return accepted;
+    };
+    const cleanup = (): void => {
+      if (closed) return;
+      closed = true;
+      if (polling) clearInterval(polling);
+      if (heartbeat) clearInterval(heartbeat);
+      if (lifetime) clearTimeout(lifetime);
+      this.streams.delete(disconnect);
+    };
+    const disconnect = (reason: "backpressure" | "cursor_expired" | "stream_limit" | "server_shutdown" | "terminal", retry = reason !== "cursor_expired" && reason !== "terminal", terminalStatus?: "cancelled" | "complete" | "blocked" | "failed"): void => {
+      if (closed) return;
+      response.write(`event: disconnect\ndata: ${JSON.stringify({ reason, retry, nextCursor: cursor, terminal: terminalStatus ? { status: terminalStatus } : undefined })}\n\n`);
+      cleanup();
+      response.end();
+    };
+    const pump = (): void => {
+      if (closed) return;
+      let page;
+      try { page = store.conversation(cursor, 100); }
+      catch (error) {
+        if (error instanceof ConversationCursorExpiredError) return disconnect("cursor_expired", false);
+        cleanup();
+        response.destroy();
+        return;
+      }
+      for (const event of page.events) if (!send(event)) return disconnect("backpressure");
+      const status = store.snapshot().status;
+      if (status === "cancelled" || status === "complete" || status === "blocked" || status === "failed") {
+        const caughtUp = store.conversation(cursor, 1).events.length === 0;
+        if (caughtUp) disconnect("terminal", false, status);
+      }
+    };
+    this.streams.add(disconnect);
+    response.once("close", cleanup);
+    request.once("error", cleanup);
+    pump();
+    if (closed) return;
+    polling = setInterval(pump, 100);
+    heartbeat = setInterval(() => { if (!closed && !response.write(`: heartbeat ${cursor}\n\n`)) disconnect("backpressure"); }, 15_000);
+    lifetime = setTimeout(() => disconnect("stream_limit"), 5 * 60_000);
+    polling.unref(); heartbeat.unref(); lifetime.unref();
+  }
 }
 
-function integer(value: string | null, fallback: number): number {
-  if (value === null) return fallback;
-  const result = Number.parseInt(value, 10);
-  return Number.isFinite(result) && result >= 0 ? result : fallback;
+function queryInteger(parameters: URLSearchParams, name: string, fallback: number, minimum: number, maximum: number): number {
+  const values = parameters.getAll(name);
+  if (!values.length) return fallback;
+  if (values.length !== 1 || !/^\d+$/.test(values[0])) throw new RequestError(400, `${name} must be one integer between ${minimum} and ${maximum}`);
+  const result = Number(values[0]);
+  if (!Number.isSafeInteger(result) || result < minimum || result > maximum) throw new RequestError(400, `${name} must be one integer between ${minimum} and ${maximum}`);
+  return result;
+}
+
+async function emptyBody(request: IncomingMessage): Promise<void> {
+  const declaredLength = request.headers["content-length"];
+  if (declaredLength !== undefined && declaredLength !== "0") throw new RequestError(400, "request body must be empty");
+  for await (const chunk of request) if (Buffer.byteLength(chunk) > 0) throw new RequestError(400, "request body must be empty");
 }
 
 async function body<T>(request: IncomingMessage, maxBytes: number): Promise<T> {
@@ -210,8 +307,9 @@ function normalizeHttpMethod(value: string | undefined): string {
 function routeTemplate(method: string, pathname: string): string {
   if (method === "GET" && pathname === "/health") return "/health";
   if (method === "POST" && pathname === "/v1/tasks") return "/v1/tasks";
+  if (method === "POST" && pathname === "/v1/drain") return "/v1/drain";
   if (method === "POST" && pathname === "/v1/webhooks") return "/v1/webhooks";
-  const match = pathname.match(/^\/v1\/tasks\/[A-Za-z0-9_-]+(?:\/(events|log|messages))?$/);
+  const match = pathname.match(/^\/v1\/tasks\/[A-Za-z0-9_-]+(?:\/(events|log|messages|conversation|stream|cancel))?$/);
   if (!match) return "unmatched";
   return `/v1/tasks/{runId}${match[1] ? `/${match[1]}` : ""}`;
 }

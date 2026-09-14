@@ -10,8 +10,9 @@ export const HANDOVER_FIELDS = [
   "lessons",
 ] as const;
 
-export type RunStatus = "active" | "waiting" | "complete" | "blocked" | "failed";
-export type TerminalCause = "agent_blocked" | "invocation_limit" | "epoch_limit" | "timeout" | "controller_failure";
+export type RunStatus = "active" | "waiting" | "cancelling" | "cancelled" | "complete" | "blocked" | "failed";
+export type TerminalCause = "agent_blocked" | "invocation_limit" | "epoch_limit" | "timeout" | "controller_failure" | "operator_cancelled";
+export type WorkerReadiness = "accepting" | "draining" | "drained";
 
 export interface TaskRequest {
   task: string;
@@ -20,15 +21,13 @@ export interface TaskRequest {
   provider?: string;
   model?: string;
   thinking?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
-  thresholdPercent?: number;
-  handoverReserveTokens?: number;
   maxInvocations?: number;
   maxEpochs?: number;
   timeoutSeconds?: number;
 }
 
 export interface Manifest {
-  formatVersion: 2;
+  formatVersion: 3;
   runId: string;
   createdAt: string;
   task: string;
@@ -37,8 +36,6 @@ export interface Manifest {
   provider: string;
   model: string;
   thinking: NonNullable<TaskRequest["thinking"]>;
-  thresholdPercent: number;
-  handoverReserveTokens: number;
   maxInvocations: number;
   maxEpochs: number;
   timeoutSeconds: number;
@@ -47,7 +44,7 @@ export interface Manifest {
 
 export interface RunSnapshot {
   status: RunStatus;
-  phase: "ready" | "running" | "waiting" | "handover_durable" | "replacing" | "terminal";
+  phase: "ready" | "running" | "waiting" | "handover_durable" | "replacing" | "cancelling" | "terminal";
   epoch: number;
   invocations: number;
   activeMilliseconds: number;
@@ -73,6 +70,24 @@ export interface WorkControl {
   summary: string;
   verification: string[];
   next_action: string;
+}
+
+export interface WorkResponse {
+  control: WorkControl;
+  message?: string;
+}
+
+export type ConversationEvent =
+  | { formatVersion: 1; cursor: number; id: string; type: "message"; role: "user" | "assistant"; text: string; at: string }
+  | { formatVersion: 1; cursor: number; id: string; type: "state"; state: "active" | "waiting"; at: string }
+  | { formatVersion: 1; cursor: number; id: string; type: "terminal"; status: "cancelled" | "complete" | "blocked" | "failed"; at: string };
+
+export interface WorkerLifecycleState {
+  formatVersion: 1;
+  readiness: WorkerReadiness;
+  updatedAt: string;
+  drainAcceptedAt?: string;
+  drainedAt?: string;
 }
 
 export type Handover = {
@@ -102,8 +117,6 @@ export const DEFAULTS = {
   provider: "openai-codex",
   model: "gpt-5.6-sol",
   thinking: "high" as const,
-  thresholdPercent: 75,
-  handoverReserveTokens: 50_000,
   maxInvocations: 100,
   maxEpochs: 20,
   timeoutSeconds: 86_400,

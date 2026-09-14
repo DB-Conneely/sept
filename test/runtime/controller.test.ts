@@ -29,6 +29,7 @@ class FakeHost implements SessionHost {
     this.sessionId = `pi-successor-${++this.replacements}`; this.sessionFile = `/pi/successor-${this.replacements}.jsonl`;
     return { predecessorId, predecessorFile, successorId: this.sessionId, successorFile: this.sessionFile };
   }
+  async abort(): Promise<void> {}
   async close(): Promise<void> {}
 }
 
@@ -45,6 +46,7 @@ class GracefulStopHost implements SessionHost {
     return { text: JSON.stringify({ status: "continue", summary: "safe checkpoint", verification: [], next_action: "resume after restart" }), steered: false, contextTokens: 1, contextWindow: 100 };
   }
   async newSession(): Promise<{ predecessorId: string; predecessorFile?: string; successorId: string; successorFile?: string }> { throw new Error("unexpected replacement"); }
+  async abort(): Promise<void> {}
   async close(): Promise<void> { this.closed = true; }
   release(): void { this.finish(); }
 }
@@ -277,7 +279,7 @@ test("worker fails closed and reports authenticated idle health", async () => {
     assert.equal((await fetch(`${base}/health`)).status, 401);
     const response = await fetch(`${base}/health`, { headers: { Authorization: "Bearer secret" } });
     assert.equal(response.status, 200);
-    assert.deepEqual(await response.json(), { status: "ok", worker: "idle", activeRunId: null, runtime: "pi-sdk" });
+    assert.deepEqual(await response.json(), { status: "ok", worker: "idle", readiness: "accepting", acceptingWork: true, activeRunId: null, runtime: "pi-sdk" });
   } finally { await service.stop(); }
 });
 
@@ -296,7 +298,7 @@ test("worker ignores legacy manifest-only run directories without changing them"
   try {
     const response = await fetch(`http://${address.host}:${address.port}/health`, { headers: { Authorization: "Bearer secret" } });
     assert.equal(response.status, 200);
-    assert.deepEqual(await response.json(), { status: "ok", worker: "idle", activeRunId: null, runtime: "pi-sdk" });
+    assert.deepEqual(await response.json(), { status: "ok", worker: "idle", readiness: "accepting", acceptingWork: true, activeRunId: null, runtime: "pi-sdk" });
     assert.equal(readFileSync(join(legacyDir, "manifest.json"), "utf8"), legacyManifest);
     assert.equal(readFileSync(join(legacyDir, "events.jsonl"), "utf8"), legacyEvents);
   } finally { await service.stop(); }

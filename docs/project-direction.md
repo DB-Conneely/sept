@@ -30,17 +30,29 @@ These are recorded improvements, not additions to the current implementation sco
 
 ## Ordered implementation sequence
 
-The next sanctioned implementation tranches are ordered as follows. Each item must preserve the single-slot and durability guarantees and be exercised through the installed runtime path before the next begins.
+Graceful stop is complete and exercised through the installed worker. The five remaining model-harness tranches are ordered as follows. Each item must preserve the single-slot and durability guarantees and be exercised through the installed runtime path before the next begins.
 
-1. **Graceful stop.** Allow active work to reach a safe durable boundary, release runtime resources, and preserve restart recovery without losing accepted input.
-2. **Drain.** Refuse new work while allowing already accepted work to settle, with an explicit durable state and unambiguous readiness reporting.
-3. **Cancel.** Interrupt the targeted run and its active Pi/tool work safely, record the terminal reason, and prevent late completion or duplicate-controller races.
-4. **ACP interoperability.** Use the standard Agent Client Protocol and existing Pi ACP integration work rather than inventing a proprietary client protocol. First expose SEPT sessions and lifecycle through an ACP adapter; keep the boundary suitable for later supervising other ACP-compatible agents through capability negotiation.
+1. **Drain.** Refuse new work while allowing already accepted work to settle, with an explicit durable state and unambiguous readiness reporting.
+2. **Cancel.** Interrupt the targeted run and its active Pi/tool work safely, durably record the terminal reason, and prevent late completion or duplicate-controller races.
+3. **Durable conversational output.** Separate user-facing assistant messages from internal lifecycle controls and operational logs. Provide an authenticated, bounded, replayable transcript and live output stream that survive wait, wake, rotation, and restart without exposing reasoning, unsafe tool payloads, or credentials.
+4. **ACP interoperability.** Use the standard Agent Client Protocol and existing Pi ACP integration work rather than inventing a proprietary client protocol. First expose SEPT conversations, sessions, output, and lifecycle through an ACP adapter; keep the boundary suitable for later supervising other ACP-compatible agents through capability negotiation.
 5. **Model-neutral context rollover.** Generalize and prove the rollover trigger across supported Pi providers and models. Base decisions on the selected model's declared context window and finalized provider-reported usage, keep thresholds and reserves proportional to that active window, fail or defer safely when required metadata is unavailable, and add compatibility coverage beyond the Codex default without recreating provider clients or tokenizers.
+
+The first three tranches form Part 1 and were completed as one focused backend pass: durable drain, Pi-native targeted cancellation, and bounded durable conversation replay/streaming are wired and exercised through the installed worker and production Pi lifecycle. Part 2 remains behind the mandatory decision checkpoint. Orchestration must stop and surface a concrete decision brief for ACP interoperability and model-neutral rollover; Part 2 begins only after the user resolves those protocol, transport, capability, provider, and compatibility choices.
+
+Completion of all five establishes the main AI service: SEPT's model harness and utility layer. It does not authorize dashboard, control-plane, deployment, or speculative infrastructure work.
+
+## Product surface sequence
+
+After the five model-harness tranches, make the service locally packageable and straightforward to install, authenticate, start, diagnose, upgrade, and exercise. Packaging is a product boundary, not a deployment project; cloud infrastructure, CI/CD expansion, hosting, fleet operations, and other DevOps work remain later concerns.
+
+Once packaging is coherent, build a native dashboard whose first purpose is to make the agent itself legible: conversation, current action, live assistant output, lifecycle state, epoch/session transitions, context pressure, tool activity, queueing, handovers, failures, and recovery. Use this real visual surface to discover the right control-plane interactions.
+
+Only after the dashboard accurately visualizes the agent should it grow into the control plane. Add operator actions such as start, stop, drain, cancel, retry, revise, archive, route, and inspect directly from the dashboard against the stable service contracts. Do not design a speculative control plane independently of the dashboard and observed operator needs.
 
 ## Future control plane
 
-A later phase should add a simple, adaptable interface dashboard that acts as the SEPT control plane. It should make worker state, routing, lifecycle, progress, failures, and operator actions visible without requiring the user to work indirectly through an orchestration chat. This is recorded direction only and is not part of the current implementation scope; its abstractions should be introduced only when the concrete control-plane work begins.
+A later phase should evolve the native agent-visualization dashboard into the SEPT control plane. It should make worker state, routing, lifecycle, progress, failures, and operator actions visible without requiring the user to work indirectly through an orchestration chat. This is recorded direction only and is not part of the five model-harness tranches; its abstractions should be introduced only after the dashboard exposes concrete operator needs.
 
 ## Engineering principles
 

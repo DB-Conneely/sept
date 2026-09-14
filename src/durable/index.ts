@@ -1,9 +1,14 @@
 export {
   RunStore,
+  WorkerLifecycleStore,
   QueueCapacityError,
+  ConversationCursorExpiredError,
   SeptError,
   MAX_PENDING_MESSAGES,
   MAX_PENDING_MESSAGE_BYTES,
+  MAX_CONVERSATION_EVENTS,
+  MAX_CONVERSATION_BYTES,
+  MAX_CONVERSATION_STREAMS,
   acquireStateRootLease,
   atomicCreate,
   atomicWrite,
@@ -12,9 +17,11 @@ export {
   parseJsonObject,
   validateHandover,
   validateWork,
+  validateWorkResponse,
 } from "./store.js";
 export {
   DEFAULTS,
+  type ConversationEvent,
   type DurableHandover,
   type Handover,
   type Manifest,
@@ -24,5 +31,8 @@ export {
   type RunStatus,
   type TaskRequest,
   type TerminalCause,
+  type WorkerLifecycleState,
+  type WorkerReadiness,
   type WorkControl,
+  type WorkResponse,
 } from "./contracts.js";

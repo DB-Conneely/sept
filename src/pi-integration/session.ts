@@ -17,9 +17,12 @@ import { SeptError, type Manifest, type RunStore } from "../durable/index.js";
 import type { Observability } from "../observability/index.js";
 import { NOOP_TELEMETRY } from "../observability/index.js";
 import { ROTATION_STEER } from "./prompts.js";
+import { createPodModelRuntime } from "./models.js";
+import { MAX_UNUSABLE_USAGE_SAMPLES, assertUsableModelMetadata, loadRolloverEvidence, providerContextTokens, recordUnusableSample, recordUsableSample, saveRolloverEvidence } from "./rollover.js";
 
 export interface SessionRunResult {
   text: string;
+  preRotationText?: string;
   steered: boolean;
   contextTokens: number | null;
   contextWindow: number;
@@ -34,8 +37,9 @@ export interface PiSessionHostDependencies {
 export interface SessionHost {
   readonly sessionId: string;
   readonly sessionFile: string | undefined;
-  run(prompt: string, thresholdPercent: number, handoverReserveTokens: number): Promise<SessionRunResult>;
+  run(prompt: string): Promise<SessionRunResult>;
   newSession(): Promise<{ predecessorId: string; predecessorFile?: string; successorId: string; successorFile?: string }>;
+  abort(): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -55,12 +59,14 @@ export class PiSessionHost implements SessionHost {
   }
 
   static async create(manifest: Manifest, store: RunStore, agentDir: string, existingSessionFile?: string, telemetry: Observability = NOOP_TELEMETRY, dependencies: PiSessionHostDependencies = {}): Promise<PiSessionHost> {
-    const modelRuntime = dependencies.modelRuntime ?? await ModelRuntime.create({ authPath: join(agentDir, "auth.json"), modelsPath: join(agentDir, "models.json"), modelsStorePath: join(agentDir, "models-store.json") });
+    const modelRuntime = dependencies.modelRuntime ?? await createPodModelRuntime(agentDir);
     const model = modelRuntime.getModel(manifest.provider, manifest.model);
     if (!model) throw new SeptError(`Pi model not found: ${manifest.provider}/${manifest.model}`);
-    if (!modelRuntime.hasConfiguredAuth(manifest.provider)) {
-      throw new SeptError(`Pi provider ${manifest.provider} is not authenticated. Run pi, then /login and select ChatGPT Plus/Pro (Codex), using PI_CODING_AGENT_DIR=${agentDir}.`);
-    }
+    assertUsableModelMetadata(model);
+    let auth;
+    try { auth = await modelRuntime.getAuth(manifest.provider, { signal: AbortSignal.timeout(15_000) }); }
+    catch { throw new SeptError(`Pi provider ${manifest.provider} authentication could not be resolved. Run sept auth status, then log in again if required.`); }
+    if (!auth) throw new SeptError(`Pi provider ${manifest.provider} is not authenticated. Run sept auth login --provider ${manifest.provider}.`);
     const sessionDir = join(store.runDir, "pi-sessions");
     mkdirSync(sessionDir, { recursive: true });
     const factory = async ({ cwd, sessionManager, sessionStartEvent }: { cwd: string; agentDir: string; sessionManager: SessionManager; sessionStartEvent?: Parameters<typeof createAgentSessionFromServices>[0]["sessionStartEvent"] }) => {
@@ -107,46 +113,72 @@ export class PiSessionHost implements SessionHost {
     this.store.log(fields);
   }
 
-  async run(prompt: string, thresholdPercent: number, handoverReserveTokens: number): Promise<SessionRunResult> {
-    let steered = false;
+  async run(prompt: string): Promise<SessionRunResult> {
     let steerPromise: Promise<void> | undefined;
     let latestTokens: number | null = null;
-    let latestWindow = this.runtime.session.model?.contextWindow ?? 0;
-    let violation: Error | undefined;
     const session = this.runtime.session;
+    const model = session.model;
+    if (!model) throw new SeptError("Pi session has no active model");
+    assertUsableModelMetadata(model);
+    const latestWindow = model.contextWindow;
+    let evidence = loadRolloverEvidence(this.store, model.provider, model.id, session.sessionId, latestWindow);
+    if (evidence.unusableSamples >= MAX_UNUSABLE_USAGE_SAMPLES) throw new SeptError(`Provider usage remained unusable for ${MAX_UNUSABLE_USAGE_SAMPLES} finalized assistant responses`);
+    let steered = evidence.rotationRequired;
+    const recoveredRotation = steered;
+    let preRotationText: string | undefined;
+    let violation: Error | undefined;
+    const queueSteer = (fields: Record<string, unknown>): void => {
+      if (steerPromise) return;
+      steered = true;
+      this.store.event("rotation_steer_queued", { sessionId: session.sessionId, provenance: "provider_reported", ...fields });
+      this.telemetry.event("sept.rotation.steer_queued", { "sept.context.tokens": latestTokens ?? undefined, "sept.context.window": latestWindow, "sept.context.pressure": latestTokens === null ? undefined : latestTokens / latestWindow, "sept.rotation": true });
+      this.telemetry.log("pi.rotation.steer_queued", { "sept.run.id": this.store.runId, "sept.context.pressure": latestTokens === null ? undefined : latestTokens / latestWindow, "sept.rotation": true });
+      steerPromise = session.steer(ROTATION_STEER);
+      void steerPromise.catch((error) => { violation = error instanceof Error ? error : new Error(String(error)); });
+    };
+    const unusable = (reason: string): void => {
+      evidence = recordUnusableSample(evidence);
+      saveRolloverEvidence(this.store, evidence);
+      latestTokens = null;
+      this.store.event("context_sample_deferred", { sessionId: session.sessionId, provenance: "provider_reported", reason, consecutive: evidence.unusableSamples });
+      this.telemetry.event("sept.context.deferred", { "sept.outcome": "deferred" });
+      if (evidence.unusableSamples >= MAX_UNUSABLE_USAGE_SAMPLES) {
+        violation = new SeptError(`Provider usage remained unusable for ${MAX_UNUSABLE_USAGE_SAMPLES} finalized assistant responses`);
+        void session.abort();
+      }
+    };
     const off = session.subscribe((event) => {
       if (event.type === "compaction_start") violation = new SeptError("Pi attempted same-session compaction while SEPT cycling was active");
       if (event.type !== "message_end" || event.message.role !== "assistant") return;
-      latestWindow = session.model?.contextWindow ?? 0;
-      const reported = calculateContextTokens(event.message.usage);
-      if (reported <= 0 || latestWindow <= 0 || event.message.stopReason === "error" || event.message.stopReason === "aborted") {
-        latestTokens = null;
-        this.store.event("context_sample_deferred", { sessionId: session.sessionId, provenance: "provider_reported", reason: reported <= 0 ? "usage_unavailable" : latestWindow <= 0 ? "context_window_unavailable" : "unsuccessful_response" });
-        this.telemetry.event("sept.context.deferred", { "sept.outcome": "deferred" });
+      if (event.message.stopReason === "error" || event.message.stopReason === "aborted") return;
+      if (steered) {
+        if (recoveredRotation && preRotationText === undefined) preRotationText = messageText(event.message) || undefined;
         return;
       }
+      const reported = providerContextTokens(event.message.usage, calculateContextTokens);
+      if (reported === undefined || reported > latestWindow) return unusable(reported === undefined ? "usage_unavailable" : "usage_exceeds_context_window");
+      if (evidence.lastTokens !== undefined && reported < evidence.lastTokens) return unusable("usage_regressed");
+      const recorded = recordUsableSample(evidence, reported);
+      evidence = recorded.evidence;
+      saveRolloverEvidence(this.store, evidence);
       latestTokens = reported;
       const percent = reported / latestWindow * 100;
-      const reserve = Math.min(handoverReserveTokens, Math.max(1, Math.floor(latestWindow / 4)));
-      const rotateAtTokens = Math.min(Math.floor(latestWindow * thresholdPercent / 100), latestWindow - reserve);
-      this.store.event("context_sample", { sessionId: session.sessionId, provenance: "provider_reported", tokens: reported, contextWindow: latestWindow, percent, rotateAtTokens, handoverReserveTokens: reserve });
+      this.store.event("context_sample", { sessionId: session.sessionId, provenance: "provider_reported", tokens: reported, contextWindow: latestWindow, percent, rotateAtTokens: recorded.decision.rotateAtTokens, headroomTokens: recorded.decision.headroomTokens, handoverReserveTokens: recorded.decision.handoverReserveTokens, nextTurnReserveTokens: recorded.decision.nextTurnReserveTokens, recentGrowthTokens: recorded.decision.recentGrowthTokens, confidence: recorded.decision.confidence });
       this.telemetry.event("sept.context.sampled", { "sept.context.tokens": reported, "sept.context.window": latestWindow, "sept.context.pressure": percent / 100 });
-      if (!steered && reported >= rotateAtTokens) {
-        steered = true;
-        this.store.event("rotation_steer_queued", { sessionId: session.sessionId, provenance: "provider_reported", tokens: reported, contextWindow: latestWindow, percent, rotateAtTokens });
-        this.telemetry.event("sept.rotation.steer_queued", { "sept.context.tokens": reported, "sept.context.window": latestWindow, "sept.context.pressure": percent / 100, "sept.rotation": true });
-        this.telemetry.log("pi.rotation.steer_queued", { "sept.run.id": this.store.runId, "sept.context.pressure": percent / 100, "sept.rotation": true });
-        steerPromise = session.steer(ROTATION_STEER);
-        void steerPromise.catch((error) => { violation = error instanceof Error ? error : new Error(String(error)); });
+      if (recorded.decision.rotate) {
+        preRotationText = messageText(event.message) || undefined;
+        queueSteer({ tokens: reported, contextWindow: latestWindow, percent, rotateAtTokens: recorded.decision.rotateAtTokens, headroomTokens: recorded.decision.headroomTokens, confidence: recorded.decision.confidence });
       }
     });
     try {
-      await session.prompt(prompt, { expandPromptTemplates: false, source: "rpc" });
+      const promptPromise = session.prompt(prompt, { expandPromptTemplates: false, source: "rpc" });
+      if (recoveredRotation) queueSteer({ reason: "durable_rotation_recovery", contextWindow: latestWindow });
+      await promptPromise;
       if (steerPromise) await steerPromise;
       if (violation) throw violation;
       const assistant = [...session.messages].reverse().find((message) => message.role === "assistant");
       if (!assistant) throw new SeptError("Pi session ended without an assistant response");
-      return { text: messageText(assistant), steered, contextTokens: latestTokens, contextWindow: latestWindow };
+      return { text: messageText(assistant), preRotationText, steered, contextTokens: latestTokens ?? evidence.lastTokens ?? null, contextWindow: latestWindow };
     } finally { off(); }
   }
 
@@ -162,6 +194,8 @@ export class PiSessionHost implements SessionHost {
     if (this.sessionId === predecessorId) throw new SeptError("Pi newSession() did not replace the session ID");
     return { predecessorId, predecessorFile, successorId: this.sessionId, successorFile: this.sessionFile };
   }
+
+  async abort(): Promise<void> { await this.runtime.session.abort(); }
 
   async close(): Promise<void> { this.unsubscribe?.(); await this.runtime.dispose(); }
 }

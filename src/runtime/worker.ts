@@ -1,7 +1,7 @@
 import { realpathSync, statSync } from "node:fs";
 import { isAbsolute, relative, sep } from "node:path";
 import type { Manifest } from "../durable/index.js";
-import { acquireStateRootLease, listRuns, RunStore, SeptError } from "../durable/index.js";
+import { acquireStateRootLease, listRuns, RunStore, SeptError, WorkerLifecycleStore, type WorkerReadiness } from "../durable/index.js";
 import type { Observability } from "../observability/index.js";
 import { classifyError, NOOP_TELEMETRY } from "../observability/index.js";
 import { CycleController, type HostFactory } from "./controller.js";
@@ -16,18 +16,21 @@ export interface WorkerRuntimeOptions {
 
 export type WorkerAdoption = "none" | "active" | "waiting" | "wake_recovered";
 export type WorkerStatus = "idle" | "busy" | "waiting";
+export interface WorkerStatusResult { worker: WorkerStatus; readiness: WorkerReadiness; acceptingWork: boolean; activeRunId: string | null }
 
 /** Owns the single resident run and controller lifecycle, independently of HTTP transport. */
 export class WorkerRuntime {
-  private active?: { store: RunStore; promise: Promise<void> };
+  private active?: { store: RunStore; controller: CycleController; promise: Promise<void> };
   private resident?: RunStore;
   private releaseRoot?: () => void;
   private initialized = false;
   private stopping = false;
   private readonly observability: Observability;
+  private readonly lifecycle: WorkerLifecycleStore;
 
   constructor(private readonly options: WorkerRuntimeOptions) {
     this.observability = options.observability ?? NOOP_TELEMETRY;
+    this.lifecycle = new WorkerLifecycleStore(options.stateRoot);
   }
 
   initialize(): WorkerAdoption {
@@ -35,7 +38,14 @@ export class WorkerRuntime {
     if (this.stopping) throw new SeptError("Worker runtime is stopping");
     this.releaseRoot = acquireStateRootLease(this.options.stateRoot);
     try {
-      const resident = listRuns(this.options.stateRoot).filter((store) => {
+      const stores = listRuns(this.options.stateRoot);
+      for (const store of stores) {
+        store.ensureInitialConversation();
+        store.reconcileOperatorConversation();
+        if (store.snapshot().status === "cancelling") store.finishCancellation();
+        store.ensureTerminalConversation();
+      }
+      const resident = stores.filter((store) => {
         const status = store.snapshot().status;
         if (status === "active" || status === "waiting") {
           this.assertAssignedWorkspace(store);
@@ -51,11 +61,13 @@ export class WorkerRuntime {
         const messageIds = this.resident.pendingMessages().map((message) => message.id);
         this.resident.update({ status: "active", phase: "ready", reason: undefined, terminalCause: undefined });
         this.resident.event("run_wake_recovered", { messageIds });
+        this.resident.conversationState(`wake-recovered-${this.resident.snapshot().invocations}`, "active");
         adoption = "wake_recovered";
         this.observability.log("run.wake_recovered", { "sept.run.id": this.resident.runId, "sept.queue.depth": messageIds.length, "sept.outcome": "active" });
       }
       this.initialized = true;
       if (this.resident?.snapshot().status === "active") this.launch(this.resident);
+      else this.settleDrain();
       return adoption;
     } catch (error) {
       this.releaseRoot();
@@ -76,11 +88,42 @@ export class WorkerRuntime {
     }
   }
 
-  status(): { worker: WorkerStatus; activeRunId: string | null } {
+  status(): WorkerStatusResult {
+    const readiness = this.lifecycle.read().readiness;
     return {
       worker: this.active ? "busy" : this.resident?.snapshot().status === "waiting" ? "waiting" : "idle",
+      readiness,
+      acceptingWork: readiness === "accepting" && !this.stopping && this.initialized,
       activeRunId: this.resident?.runId ?? null,
     };
+  }
+
+  drain(): WorkerStatusResult {
+    if (!this.initialized) throw new WorkerConflictError("worker is not ready");
+    if (this.stopping) throw new WorkerConflictError("worker is stopping");
+    const state = this.lifecycle.beginDrain();
+    if (state.readiness === "draining") this.settleDrain();
+    return this.status();
+  }
+
+  async cancel(store: RunStore): Promise<{ runId: string; status: ReturnType<RunStore["snapshot"]>["status"]; cancelled: boolean }> {
+    const before = store.snapshot();
+    if (before.status === "complete" || before.status === "blocked" || before.status === "failed") return { runId: store.runId, status: before.status, cancelled: false };
+    if (before.status === "cancelled") return { runId: store.runId, status: "cancelled", cancelled: true };
+    store.requestCancellation();
+    const active = this.active?.store.runId === store.runId ? this.active : undefined;
+    if (active) await active.controller.abort();
+    else {
+      const cancelled = store.finishCancellation();
+      this.observability.runOutcome("cancelled");
+      this.observability.setRunState("cancelled", cancelled.epoch, cancelled.invocations, store.pendingMessages().length);
+      this.observability.log("run.cancelled", { "sept.run.id": store.runId, "sept.run.state": "cancelled", "sept.outcome": "cancelled" });
+      if (this.resident?.runId === store.runId) this.resident = undefined;
+      this.observability.setWorkerState("idle");
+    }
+    this.settleDrain();
+    const status = store.snapshot().status;
+    return { runId: store.runId, status, cancelled: status === "cancelling" || status === "cancelled" };
   }
 
   syncObservability(): void {
@@ -100,6 +143,7 @@ export class WorkerRuntime {
   }
 
   assertTaskAvailable(): void {
+    if (this.lifecycle.read().readiness !== "accepting") throw new WorkerConflictError("worker is draining and not accepting new work");
     if (this.stopping) throw new WorkerConflictError("worker is stopping");
     if (!this.initialized) throw new WorkerConflictError("worker is not ready");
     if (this.resident) throw new WorkerConflictError("single worker slot is busy");
@@ -140,6 +184,7 @@ export class WorkerRuntime {
       if (snapshot.status === "blocked" || snapshot.status === "waiting") {
         store.update({ status: "active", phase: "ready", reason: undefined, terminalCause: undefined });
         store.event(snapshot.status === "waiting" ? "run_woken" : "run_reopened", { messageId: message.id });
+        store.conversationState(`${snapshot.status === "waiting" ? "wake" : "reopen"}-${message.id}`, "active");
         this.observability.setRunState("active", snapshot.epoch, snapshot.invocations, queueDepth);
         this.observability.event(snapshot.status === "waiting" ? "sept.run.woken" : "sept.run.reopened", { "sept.queue.depth": queueDepth });
         this.observability.log(snapshot.status === "waiting" ? "run.woken" : "run.reopened", { "sept.run.id": store.runId, "sept.run.state": "active", "sept.queue.depth": queueDepth });
@@ -159,10 +204,12 @@ export class WorkerRuntime {
     const launched = store.snapshot();
     this.observability.setRunState(launched.status, launched.epoch, launched.invocations, store.pendingMessages().length);
     this.observability.log("controller.launched", { "sept.run.id": store.runId, "sept.run.state": launched.status, "sept.epoch": launched.epoch, "sept.invocation": launched.invocations });
+    const controller = new CycleController(store, this.options.agentDir, this.options.hostFactory, this.observability, () => this.stopping);
     let promise!: Promise<void>;
-    promise = this.control(store).finally(() => {
+    promise = this.control(store, controller).finally(() => {
       if (this.active?.promise !== promise) return;
       this.active = undefined;
+      if (store.snapshot().status === "cancelling") store.finishCancellation();
       const status = store.snapshot().status;
       if (status === "active" && !this.stopping) this.launch(store);
       else if (status !== "waiting" && this.resident?.runId === store.runId) this.resident = undefined;
@@ -170,14 +217,15 @@ export class WorkerRuntime {
       this.observability.setWorkerState(workerState);
       const residentSnapshot = this.resident?.snapshot();
       this.observability.setRunState(residentSnapshot?.status ?? "none", residentSnapshot?.epoch, residentSnapshot?.invocations, this.resident?.pendingMessages().length);
+      this.settleDrain();
     });
-    this.active = { store, promise };
+    this.active = { store, controller, promise };
   }
 
-  private async control(store: RunStore): Promise<void> {
+  private async control(store: RunStore, controller: CycleController): Promise<void> {
     while (store.snapshot().status === "active") {
       try {
-        await new CycleController(store, this.options.agentDir, this.options.hostFactory, this.observability, () => this.stopping).run();
+        await controller.run();
         return;
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -206,14 +254,21 @@ export class WorkerRuntime {
     if (child === ".." || child.startsWith(`..${sep}`) || isAbsolute(child)) throw new SeptError("durable run workspace is outside the configured workspace root");
   }
 
+  private settleDrain(): void {
+    if (this.lifecycle.read().readiness !== "draining") return;
+    const status = this.resident?.snapshot().status;
+    if (!this.active && status !== "active" && status !== "cancelling") this.lifecycle.finishDrain();
+  }
+
   private messageAdmission(store: RunStore, existing: boolean) {
     const snapshot = store.snapshot();
     if (existing) return snapshot;
+    if (this.lifecycle.read().readiness !== "accepting") throw new WorkerConflictError("worker is draining and not accepting new work");
     if (this.stopping) throw new WorkerConflictError("worker is stopping");
     if (!this.initialized) throw new WorkerConflictError("worker is not ready");
     if (snapshot.status === "blocked" && this.active) throw new WorkerConflictError("single worker slot is busy; retry the message when idle");
     if (snapshot.status === "waiting" && this.active && this.active.store.runId !== store.runId) throw new WorkerConflictError("single worker slot is busy; retry the message when idle");
-    if (snapshot.status === "complete" || snapshot.status === "failed") throw new WorkerConflictError(`run is ${snapshot.status}`);
+    if (snapshot.status === "complete" || snapshot.status === "failed" || snapshot.status === "cancelling" || snapshot.status === "cancelled") throw new WorkerConflictError(`run is ${snapshot.status}`);
     if (snapshot.status === "blocked" && (snapshot.terminalCause === "invocation_limit" || snapshot.terminalCause === "epoch_limit" || snapshot.terminalCause === "timeout")) throw new WorkerConflictError("run exhausted its configured limits");
     const manifest = store.manifest();
     if (snapshot.invocations >= manifest.maxInvocations || snapshot.activeMilliseconds >= manifest.timeoutSeconds * 1000 || (snapshot.status === "blocked" && snapshot.handoverEpoch === snapshot.epoch && snapshot.epoch >= manifest.maxEpochs)) throw new WorkerConflictError("run exhausted its configured limits");

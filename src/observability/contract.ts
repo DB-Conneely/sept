@@ -1,5 +1,5 @@
 export type WorkerState = "starting" | "idle" | "busy" | "waiting" | "stopped";
-export type ObservedRunState = "active" | "waiting" | "complete" | "blocked" | "failed" | "none";
+export type ObservedRunState = "active" | "waiting" | "cancelling" | "cancelled" | "complete" | "blocked" | "failed" | "none";
 export type TelemetrySignal = "traces" | "metrics";
 export type SafeValue = string | number | boolean | undefined;
 export type SafeTelemetryFields = Record<string, SafeValue>;
@@ -18,7 +18,7 @@ export interface Observability {
   setRunState(state: ObservedRunState, epoch?: number, invocation?: number, queueDepth?: number): void;
   setQueueDepth(depth: number): void;
   workerStarted(adoption: "none" | "active" | "waiting" | "wake_recovered", mode?: "worker" | "run"): void;
-  runOutcome(outcome: "complete" | "blocked" | "failed"): void;
+  runOutcome(outcome: "cancelled" | "complete" | "blocked" | "failed"): void;
   sessionOpened(outcome: "started" | "resumed" | "replaced" | "successor_adopted"): void;
   invocationFinished(durationMs: number, outcome: "success" | "failure" | "timeout", steered?: boolean): void;
   contextSample(tokens: number | null, contextWindow: number, epoch: number, invocation: number): void;

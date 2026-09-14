@@ -5,8 +5,8 @@ SEPT emits operational telemetry without changing its durable recovery or audit 
 ## Signals and identity
 
 - **Logs:** bounded-field Pino JSON on stderr for container-runtime collection. The public command result remains on stdout; SEPT creates no repository log files. Logs include `service.name`, `service.version`, `service.instance.id`, `sept.worker.id`, `process.pid`, lifecycle, and active trace/span IDs where available.
-- **Traces:** OpenTelemetry spans cover worker startup/adoption, authenticated HTTP routing, task/webhook/operator routing, controller and lease ownership, Pi session open/resume/rotation/close, invocations, context/checkpoint/handover events, and terminal outcomes.
-- **Metrics:** OpenTelemetry instruments cover worker start/uptime/state, run state/outcomes/current epoch and invocation, session opens, Pi invocation count/latency/failure, context pressure, operator queue depth, webhook outcomes, HTTP outcomes, exporter health, and bounded Node memory/CPU/event-loop indicators. Missing provider usage leaves context pressure absent rather than reporting a misleading zero.
+- **Traces:** OpenTelemetry spans cover worker startup/adoption, authenticated HTTP routing (including drain, cancel, transcript, and stream setup), task/webhook/operator routing, controller and lease ownership, Pi session open/resume/rotation/close, invocations, context/checkpoint/handover events, and terminal outcomes.
+- **Metrics:** OpenTelemetry instruments cover worker start/uptime/state, run state/outcomes/current epoch and invocation (including cancelling/cancelled), session opens, Pi invocation count/latency/failure, context pressure, operator queue depth, webhook outcomes, HTTP outcomes, exporter health, and bounded Node memory/CPU/event-loop indicators. Missing provider usage leaves context pressure absent rather than reporting a misleading zero.
 
 `OTEL_SERVICE_NAME` defaults to `sept`. Set the bounded `SEPT_WORKER_ID` to a stable deployment identity such as `review-worker-1`; it defaults to the container hostname. `service.instance.id` is `<worker-id>:<pid>`, identifying one concrete process incarnation. For cardinality and data safety, SEPT accepts only `service.namespace`, `deployment.environment.name`, `container.name`, and `container.id` from standard `OTEL_RESOURCE_ATTRIBUTES`, with each value capped at 128 characters. A deployment can set bounded labels such as:
 
@@ -38,7 +38,7 @@ SEPT bounds the trace batch queue to 512 spans, batches to 128, limits span attr
 - `OTEL_METRIC_EXPORT_INTERVAL`, `OTEL_METRIC_EXPORT_TIMEOUT`
 - `SEPT_LOG_LEVEL` (`silent`, `fatal`, `error`, `warn`, `info`, `debug`, or `trace`)
 
-Exports are batched and asynchronous, and the Pino destination has a 1 MiB in-process buffer ceiling. Export exceptions are contained; failure logs contain only the signal and outcome and are rate-limited to one per minute. Startup, HTTP work, durable writes, checkpointing, and wake behavior never wait for a collector. Shutdown attempts a short bounded flush but does not provide drain semantics; graceful stop/drain remains a separate tranche.
+Exports are batched and asynchronous, and the Pino destination has a 1 MiB in-process buffer ceiling. Export exceptions are contained; failure logs contain only the signal and outcome and are rate-limited to one per minute. Startup, HTTP work, durable writes, checkpointing, wake, drain, cancellation, and conversation delivery never wait for a collector. Shutdown attempts a short bounded flush. Process stop, durable worker drain, and targeted run cancellation retain distinct semantics.
 
 ## Collector topology
 
@@ -54,4 +54,4 @@ Start with short operational retention (for example 7–14 days for traces/logs 
 
 ## Data safety
 
-Instrumentation uses an allowlist of bounded operational fields. Inbound W3C `traceparent` and validated `tracestate` are propagated; no other request headers or baggage are extracted. It does not export bearer credentials or headers, webhook bodies, source/event/message IDs, task or operator text, prompts, assistant text, tool arguments/output, session IDs, session-file paths, workspace/state/agent paths, or error messages/stacks. Exact operator-message and assistant evidence remains only in the existing bounded local durable files and endpoints.
+Instrumentation uses an allowlist of bounded operational fields. Inbound W3C `traceparent` and validated `tracestate` are propagated; no other request headers or baggage are extracted. It does not export bearer credentials or headers, webhook bodies, source/event/message IDs, task or operator text, prompts, assistant text, tool arguments/output, session IDs, session-file paths, workspace/state/agent paths, or error messages/stacks. Exact user and validated assistant conversation evidence remains only in the bounded local `conversation.jsonl` and authenticated replay/stream endpoints. Operational telemetry records route templates, status classes, bounded lifecycle states, and outcomes, but never conversation text, SSE payloads, cancellation request bodies, or cursor/message IDs.

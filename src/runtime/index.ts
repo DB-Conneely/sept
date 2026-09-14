@@ -6,4 +6,5 @@ export {
   type WorkerAdoption,
   type WorkerRuntimeOptions,
   type WorkerStatus,
+  type WorkerStatusResult,
 } from "./worker.js";

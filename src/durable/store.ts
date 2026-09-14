@@ -2,11 +2,14 @@ import { closeSync, constants, existsSync, fsyncSync, linkSync, mkdirSync, openS
 import { hostname } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
-import type { DurableHandover, Handover, Manifest, OperatorMessage, RunEvent, RunSnapshot, WorkControl } from "./contracts.js";
+import type { ConversationEvent, DurableHandover, Handover, Manifest, OperatorMessage, RunEvent, RunSnapshot, WorkerLifecycleState, WorkControl, WorkResponse } from "./contracts.js";
 import { HANDOVER_FIELDS } from "./contracts.js";
 
 export class SeptError extends Error {}
 export class QueueCapacityError extends SeptError {}
+export class ConversationCursorExpiredError extends SeptError {
+  constructor(readonly retainedFrom: number) { super(`conversation cursor expired; earliest retained cursor is ${retainedFrom}`); }
+}
 
 export const MAX_PENDING_MESSAGES = 64;
 export const MAX_PENDING_MESSAGE_BYTES = 512 * 1024;
@@ -14,6 +17,10 @@ const MAX_JSONL_RECORD_BYTES = 2 * 1024 * 1024;
 const MAX_CONTROL_BYTES = 512 * 1024;
 const MAX_CONTROL_STRING_CHARS = 65_536;
 const MAX_CONTROL_ARRAY_ITEMS = 64;
+export const MAX_CONVERSATION_EVENTS = 1024;
+export const MAX_CONVERSATION_BYTES = 4 * 1024 * 1024;
+export const MAX_CONVERSATION_STREAMS = 32;
+const MAX_CONVERSATION_TEXT_CHARS = 32_768;
 const PROCESS_IDENTITY = Object.freeze({
   pid: process.pid,
   hostname: hostname(),
@@ -157,9 +164,15 @@ function isoDate(value: unknown, name: string): string {
 
 function validateManifest(value: unknown, expectedRunId?: string): Manifest {
   const input = object(value, "manifest");
-  const keys = ["createdAt", "formatVersion", "handoverReserveTokens", "maxEpochs", "maxInvocations", "model", "piVersion", "provider", "role", "runId", "task", "thinking", "thresholdPercent", "timeoutSeconds", "workspace"];
-  exactKeys(input, keys, [], "manifest");
-  if (input.formatVersion !== 2) throw new SeptError("Invalid durable manifest formatVersion");
+  const commonKeys = ["createdAt", "formatVersion", "maxEpochs", "maxInvocations", "model", "piVersion", "provider", "role", "runId", "task", "thinking", "timeoutSeconds", "workspace"];
+  if (input.formatVersion === 2) {
+    exactKeys(input, [...commonKeys, "handoverReserveTokens", "thresholdPercent"], [], "manifest");
+    boundedInteger(input.thresholdPercent, 1, 95, "legacy manifest thresholdPercent");
+    boundedInteger(input.handoverReserveTokens, 1000, 1_000_000, "legacy manifest handoverReserveTokens");
+  } else {
+    exactKeys(input, commonKeys, [], "manifest");
+    if (input.formatVersion !== 3) throw new SeptError("Invalid durable manifest formatVersion");
+  }
   const runId = boundedString(input.runId, 1, 128, "manifest runId");
   if (!/^[A-Za-z0-9_-]+$/.test(runId) || (expectedRunId !== undefined && runId !== expectedRunId)) throw new SeptError("Invalid durable manifest runId");
   const workspace = boundedString(input.workspace, 1, 4096, "manifest workspace");
@@ -172,7 +185,7 @@ function validateManifest(value: unknown, expectedRunId?: string): Manifest {
   const piVersion = boundedString(input.piVersion, 1, 128, "manifest piVersion");
   if (!task.trim() || provider !== provider.trim() || model !== model.trim() || piVersion !== piVersion.trim()) throw new SeptError("Invalid durable manifest string value");
   return {
-    formatVersion: 2,
+    formatVersion: 3,
     runId,
     createdAt: isoDate(input.createdAt, "manifest createdAt"),
     task,
@@ -181,8 +194,6 @@ function validateManifest(value: unknown, expectedRunId?: string): Manifest {
     provider,
     model,
     thinking,
-    thresholdPercent: boundedInteger(input.thresholdPercent, 1, 95, "manifest thresholdPercent"),
-    handoverReserveTokens: boundedInteger(input.handoverReserveTokens, 1000, 1_000_000, "manifest handoverReserveTokens"),
     maxInvocations: boundedInteger(input.maxInvocations, 1, 10_000, "manifest maxInvocations"),
     maxEpochs: boundedInteger(input.maxEpochs, 1, 1000, "manifest maxEpochs"),
     timeoutSeconds: boundedInteger(input.timeoutSeconds, 1, 604_800, "manifest timeoutSeconds"),
@@ -196,9 +207,9 @@ function validateSnapshot(value: unknown): RunSnapshot {
   const optional = ["activeSessionFile", "activeSessionId", "handoverEpoch", "predecessorSessionFile", "predecessorSessionId", "reason", "terminalCause"];
   exactKeys(input, required, optional, "snapshot");
   const status = input.status;
-  if (!(status === "active" || status === "waiting" || status === "complete" || status === "blocked" || status === "failed")) throw new SeptError("Invalid durable snapshot status");
+  if (!(status === "active" || status === "waiting" || status === "cancelling" || status === "cancelled" || status === "complete" || status === "blocked" || status === "failed")) throw new SeptError("Invalid durable snapshot status");
   const phase = input.phase;
-  if (!(phase === "ready" || phase === "running" || phase === "waiting" || phase === "handover_durable" || phase === "replacing" || phase === "terminal")) throw new SeptError("Invalid durable snapshot phase");
+  if (!(phase === "ready" || phase === "running" || phase === "waiting" || phase === "handover_durable" || phase === "replacing" || phase === "cancelling" || phase === "terminal")) throw new SeptError("Invalid durable snapshot phase");
   const result: RunSnapshot = {
     status,
     phase,
@@ -213,14 +224,52 @@ function validateSnapshot(value: unknown): RunSnapshot {
   }
   if (input.handoverEpoch !== undefined) result.handoverEpoch = boundedInteger(input.handoverEpoch, 1, 1000, "snapshot handoverEpoch");
   if (input.terminalCause !== undefined) {
-    if (!(input.terminalCause === "agent_blocked" || input.terminalCause === "invocation_limit" || input.terminalCause === "epoch_limit" || input.terminalCause === "timeout" || input.terminalCause === "controller_failure")) throw new SeptError("Invalid durable snapshot terminalCause");
+    if (!(input.terminalCause === "agent_blocked" || input.terminalCause === "invocation_limit" || input.terminalCause === "epoch_limit" || input.terminalCause === "timeout" || input.terminalCause === "controller_failure" || input.terminalCause === "operator_cancelled")) throw new SeptError("Invalid durable snapshot terminalCause");
     result.terminalCause = input.terminalCause;
   }
   const activePhase = phase === "ready" || phase === "running" || phase === "handover_durable" || phase === "replacing";
-  if ((status === "active" && !activePhase) || (status === "waiting" && phase !== "waiting") || ((status === "complete" || status === "blocked" || status === "failed") && phase !== "terminal")) throw new SeptError("Invalid durable snapshot status/phase combination");
+  if ((status === "active" && !activePhase) || (status === "waiting" && phase !== "waiting") || (status === "cancelling" && phase !== "cancelling") || ((status === "cancelled" || status === "complete" || status === "blocked" || status === "failed") && phase !== "terminal")) throw new SeptError("Invalid durable snapshot status/phase combination");
   if ((phase === "handover_durable" || phase === "replacing") && (result.predecessorSessionId === undefined || result.handoverEpoch !== result.epoch)) throw new SeptError("Invalid durable snapshot handover state");
-  if (result.terminalCause !== undefined && !((status === "blocked" && result.terminalCause !== "controller_failure") || (status === "failed" && result.terminalCause === "controller_failure"))) throw new SeptError("Invalid durable snapshot terminal cause state");
+  if (result.terminalCause !== undefined && !((status === "blocked" && result.terminalCause !== "controller_failure" && result.terminalCause !== "operator_cancelled") || (status === "failed" && result.terminalCause === "controller_failure") || ((status === "cancelling" || status === "cancelled") && result.terminalCause === "operator_cancelled"))) throw new SeptError("Invalid durable snapshot terminal cause state");
   return result;
+}
+
+function validateConversationEvent(value: unknown): ConversationEvent {
+  const input = object(value, "conversation event");
+  if (input.formatVersion !== 1) throw new SeptError("Invalid durable conversation formatVersion");
+  const common = {
+    formatVersion: 1 as const,
+    cursor: boundedInteger(input.cursor, 1, Number.MAX_SAFE_INTEGER, "conversation cursor"),
+    id: boundedString(input.id, 1, 256, "conversation id"),
+    at: isoDate(input.at, "conversation at"),
+  };
+  if (!/^[A-Za-z0-9_-]+$/.test(common.id)) throw new SeptError("Invalid durable conversation id");
+  if (input.type === "message") {
+    exactKeys(input, ["at", "cursor", "formatVersion", "id", "role", "text", "type"], [], "conversation message");
+    if (!(input.role === "user" || input.role === "assistant")) throw new SeptError("Invalid durable conversation role");
+    return { ...common, type: "message", role: input.role, text: boundedString(input.text, 1, MAX_CONVERSATION_TEXT_CHARS, "conversation text") };
+  }
+  if (input.type === "state") {
+    exactKeys(input, ["at", "cursor", "formatVersion", "id", "state", "type"], [], "conversation state");
+    if (!(input.state === "active" || input.state === "waiting")) throw new SeptError("Invalid durable conversation state");
+    return { ...common, type: "state", state: input.state };
+  }
+  if (input.type === "terminal") {
+    exactKeys(input, ["at", "cursor", "formatVersion", "id", "status", "type"], [], "conversation terminal");
+    if (!(input.status === "cancelled" || input.status === "complete" || input.status === "blocked" || input.status === "failed")) throw new SeptError("Invalid durable conversation terminal status");
+    return { ...common, type: "terminal", status: input.status };
+  }
+  throw new SeptError("Invalid durable conversation event type");
+}
+
+type ConversationEventInput =
+  | { formatVersion: 1; id: string; type: "message"; role: "user" | "assistant"; text: string }
+  | { formatVersion: 1; id: string; type: "state"; state: "active" | "waiting" }
+  | { formatVersion: 1; id: string; type: "terminal"; status: "cancelled" | "complete" | "blocked" | "failed" };
+
+function sameConversationEvent(left: ConversationEvent, right: ConversationEventInput): boolean {
+  const { cursor: _cursor, at: _at, ...comparable } = left;
+  return JSON.stringify(comparable) === JSON.stringify(right);
 }
 
 export class RunStore {
@@ -228,6 +277,7 @@ export class RunStore {
   readonly snapshotPath: string;
   readonly eventsPath: string;
   readonly messagesPath: string;
+  readonly conversationPath: string;
   readonly logPath: string;
   readonly leasePath: string;
   private sequence: number;
@@ -237,6 +287,7 @@ export class RunStore {
     this.snapshotPath = join(runDir, "state.json");
     this.eventsPath = join(runDir, "events.jsonl");
     this.messagesPath = join(runDir, "operator-messages.jsonl");
+    this.conversationPath = join(runDir, "conversation.jsonl");
     this.logPath = join(runDir, "agent.log");
     this.leasePath = join(runDir, "controller.lease");
     let sequence = 0;
@@ -258,6 +309,7 @@ export class RunStore {
     atomicWrite(temporaryStore.manifestPath, durableManifest);
     atomicWrite(temporaryStore.snapshotPath, { status: "active", phase: "ready", epoch: 1, invocations: 0, activeMilliseconds: 0, startedAt: createdAt, updatedAt: createdAt } satisfies RunSnapshot);
     temporaryStore.event("run_started");
+    temporaryStore.conversationMessage(`task-${runId}`, "user", durableManifest.task);
     if (existsSync(runDir)) throw new SeptError(`Run ${runId} already exists`);
     renameSync(temporaryRunDir, runDir);
     syncDir(root);
@@ -269,7 +321,10 @@ export class RunStore {
   snapshot(): RunSnapshot { return validateSnapshot(jsonFile<unknown>(this.snapshotPath)); }
 
   update(patch: Partial<RunSnapshot>): RunSnapshot {
-    const next = validateSnapshot({ ...this.snapshot(), ...patch, updatedAt: now() });
+    const current = this.snapshot();
+    if (current.status === "cancelled" && patch.status !== undefined && patch.status !== "cancelled") throw new SeptError("Cancelled run state is immutable");
+    if (current.status === "cancelling" && patch.status !== undefined && !(patch.status === "cancelling" || patch.status === "cancelled")) throw new SeptError("Cancellation intent is immutable");
+    const next = validateSnapshot({ ...current, ...patch, updatedAt: now() });
     atomicWrite(this.snapshotPath, next);
     return next;
   }
@@ -288,6 +343,121 @@ export class RunStore {
       return events.length < boundedLimit;
     });
     return events;
+  }
+
+  conversation(after = 0, limit = 100): { events: ConversationEvent[]; nextCursor: number; retainedFrom: number } {
+    const retained: ConversationEvent[] = [];
+    scanJsonLines<unknown>(this.conversationPath, (value) => { retained.push(validateConversationEvent(value)); });
+    for (let index = 1; index < retained.length; index++) {
+      if (retained[index].cursor <= retained[index - 1].cursor) throw new SeptError("Durable conversation cursors are not strictly ordered");
+    }
+    const retainedFrom = retained[0]?.cursor ?? 1;
+    const latestCursor = retained.at(-1)?.cursor ?? 0;
+    if (after < retainedFrom - 1) throw new ConversationCursorExpiredError(retainedFrom);
+    if (after > latestCursor) throw new SeptError("conversation cursor is beyond latest cursor");
+    const boundedLimit = Math.min(Math.max(limit, 1), 250);
+    const events = retained.filter((event) => event.cursor > after).slice(0, boundedLimit);
+    return { events, nextCursor: events.at(-1)?.cursor ?? after, retainedFrom };
+  }
+
+  conversationMessage(id: string, role: "user" | "assistant", text: string): ConversationEvent {
+    return this.appendConversation({ formatVersion: 1, id, type: "message", role, text });
+  }
+
+  conversationState(id: string, state: "active" | "waiting"): ConversationEvent {
+    return this.appendConversation({ formatVersion: 1, id, type: "state", state });
+  }
+
+  conversationTerminal(status: "cancelled" | "complete" | "blocked" | "failed"): ConversationEvent {
+    return this.appendConversation({ formatVersion: 1, id: `terminal-${status}`, type: "terminal", status });
+  }
+
+  ensureInitialConversation(): void {
+    if (!existsSync(this.conversationPath)) this.conversationMessage(`task-${this.runId}`, "user", this.manifest().task);
+  }
+
+  reconcileOperatorConversation(): void {
+    const messages = new Map<string, OperatorMessage>();
+    scanJsonLines<OperatorMessage>(this.messagesPath, (message) => { messages.set(message.id, message); });
+    scanJsonLines<RunEvent>(this.eventsPath, (event) => {
+      if (!Array.isArray(event.operatorMessages)) return;
+      for (const value of event.operatorMessages) {
+        if (!value || typeof value !== "object") continue;
+        const message = value as OperatorMessage;
+        if (typeof message.id === "string" && typeof message.createdAt === "string" && typeof message.text === "string" && !messages.has(message.id)) messages.set(message.id, message);
+      }
+    });
+    const recorded = this.recordedOperatorConversationIds();
+    for (const message of messages.values()) {
+      if (recorded.has(message.id)) continue;
+      this.recordOperatorConversation(message);
+      recorded.add(message.id);
+    }
+  }
+
+  ensureTerminalConversation(snapshot = this.snapshot()): void {
+    if (!(snapshot.status === "cancelled" || snapshot.status === "complete" || snapshot.status === "blocked" || snapshot.status === "failed")) return;
+    let recorded = false;
+    scanJsonLines<RunEvent>(this.eventsPath, (event) => {
+      if (event.type === "conversation_terminal_recorded" && event.status === snapshot.status) { recorded = true; return false; }
+    });
+    if (recorded) return;
+    this.conversationTerminal(snapshot.status);
+    this.event("conversation_terminal_recorded", { status: snapshot.status });
+  }
+
+  requestCancellation(): RunSnapshot {
+    const snapshot = this.snapshot();
+    if (snapshot.status === "cancelling" || snapshot.status === "cancelled" || snapshot.status === "complete" || snapshot.status === "blocked" || snapshot.status === "failed") return snapshot;
+    const reason = "Cancelled by authenticated operator.";
+    const cancelling = this.update({ status: "cancelling", phase: "cancelling", reason, terminalCause: "operator_cancelled" });
+    this.event("run_cancellation_requested", { reason: "operator_cancelled" });
+    return cancelling;
+  }
+
+  finishCancellation(): RunSnapshot {
+    const snapshot = this.snapshot();
+    if (snapshot.status === "cancelled") { this.ensureTerminalConversation(snapshot); return snapshot; }
+    if (snapshot.status !== "cancelling") return snapshot;
+    const cancelled = this.update({ status: "cancelled", phase: "terminal", reason: "Cancelled by authenticated operator.", terminalCause: "operator_cancelled" });
+    this.event("run_cancelled", { reason: "operator_cancelled" });
+    this.ensureTerminalConversation(cancelled);
+    return cancelled;
+  }
+
+  private recordedOperatorConversationIds(): Set<string> {
+    const recorded = new Set<string>();
+    scanJsonLines<RunEvent>(this.eventsPath, (event) => {
+      if (event.type === "operator_conversation_recorded" && typeof event.messageId === "string") recorded.add(event.messageId);
+    });
+    return recorded;
+  }
+
+  private recordOperatorConversation(message: OperatorMessage): void {
+    this.conversationMessage(`operator-${message.id}`, "user", message.text);
+    if (!this.recordedOperatorConversationIds().has(message.id)) this.event("operator_conversation_recorded", { messageId: message.id });
+  }
+
+  private appendConversation(value: ConversationEventInput): ConversationEvent {
+    const retained: ConversationEvent[] = [];
+    scanJsonLines<unknown>(this.conversationPath, (item) => { retained.push(validateConversationEvent(item)); });
+    const existing = retained.find((event) => event.id === value.id);
+    if (existing) {
+      if (!sameConversationEvent(existing, value)) throw new SeptError("Conversation event ID collision");
+      return existing;
+    }
+    const cursor = (retained.at(-1)?.cursor ?? 0) + 1;
+    const event = validateConversationEvent({ ...value, cursor, at: now() });
+    appendSynced(this.conversationPath, event);
+    retained.push(event);
+    let kept = retained.slice(-MAX_CONVERSATION_EVENTS);
+    let bytes = kept.reduce((total, item) => total + Buffer.byteLength(JSON.stringify(item)) + 1, 0);
+    while (kept.length > 1 && bytes > MAX_CONVERSATION_BYTES) {
+      bytes -= Buffer.byteLength(JSON.stringify(kept[0])) + 1;
+      kept = kept.slice(1);
+    }
+    if (kept.length !== retained.length) atomicWrite(this.conversationPath, kept.map((item) => JSON.stringify(item)).join("\n"));
+    return event;
   }
 
   operatorMessage(id: string): OperatorMessage | undefined {
@@ -311,6 +481,7 @@ export class RunStore {
       const existing = this.operatorMessage(fixedId);
       if (existing) {
         if (existing.text !== text) throw new SeptError("Operator message ID collision");
+        this.recordOperatorConversation(existing);
         return existing;
       }
     }
@@ -320,6 +491,7 @@ export class RunStore {
     const message = { id: fixedId ?? `${Date.now()}-${randomUUID()}`, createdAt: now(), text };
     appendSynced(this.messagesPath, message);
     this.event("operator_message_queued", { messageId: message.id });
+    this.recordOperatorConversation(message);
     return message;
   }
 
@@ -493,6 +665,51 @@ export function acquireStateRootLease(root: string): () => void {
   return acquire();
 }
 
+function validateWorkerLifecycle(value: unknown): WorkerLifecycleState {
+  const input = object(value, "worker lifecycle state");
+  const readiness = input.readiness;
+  if (!(readiness === "accepting" || readiness === "draining" || readiness === "drained")) throw new SeptError("Invalid durable worker readiness");
+  const required = ["formatVersion", "readiness", "updatedAt"];
+  const optional = ["drainAcceptedAt", "drainedAt"];
+  exactKeys(input, required, optional, "worker lifecycle state");
+  if (input.formatVersion !== 1) throw new SeptError("Invalid durable worker lifecycle formatVersion");
+  const result: WorkerLifecycleState = { formatVersion: 1, readiness, updatedAt: isoDate(input.updatedAt, "worker lifecycle updatedAt") };
+  if (input.drainAcceptedAt !== undefined) result.drainAcceptedAt = isoDate(input.drainAcceptedAt, "worker lifecycle drainAcceptedAt");
+  if (input.drainedAt !== undefined) result.drainedAt = isoDate(input.drainedAt, "worker lifecycle drainedAt");
+  if (readiness === "accepting" && (result.drainAcceptedAt || result.drainedAt)) throw new SeptError("Invalid accepting worker lifecycle state");
+  if (readiness === "draining" && (!result.drainAcceptedAt || result.drainedAt)) throw new SeptError("Invalid draining worker lifecycle state");
+  if (readiness === "drained" && (!result.drainAcceptedAt || !result.drainedAt)) throw new SeptError("Invalid drained worker lifecycle state");
+  return result;
+}
+
+export class WorkerLifecycleStore {
+  readonly path: string;
+  constructor(readonly root: string) { this.path = join(root, "worker-state.json"); }
+
+  read(): WorkerLifecycleState {
+    if (!existsSync(this.path)) return { formatVersion: 1, readiness: "accepting", updatedAt: now() };
+    return validateWorkerLifecycle(jsonFile<unknown>(this.path));
+  }
+
+  beginDrain(): WorkerLifecycleState {
+    const current = this.read();
+    if (current.readiness !== "accepting") return current;
+    const acceptedAt = now();
+    const next: WorkerLifecycleState = { formatVersion: 1, readiness: "draining", updatedAt: acceptedAt, drainAcceptedAt: acceptedAt };
+    atomicWrite(this.path, next);
+    return next;
+  }
+
+  finishDrain(): WorkerLifecycleState {
+    const current = this.read();
+    if (current.readiness === "accepting" || current.readiness === "drained") return current;
+    const drainedAt = now();
+    const next: WorkerLifecycleState = { ...current, readiness: "drained", updatedAt: drainedAt, drainedAt };
+    atomicWrite(this.path, next);
+    return next;
+  }
+}
+
 export function listRuns(root: string): RunStore[] {
   if (!existsSync(root)) return [];
   const stores: RunStore[] = [];
@@ -509,7 +726,7 @@ export function listRuns(root: string): RunStore[] {
     }
     const manifest = jsonFile<unknown>(manifestPath);
     const formatVersion = manifest && typeof manifest === "object" && !Array.isArray(manifest) ? (manifest as { formatVersion?: unknown }).formatVersion : undefined;
-    if (formatVersion !== 2) {
+    if (formatVersion !== 2 && formatVersion !== 3) {
       if (!hasSnapshot) continue;
       throw new SeptError(`Unsupported or partial durable run ${entry.name}`);
     }
@@ -550,6 +767,20 @@ export function validateWork(value: unknown): WorkControl {
   const result = { status: input.status, summary: controlString(input.summary, "summary"), verification: controlStrings(input.verification, "verification"), next_action: controlString(input.next_action, "next_action") } as WorkControl;
   if ((result.status === "continue" || result.status === "waiting") && !result.next_action.trim()) throw new SeptError(`${result.status} work requires next_action`);
   return boundedControl(result);
+}
+
+const SENSITIVE_ASSISTANT_OUTPUT = /(?:-----BEGIN [A-Z ]*PRIVATE KEY-----|\bBearer\s+\S+|\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|password)\s*[:=]\s*\S+|\b(?:sk|ghp|github_pat|xox[baprs])-[-A-Za-z0-9_]{12,}|\beyJ[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,})/i;
+const INTERNAL_ASSISTANT_OUTPUT = /(?:SEPT_CONTEXT_ROTATION|"handover_summary"\s*:|"next_action"\s*:|"verification"\s*:|```(?:json)?\s*\{\s*"status")/i;
+
+export function validateWorkResponse(value: unknown): WorkResponse {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new SeptError("Work response must be an object");
+  const input = value as Record<string, unknown>;
+  if (!("control" in input)) return { control: validateWork(value) };
+  if (Object.keys(input).sort().join() !== ["control", "message"].join()) throw new SeptError("Work response has unexpected fields");
+  const message = boundedString(input.message, 1, MAX_CONVERSATION_TEXT_CHARS, "assistant message");
+  if (!message.trim()) throw new SeptError("Assistant message must not be blank");
+  if (SENSITIVE_ASSISTANT_OUTPUT.test(message) || INTERNAL_ASSISTANT_OUTPUT.test(message)) throw new SeptError("Assistant message failed the safe conversation filter");
+  return { control: validateWork(input.control), message };
 }
 
 export function validateHandover(value: unknown): Handover {

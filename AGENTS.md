@@ -4,6 +4,12 @@
 
 SEPT is a thin durable single-slot worker around the native Pi coding-agent SDK. Do not recreate provider clients, agent loops, tool runners, compaction, context tokenizers, TUI features, profiles, or Codex transports. Pi owns those concerns.
 
+The current repository is the customer-side SEPT Node package. Keep model access as a bounded normalization and control module over Pi, not a new provider abstraction. Provider/model discovery, authentication, local/custom-model compatibility, and requests continue to use the installed Pi `ModelRuntime`. A Pod has one Pi credential per provider for the MVP; credentials remain in its configured Pi agent directory and never enter run state, logs, telemetry, conversations, or cloud-facing metadata.
+
+Part 2 is specified in `docs/part-2-execution-spec.md`. It replaces the earlier ACP tranche with Pi-native model access and selection plus adaptive model-neutral rollover. ACP and complete external-agent harnesses are deferred. Do not begin Part 2 merely because the specification exists; execution requires an explicit user instruction.
+
+Do not move the current `src` runtime into speculative monorepo folders during Part 2. When real dashboard and cloud components exist, a separate approved packaging change may place the Node, dashboard, and thin cloud service into clearly separated top-level modules.
+
 ## Completion
 
 - Wired code is the only completion metric. Exercise the installed CLI/worker path and the exact Pi SDK lifecycle path.

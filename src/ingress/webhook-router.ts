@@ -17,6 +17,7 @@ export class WebhookRouter {
     private readonly workspaceRoot: string,
     private readonly worker: WorkerRuntime,
     private readonly observability: Observability,
+    private readonly modelSelection?: { provider: string; model: string },
   ) {
     this.receipts = new WebhookReceipts(stateRoot);
   }
@@ -35,7 +36,7 @@ export class WebhookRouter {
         if (receipt?.state === "complete") return this.duplicate(receipt.result!, kind);
 
         const existingTask = event.kind === "task" ? listRuns(this.stateRoot).find((store) => store.runId === webhookRunId(keyHash)) : undefined;
-        const manifest = event.kind === "task" && !existingTask ? validateRequest(event.task, this.piVersion, this.workspaceRoot) : undefined;
+        const manifest = event.kind === "task" && !existingTask ? validateRequest(event.task, this.piVersion, this.workspaceRoot, this.modelSelection) : undefined;
         if (!receipt) this.preflight(event, keyHash);
         const claim = this.receipts.claim(keyHash, eventHash, event.kind);
         receipt = claim.receipt;

@@ -33,6 +33,7 @@ class ResultHost implements SessionHost {
   constructor(private readonly result: SessionRunResult) {}
   async run(): Promise<SessionRunResult> { return this.result; }
   async newSession(): Promise<{ predecessorId: string; predecessorFile?: string; successorId: string; successorFile?: string }> { throw new Error("not expected"); }
+  async abort(): Promise<void> {}
   async close(): Promise<void> {}
 }
 
@@ -57,6 +58,7 @@ class RotatingHost implements SessionHost {
     this.sessionFile = "/secret/pi/rotation-successor.jsonl";
     return { predecessorId, predecessorFile, successorId: this.sessionId, successorFile: this.sessionFile };
   }
+  async abort(): Promise<void> {}
   async close(): Promise<void> {}
 }
 

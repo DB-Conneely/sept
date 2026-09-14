@@ -11,3 +11,5 @@ build/
 .DS_Store
 .idea/
 .vscode/
+.cortex
+cortex-context

@@ -80,7 +80,7 @@ class Telemetry implements Observability {
   setRunState(state: ObservedRunState, epoch = 0, invocation = 0, queueDepth = 0): void { this.metrics?.setRunState(state, epoch, invocation, queueDepth); }
   setQueueDepth(depth: number): void { this.metrics?.setQueueDepth(depth); }
   workerStarted(adoption: "none" | "active" | "waiting" | "wake_recovered", mode: "worker" | "run" = "worker"): void { this.metrics?.workerStarted(adoption, mode); }
-  runOutcome(outcome: "complete" | "blocked" | "failed"): void { this.metrics?.runOutcome(outcome); }
+  runOutcome(outcome: "cancelled" | "complete" | "blocked" | "failed"): void { this.metrics?.runOutcome(outcome); }
   sessionOpened(outcome: "started" | "resumed" | "replaced" | "successor_adopted"): void { this.metrics?.sessionOpened(outcome); }
   invocationFinished(durationMs: number, outcome: "success" | "failure" | "timeout", steered = false): void { this.metrics?.invocationFinished(durationMs, outcome, steered); }
   contextSample(tokens: number | null, contextWindow: number, epoch: number, invocation: number): void {
