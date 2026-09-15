@@ -1,10 +1,11 @@
 import type { Manifest } from "../durable/index.js";
 import { listRuns, SeptError } from "../durable/index.js";
+import { ModelAccessService } from "../model-access/index.js";
 import type { Observability } from "../observability/index.js";
 import { classifyError } from "../observability/index.js";
 import { WorkerRuntime } from "../runtime/index.js";
 import { RequestError } from "./errors.js";
-import { validateRequest } from "./validation.js";
+import { resolveTaskManifest } from "./validation.js";
 import { validateWebhookEvent, webhookHashes, WebhookReceipts, type WebhookEvent, type WebhookResult } from "./webhook.js";
 
 /** Routes the provider-neutral ingress contract onto the single worker slot. */
@@ -17,13 +18,13 @@ export class WebhookRouter {
     private readonly workspaceRoot: string,
     private readonly worker: WorkerRuntime,
     private readonly observability: Observability,
-    private readonly modelSelection?: { provider: string; model: string },
+    private readonly modelAccess: ModelAccessService,
   ) {
     this.receipts = new WebhookReceipts(stateRoot);
   }
 
-  receive(input: unknown): { status: 200 | 202; body: WebhookResult & { duplicate: boolean } } {
-    return this.observability.spanSync("sept.webhook.route", {}, () => {
+  async receive(input: unknown): Promise<{ status: 200 | 202; body: WebhookResult & { duplicate: boolean } }> {
+    return this.observability.span("sept.webhook.route", {}, async () => {
       let kind: WebhookEvent["kind"] | "unknown" = "unknown";
       try {
         const event = validateWebhookEvent(input);
@@ -36,8 +37,8 @@ export class WebhookRouter {
         if (receipt?.state === "complete") return this.duplicate(receipt.result!, kind);
 
         const existingTask = event.kind === "task" ? listRuns(this.stateRoot).find((store) => store.runId === webhookRunId(keyHash)) : undefined;
-        const manifest = event.kind === "task" && !existingTask ? validateRequest(event.task, this.piVersion, this.workspaceRoot, this.modelSelection) : undefined;
         if (!receipt) this.preflight(event, keyHash);
+        const manifest = event.kind === "task" && !existingTask ? await resolveTaskManifest(event.task, this.piVersion, this.modelAccess, this.workspaceRoot) : undefined;
         const claim = this.receipts.claim(keyHash, eventHash, event.kind);
         receipt = claim.receipt;
         duplicate ||= !claim.created;

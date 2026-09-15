@@ -7,6 +7,7 @@ import { RunStore } from "../../src/durable/index.js";
 import { SeptService, validateRequest } from "../../src/ingress/index.js";
 import type { SessionHost, SessionRunResult } from "../../src/pi-integration/index.js";
 import { CycleController } from "../../src/runtime/index.js";
+import { testModelAccess } from "../support/model-access.js";
 
 const handover = {
   handover_summary: "first session exhausted",
@@ -54,7 +55,7 @@ class GracefulStopHost implements SessionHost {
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), "sept-test-"));
   const workspace = join(root, "workspace"); mkdirSync(workspace);
-  const store = RunStore.create(join(root, "runs"), validateRequest({ task: "finish", role: "tester", workspace, thresholdPercent: 10 }, "0.85.1"));
+  const store = RunStore.create(join(root, "runs"), validateRequest({ task: "finish", role: "tester", workspace }, "0.85.1"));
   return { root, workspace, store };
 }
 
@@ -272,7 +273,7 @@ test("epoch cap blocks after durable handover without creating a successor", asy
 
 test("worker fails closed and reports authenticated idle health", async () => {
   const { root } = fixture();
-  const service = new SeptService({ stateRoot: join(root, "empty-runs"), agentDir: "/pi", token: "secret", port: 0, piVersion: "0.85.1" });
+  const service = new SeptService({ stateRoot: join(root, "empty-runs"), agentDir: "/pi", token: "secret", port: 0, piVersion: "0.85.1", modelAccessService: await testModelAccess() });
   const address = await service.start();
   try {
     const base = `http://${address.host}:${address.port}`;
@@ -293,7 +294,7 @@ test("worker ignores legacy manifest-only run directories without changing them"
   writeFileSync(join(legacyDir, "manifest.json"), legacyManifest);
   writeFileSync(join(legacyDir, "events.jsonl"), legacyEvents);
 
-  const service = new SeptService({ stateRoot, agentDir: "/pi", token: "secret", port: 0, piVersion: "0.85.1" });
+  const service = new SeptService({ stateRoot, agentDir: "/pi", token: "secret", port: 0, piVersion: "0.85.1", modelAccessService: await testModelAccess() });
   const address = await service.start();
   try {
     const response = await fetch(`http://${address.host}:${address.port}/health`, { headers: { Authorization: "Bearer secret" } });
@@ -310,7 +311,7 @@ test("worker keeps its single slot busy while waiting to adopt a recent lease", 
   const almostStale = new Date(Date.now() - 4_500);
   utimesSync(store.leasePath, almostStale, almostStale);
   const host = new FakeHost([{ text: JSON.stringify(complete), steered: false, contextTokens: 10, contextWindow: 100 }]);
-  const service = new SeptService({ stateRoot: join(root, "runs"), agentDir: "/pi", workspaceRoot: root, token: "secret", port: 0, piVersion: "0.85.1", hostFactory: async () => host });
+  const service = new SeptService({ stateRoot: join(root, "runs"), agentDir: "/pi", workspaceRoot: root, token: "secret", port: 0, piVersion: "0.85.1", hostFactory: async () => host, modelAccessService: await testModelAccess() });
   const address = await service.start();
   try {
     const base = `http://${address.host}:${address.port}`;
@@ -333,7 +334,7 @@ test("graceful service stop rejects admission and waits for one durable controll
   const stateRoot = join(root, "runs");
   mkdirSync(workspace);
   const host = new GracefulStopHost();
-  const service = new SeptService({ stateRoot, agentDir: "/pi", workspaceRoot: root, token: "secret", host: "127.0.0.1", port: 0, piVersion: "0.85.1", hostFactory: async () => host });
+  const service = new SeptService({ stateRoot, agentDir: "/pi", workspaceRoot: root, token: "secret", host: "127.0.0.1", port: 0, piVersion: "0.85.1", hostFactory: async () => host, modelAccessService: await testModelAccess() });
   const address = await service.start();
   const task = await fetch(`http://${address.host}:${address.port}/v1/tasks`, {
     method: "POST", headers: { Authorization: "Bearer secret", "Content-Type": "application/json" }, body: JSON.stringify({ task: "checkpoint before stop", workspace }),
@@ -359,12 +360,12 @@ test("graceful service stop rejects admission and waits for one durable controll
 test("only one service can own a state root and ownership is released on stop", async () => {
   const root = mkdtempSync(join(tmpdir(), "sept-root-owner-"));
   const stateRoot = join(root, "runs");
-  const first = new SeptService({ stateRoot, agentDir: "/pi", workspaceRoot: root, token: "secret", host: "127.0.0.1", port: 0, piVersion: "0.85.1" });
+  const first = new SeptService({ stateRoot, agentDir: "/pi", workspaceRoot: root, token: "secret", host: "127.0.0.1", port: 0, piVersion: "0.85.1", modelAccessService: await testModelAccess() });
   await first.start();
-  const second = new SeptService({ stateRoot, agentDir: "/pi", workspaceRoot: root, token: "secret", host: "127.0.0.1", port: 0, piVersion: "0.85.1" });
+  const second = new SeptService({ stateRoot, agentDir: "/pi", workspaceRoot: root, token: "secret", host: "127.0.0.1", port: 0, piVersion: "0.85.1", modelAccessService: await testModelAccess() });
   await assert.rejects(second.start(), /state root is already owned|ownership lease/);
   await first.stop();
-  const successor = new SeptService({ stateRoot, agentDir: "/pi", workspaceRoot: root, token: "secret", host: "127.0.0.1", port: 0, piVersion: "0.85.1" });
+  const successor = new SeptService({ stateRoot, agentDir: "/pi", workspaceRoot: root, token: "secret", host: "127.0.0.1", port: 0, piVersion: "0.85.1", modelAccessService: await testModelAccess() });
   await successor.start();
   await successor.stop();
 });

@@ -9,6 +9,7 @@ import { SeptService, validateRequest } from "../../src/ingress/index.js";
 import { validateWebhookEvent, webhookHashes, WebhookReceipts } from "../../src/ingress/webhook.js";
 import type { SessionHost, SessionRunResult } from "../../src/pi-integration/index.js";
 import type { HostFactory } from "../../src/runtime/index.js";
+import { testModelAccess } from "../support/model-access.js";
 
 const auth = { Authorization: "Bearer test-token" };
 const complete: SessionRunResult = {
@@ -63,7 +64,7 @@ function environment() {
 }
 
 async function start(stateRoot: string, hostFactory?: HostFactory) {
-  const service = new SeptService({ stateRoot, agentDir: "/pi", workspaceRoot: join(stateRoot, ".."), token: "test-token", host: "127.0.0.1", port: 0, piVersion: "0.85.1", hostFactory });
+  const service = new SeptService({ stateRoot, agentDir: "/pi", workspaceRoot: join(stateRoot, ".."), token: "test-token", host: "127.0.0.1", port: 0, piVersion: "0.85.1", hostFactory, modelAccessService: await testModelAccess() });
   const address = await service.start();
   return { service, base: `http://${address.host}:${address.port}` };
 }
@@ -579,7 +580,7 @@ test("bind failure performs no adoption or controller work and leaves no root le
   const address = blocker.address();
   assert.ok(address && typeof address === "object");
   let creations = 0;
-  const service = new SeptService({ stateRoot, agentDir: "/pi", workspaceRoot: root, token: "test-token", host: "127.0.0.1", port: address.port, piVersion: "0.85.1", hostFactory: async () => { creations++; return new CompletingHost(); } });
+  const service = new SeptService({ stateRoot, agentDir: "/pi", workspaceRoot: root, token: "test-token", host: "127.0.0.1", port: address.port, piVersion: "0.85.1", hostFactory: async () => { creations++; return new CompletingHost(); }, modelAccessService: await testModelAccess() });
   try {
     await assert.rejects(service.start(), (error: NodeJS.ErrnoException) => error.code === "EADDRINUSE");
     assert.equal(creations, 0);
@@ -639,7 +640,7 @@ test("server workspace confinement rejects files, outside paths, and symlink esc
   mkdirSync(outside);
   writeFileSync(join(assignedRoot, "file"), "not a directory");
   symlinkSync(outside, join(assignedRoot, "escape"));
-  const service = new SeptService({ stateRoot, agentDir: "/pi", workspaceRoot: assignedRoot, token: "test-token", host: "127.0.0.1", port: 0, piVersion: "0.85.1", hostFactory: async () => new BlockingHost() });
+  const service = new SeptService({ stateRoot, agentDir: "/pi", workspaceRoot: assignedRoot, token: "test-token", host: "127.0.0.1", port: 0, piVersion: "0.85.1", hostFactory: async () => new BlockingHost(), modelAccessService: await testModelAccess() });
   const address = await service.start();
   const base = `http://${address.host}:${address.port}`;
   try {
@@ -663,7 +664,7 @@ test("restart adoption rejects a durable workspace symlink escape before creatin
   const manifest = JSON.parse(readFileSync(store.manifestPath, "utf8")) as Record<string, unknown>;
   writeFileSync(store.manifestPath, `${JSON.stringify({ ...manifest, workspace: escape })}\n`);
   let creations = 0;
-  const service = new SeptService({ stateRoot, agentDir: "/pi", workspaceRoot: assignedRoot, token: "test-token", host: "127.0.0.1", port: 0, piVersion: "0.85.1", hostFactory: async () => { creations++; return new CompletingHost(); } });
+  const service = new SeptService({ stateRoot, agentDir: "/pi", workspaceRoot: assignedRoot, token: "test-token", host: "127.0.0.1", port: 0, piVersion: "0.85.1", hostFactory: async () => { creations++; return new CompletingHost(); }, modelAccessService: await testModelAccess() });
 
   await assert.rejects(service.start(), /outside the configured workspace root/);
   assert.equal(creations, 0);

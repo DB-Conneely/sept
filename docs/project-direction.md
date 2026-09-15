@@ -30,17 +30,17 @@ These are recorded improvements, not additions to the current implementation sco
 
 ## Ordered implementation sequence
 
-Graceful stop is complete and exercised through the installed worker. The five remaining model-harness tranches are ordered as follows. Each item must preserve the single-slot and durability guarantees and be exercised through the installed runtime path before the next begins.
+Graceful stop and the five approved Node-runtime tranches are complete and exercised through installed paths. The implemented order was:
 
 1. **Drain.** Refuse new work while allowing already accepted work to settle, with an explicit durable state and unambiguous readiness reporting.
 2. **Cancel.** Interrupt the targeted run and its active Pi/tool work safely, durably record the terminal reason, and prevent late completion or duplicate-controller races.
 3. **Durable conversational output.** Separate user-facing assistant messages from internal lifecycle controls and operational logs. Provide an authenticated, bounded, replayable transcript and live output stream that survive wait, wake, rotation, and restart without exposing reasoning, unsafe tool payloads, or credentials.
-4. **ACP interoperability.** Use the standard Agent Client Protocol and existing Pi ACP integration work rather than inventing a proprietary client protocol. First expose SEPT conversations, sessions, output, and lifecycle through an ACP adapter; keep the boundary suitable for later supervising other ACP-compatible agents through capability negotiation.
-5. **Model-neutral context rollover.** Generalize and prove the rollover trigger across supported Pi providers and models. Base decisions on the selected model's declared context window and finalized provider-reported usage, keep thresholds and reserves proportional to that active window, fail or defer safely when required metadata is unavailable, and add compatibility coverage beyond the Codex default without recreating provider clients or tokenizers.
+4. **Pi-native model access and selection.** Normalize the installed Pi `ModelRuntime` into credential-blind CLI/Node contracts, keep login UI-neutral with a terminal adapter, preflight every new run, persist the resolved pair, and validate custom rollover metadata without creating provider clients.
+5. **Adaptive model-neutral context rollover.** Use the active Pi model's declared window, finalized provider usage, recent positive context growth, bounded handover/ordinary-turn reserves, and confidence margin. Preserve one native steer, durable handover ordering, and genuine fresh-session replacement.
 
-The first three tranches form Part 1 and were completed as one focused backend pass: durable drain, Pi-native targeted cancellation, and bounded durable conversation replay/streaming are wired and exercised through the installed worker and production Pi lifecycle. Part 2 remains behind the mandatory decision checkpoint. Orchestration must stop and surface a concrete decision brief for ACP interoperability and model-neutral rollover; Part 2 begins only after the user resolves those protocol, transport, capability, provider, and compatibility choices.
+The first three tranches formed Part 1. The latter two formed the explicitly authorized Part 2 and are now wired and verified. ACP was removed from mandatory Part 2 and remains deferred until a concrete compatible client and transport justify it. Complete Claude Code, Codex CLI, or other external-agent harness supervision is likewise separate from using those providers through Pi.
 
-Completion of all five establishes the main AI service: SEPT's model harness and utility layer. It does not authorize dashboard, control-plane, deployment, or speculative infrastructure work.
+Completion of these five establishes the current Node AI service/model harness. It does not authorize packaging changes, dashboard, control plane, cloud service, deployment, ACP, or speculative infrastructure.
 
 ## Product surface sequence
 

@@ -142,7 +142,7 @@ test("public worker SIGTERM waits for an active production PiSessionHost checkpo
   await new Promise<void>((resolvePromise) => provider.listen(0, "127.0.0.1", resolvePromise));
   const providerAddress = provider.address();
   assert.ok(providerAddress && typeof providerAddress === "object");
-  writeFileSync(join(agent, "models.json"), `${JSON.stringify({ providers: { "local-test": { baseUrl: `http://127.0.0.1:${providerAddress.port}/v1`, api: "openai-completions", apiKey: "test-only", models: [{ id: "fixture", name: "fixture", reasoning: false, input: ["text"], contextWindow: 1000, maxTokens: 200 }] } } })}\n`);
+  writeFileSync(join(agent, "models.json"), `${JSON.stringify({ providers: { "local-test": { baseUrl: `http://127.0.0.1:${providerAddress.port}/v1`, api: "openai-completions", apiKey: "local", models: [{ id: "fixture", name: "fixture", reasoning: false, input: ["text"], contextWindow: 128000, maxTokens: 200 }] } } })}\n`);
 
   const token = "graceful-cli-token";
   const child = spawn(resolve("sept"), ["worker", "--host", "127.0.0.1", "--port", "0", "--state-dir", state, "--agent-dir", agent, "--workspace-root", root], {
@@ -205,7 +205,7 @@ test("installed worker preserves conversation through Pi rotation and restart wh
     const handover = JSON.stringify({ handover_summary: "rotated", entry_state_and_done: "finish the installed conversation", completed: ["progress published"], in_flight: [], not_started: ["follow-up"], decisions: [], rejected_approaches: [], verification: ["provider usage"], uncertainties: [], references: [], lessons: [], next_action: "Wait safely for operator input." });
     const waiting = JSON.stringify({ message: "Waiting safely for your follow-up.", control: { status: "waiting", summary: "waiting", verification: ["checkpointed"], next_action: "Wait for input." } });
     const complete = JSON.stringify({ message: "The installed conversation is complete.", control: { status: "complete", summary: "done", verification: ["installed path"], next_action: "" } });
-    if (providerCalls === 1) return openAiReply(response, progress, 800);
+    if (providerCalls === 1) return openAiReply(response, progress, 110_000);
     if (providerCalls === 2) return openAiReply(response, handover);
     if (providerCalls === 3) return openAiReply(response, waiting);
     if (providerCalls === 4) { markInterrupted(); return; }
@@ -214,7 +214,7 @@ test("installed worker preserves conversation through Pi rotation and restart wh
   await new Promise<void>((resolvePromise) => provider.listen(0, "127.0.0.1", resolvePromise));
   const providerAddress = provider.address();
   assert.ok(providerAddress && typeof providerAddress === "object");
-  writeFileSync(join(agent, "models.json"), `${JSON.stringify({ providers: { "local-part1": { baseUrl: `http://127.0.0.1:${providerAddress.port}/v1`, api: "openai-completions", apiKey: "test-only", models: [{ id: "fixture", name: "fixture", reasoning: false, input: ["text"], contextWindow: 1000, maxTokens: 200 }] } } })}\n`);
+  writeFileSync(join(agent, "models.json"), `${JSON.stringify({ providers: { "local-part1": { baseUrl: `http://127.0.0.1:${providerAddress.port}/v1`, api: "openai-completions", apiKey: "local", models: [{ id: "fixture", name: "fixture", reasoning: false, input: ["text"], contextWindow: 128000, maxTokens: 200 }] } } })}\n`);
   const token = "installed-part1-conversation-token";
   const first = installedWorker(state, agent, root, token);
   let second: ReturnType<typeof installedWorker> | undefined;
@@ -293,7 +293,7 @@ test("installed worker cancellation aborts active production Pi model work after
   await new Promise<void>((resolvePromise) => provider.listen(0, "127.0.0.1", resolvePromise));
   const providerAddress = provider.address();
   assert.ok(providerAddress && typeof providerAddress === "object");
-  writeFileSync(join(agent, "models.json"), `${JSON.stringify({ providers: { "local-cancel": { baseUrl: `http://127.0.0.1:${providerAddress.port}/v1`, api: "openai-completions", apiKey: "test-only", models: [{ id: "fixture", name: "fixture", reasoning: false, input: ["text"], contextWindow: 1000, maxTokens: 200 }] } } })}\n`);
+  writeFileSync(join(agent, "models.json"), `${JSON.stringify({ providers: { "local-cancel": { baseUrl: `http://127.0.0.1:${providerAddress.port}/v1`, api: "openai-completions", apiKey: "local", models: [{ id: "fixture", name: "fixture", reasoning: false, input: ["text"], contextWindow: 128000, maxTokens: 200 }] } } })}\n`);
   const token = "installed-part1-cancel-token";
   const worker = installedWorker(state, agent, root, token);
   try {

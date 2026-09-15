@@ -9,7 +9,11 @@ SEPT_TOKEN='a-long-random-secret' ./sept health --url http://127.0.0.1:8090/heal
 
 - `GET /health` — worker state (`idle`, `busy`, or `waiting`), durable readiness (`accepting`, `draining`, or `drained`), `acceptingWork`, and the resident run ID in `activeRunId`. `waiting` means no Pi runtime/controller is allocated, but the resumable run retains the single slot. Health and reads remain available while drained.
 - `POST /v1/drain` — durably begin drain. The body is empty. Returns the current worker/readiness object and is idempotent.
-- `POST /v1/tasks` — create the single active task. Required JSON: `task`. Optional: `role`, `workspace`, `provider`, `model`, `thinking`, `thresholdPercent`, `handoverReserveTokens`, `maxInvocations`, `maxEpochs`, `timeoutSeconds`. The workspace defaults to the configured workspace root and must resolve to a directory beneath it; symlink escapes are rejected.
+- `GET /v1/model-access/providers` — normalized Pi providers with credential-blind authentication state/methods and model counts.
+- `GET /v1/model-access/models?provider=<id>` — normalized Pi models. The optional provider appears at most once. Fields are only provider/id/name, availability, API dialect, context/output limits, and reasoning/input capabilities.
+- `GET /v1/model-access/selection` — resolved Pod selection with `selected.source`, `available`, `authenticated`, and normalized model metadata. It fails safely if the current default is no longer usable.
+- `PUT /v1/model-access/selection` — atomically set a future-run Pod default from exactly `{ "provider": "...", "model": "..." }` after full Pi preflight. The body limit is 8 KiB.
+- `POST /v1/tasks` — create the single active task. Required JSON: `task`. Optional: `role`, `workspace`, the complete `provider`/`model` pair, `thinking`, `maxInvocations`, `maxEpochs`, and `timeoutSeconds`. The workspace defaults to the configured workspace root and must resolve to a directory beneath it; symlink escapes are rejected.
 - `GET /v1/tasks/:runId` — immutable manifest and current durable state.
 - `GET /v1/tasks/:runId/events?after=<cursor>&limit=<1..1000>` — ordered durable events and next cursor.
 - `GET /v1/tasks/:runId/log` — at most the last 1 MiB of the bounded agent lifecycle log.
@@ -18,6 +22,10 @@ SEPT_TOKEN='a-long-random-secret' ./sept health --url http://127.0.0.1:8090/heal
 - `POST /v1/tasks/:runId/messages` — queue `{ "message": "..." }` durably; returns `202` and its ID.
 - `POST /v1/tasks/:runId/cancel` — targeted idempotent cancellation with an empty body. Cancellation intent and a bounded fixed terminal reason are fsynced before Pi's native abort is requested. Returns `202` while settlement is still in progress or `200` once deterministic terminal/no-op state is known.
 - `POST /v1/webhooks` — accept one normalized provider-neutral event and route it through the same task or operator-message lifecycle.
+
+All responses use `Cache-Control: no-store`. Model routes expose no credential values, headers, OAuth records, auth paths, raw provider payloads, or arbitrary provider configuration. Login is intentionally absent from this plain HTTP listener; use the installed `sept auth status|login|logout` commands, which delegate to Pi and never accept a secret as an argument.
+
+For every direct and task-webhook admission, SEPT validates the request, rereads `sept-model.json`, resolves explicit pair > Pod default > valid built-in default, and asks Pi for provider/model existence, availability, required metadata, and resolved authentication. Failure returns before `RunStore.create()`, webhook receipt claim, or controller launch. The final pair is immutable in each run manifest, so changing the Pod default affects only later runs.
 
 Run states are `active`, `waiting`, `cancelling`, `cancelled`, `blocked`, `complete`, and `failed`. The agent control object accepts `continue`, `waiting`, `blocked`, or `complete`: `continue` immediately invokes Pi again; `waiting` means current work is coherent and only new input can make progress; `blocked` records a genuine operator impediment; and `complete` is successful termination.
 
@@ -80,7 +88,7 @@ Operator-message event:
 }
 ```
 
-The task object accepts exactly the fields supported by `POST /v1/tasks`. Event and nested object schemas reject unknown fields. Operator messages preserve normal tabs and line breaks while rejecting unsafe control characters. `source` is a bounded adapter identifier, and `(source, eventId)` is the durable idempotency key. The first accepted delivery returns `202`; an identical retry returns `200` with `"duplicate": true` and the original routing IDs. Reusing the key for a different event returns `409` without routing either retry. A distinct task event returns `409` while the single slot is busy. Receipts contain only hashes and routing IDs, never source payloads.
+The task object accepts exactly the fields supported by `POST /v1/tasks`, including only a complete provider/model override. It uses the same fresh default resolution and Pi preflight before receipt claim. Event and nested object schemas reject unknown fields. Operator messages preserve normal tabs and line breaks while rejecting unsafe control characters. `source` is a bounded adapter identifier, and `(source, eventId)` is the durable idempotency key. The first accepted delivery returns `202`; an identical retry returns `200` with `"duplicate": true` and the original routing IDs. Reusing the key for a different event returns `409` without routing either retry. A distinct task event returns `409` while the single slot is busy. Receipts contain only hashes and routing IDs, never source payloads.
 
 Durable run evidence is written beneath the configured state root. The production image fixes this at `/state/runs` and requires a persistent volume mounted at `/state`; it must not depend on an ephemeral container layer.
 

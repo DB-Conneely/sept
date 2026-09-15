@@ -5,7 +5,8 @@ import { SeptError, atomicWrite, type RunStore } from "../durable/index.js";
 export const MAX_UNUSABLE_USAGE_SAMPLES = 3;
 const MIN_CONTEXT_WINDOW = 4_096;
 const MAX_CONTEXT_WINDOW = 10_000_000;
-const GROWTH_HISTORY_LIMIT = 4;
+const GROWTH_HISTORY_LIMIT = 3;
+const SAFE_SCOPE = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/;
 
 export interface RolloverEvidence {
   formatVersion: 1;
@@ -22,22 +23,15 @@ export interface RolloverEvidence {
 
 export interface RolloverDecision {
   rotate: boolean;
+  reason: "sufficient_headroom" | "required_headroom_reached" | "reserve_exceeds_window";
   rotateAtTokens: number;
   headroomTokens: number;
   handoverReserveTokens: number;
+  ordinaryTurnFloorTokens: number;
   nextTurnReserveTokens: number;
+  confidenceMarginTokens: number;
   recentGrowthTokens: number;
   confidence: "low" | "medium" | "high";
-}
-
-export function assertUsableModelMetadata(model: { provider: string; id: string; contextWindow: number; maxTokens: number }): void {
-  const { contextWindow, maxTokens } = model;
-  if (!Number.isSafeInteger(contextWindow) || contextWindow < MIN_CONTEXT_WINDOW || contextWindow > MAX_CONTEXT_WINDOW) {
-    throw new SeptError(`Pi model ${model.provider}/${model.id} has missing or invalid context-window metadata`);
-  }
-  if (!Number.isSafeInteger(maxTokens) || maxTokens < 1 || maxTokens > contextWindow) {
-    throw new SeptError(`Pi model ${model.provider}/${model.id} has missing or invalid maximum-output metadata`);
-  }
 }
 
 export function providerContextTokens(usage: unknown, calculate: (value: never) => number): number | undefined {
@@ -51,50 +45,40 @@ export function providerContextTokens(usage: unknown, calculate: (value: never) 
   return Number.isSafeInteger(calculated) && calculated > 0 ? calculated : undefined;
 }
 
-function boundedProportion(window: number, proportion: number, minimum: number, maximum: number): number {
-  return Math.min(maximum, Math.max(minimum, Math.ceil(window * proportion)));
+function clampProportion(window: number, proportion: number): number {
+  return Math.min(65_536, Math.max(8_192, Math.ceil(window * proportion)));
 }
 
-/**
- * Reserve one bounded handover call plus one bounded next ordinary/tool turn.
- * With insufficient growth history the next-turn reserve is deliberately conservative.
- */
+/** Exact Part 2 arithmetic over finalized provider usage and the active Pi model window. */
 export function decideRollover(contextTokens: number, contextWindow: number, growthTokens: readonly number[]): RolloverDecision {
-  if (!Number.isSafeInteger(contextTokens) || contextTokens < 1 || contextTokens > contextWindow) throw new SeptError("Provider context usage is outside the active model window");
   if (!Number.isSafeInteger(contextWindow) || contextWindow < MIN_CONTEXT_WINDOW || contextWindow > MAX_CONTEXT_WINDOW) throw new SeptError("Active model context-window metadata is invalid");
-  if (growthTokens.some((value) => !Number.isSafeInteger(value) || value < 0)) throw new SeptError("Durable context-growth evidence is invalid");
+  if (!Number.isSafeInteger(contextTokens) || contextTokens < 1 || contextTokens > contextWindow) throw new SeptError("Provider context usage is outside the active model window");
+  if (growthTokens.length > GROWTH_HISTORY_LIMIT || growthTokens.some((value) => !Number.isSafeInteger(value) || value <= 0)) throw new SeptError("Durable positive context-growth evidence is invalid");
 
   const confidence = growthTokens.length >= 2 ? "high" : growthTokens.length === 1 ? "medium" : "low";
-  const handoverReserveTokens = boundedProportion(contextWindow, 0.08, 8_192, 65_536);
-  const observedGrowth = growthTokens.length ? Math.max(...growthTokens.slice(-GROWTH_HISTORY_LIMIT)) : 0;
-  const growthReserve = confidence === "low" ? Math.ceil(contextWindow * 0.12) : Math.max(Math.ceil(contextWindow * 0.04), observedGrowth * 2);
-  const nextTurnReserveTokens = Math.min(98_304, Math.ceil(contextWindow * 0.12), Math.max(4_096, growthReserve));
-  const maximumHeadroom = Math.floor(contextWindow * 0.25);
-  const headroomTokens = Math.min(maximumHeadroom, handoverReserveTokens + nextTurnReserveTokens);
-  const rotateAtTokens = contextWindow - headroomTokens;
-  return {
-    rotate: contextTokens >= rotateAtTokens,
-    rotateAtTokens,
-    headroomTokens,
-    handoverReserveTokens,
-    nextTurnReserveTokens,
-    recentGrowthTokens: observedGrowth,
-    confidence,
-  };
+  const recentGrowthTokens = growthTokens.length ? Math.max(...growthTokens) : 0;
+  const handoverReserveTokens = clampProportion(contextWindow, 0.08);
+  const ordinaryTurnFloorTokens = clampProportion(contextWindow, 0.06);
+  const nextTurnReserveTokens = Math.max(ordinaryTurnFloorTokens, Math.ceil(1.5 * recentGrowthTokens));
+  const confidenceMarginTokens = Math.ceil(contextWindow * (confidence === "low" ? 0.08 : confidence === "medium" ? 0.05 : 0.03));
+  const headroomTokens = handoverReserveTokens + nextTurnReserveTokens + confidenceMarginTokens;
+  const rotateAtTokens = Math.max(0, contextWindow - headroomTokens);
+  const rotate = contextTokens + headroomTokens >= contextWindow;
+  const reason = headroomTokens >= contextWindow ? "reserve_exceeds_window" : rotate ? "required_headroom_reached" : "sufficient_headroom";
+  return { rotate, reason, rotateAtTokens, headroomTokens, handoverReserveTokens, ordinaryTurnFloorTokens, nextTurnReserveTokens, confidenceMarginTokens, recentGrowthTokens, confidence };
 }
 
 function validateEvidence(value: unknown): RolloverEvidence {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new SeptError("Durable rollover evidence is invalid");
   const input = value as Record<string, unknown>;
-  const expected = ["contextWindow", "formatVersion", "growthTokens", "lastTokens", "model", "provider", "rotationRequired", "sessionId", "unusableSamples", "updatedAt"];
-  const keys = Object.keys(input).sort();
-  const withoutOptional = expected.filter((key) => key !== "lastTokens").sort();
-  if (keys.join() !== expected.sort().join() && keys.join() !== withoutOptional.join()) throw new SeptError("Durable rollover evidence has invalid fields");
-  if (input.formatVersion !== 1 || typeof input.provider !== "string" || typeof input.model !== "string" || typeof input.sessionId !== "string" || typeof input.rotationRequired !== "boolean") throw new SeptError("Durable rollover evidence is invalid");
-  if (!Number.isSafeInteger(input.contextWindow) || (input.contextWindow as number) < MIN_CONTEXT_WINDOW || !Number.isSafeInteger(input.unusableSamples) || (input.unusableSamples as number) < 0 || (input.unusableSamples as number) > MAX_UNUSABLE_USAGE_SAMPLES) throw new SeptError("Durable rollover evidence is invalid");
-  if (!Array.isArray(input.growthTokens) || input.growthTokens.length > GROWTH_HISTORY_LIMIT || input.growthTokens.some((item) => !Number.isSafeInteger(item) || (item as number) < 0)) throw new SeptError("Durable rollover evidence is invalid");
+  const required = ["contextWindow", "formatVersion", "growthTokens", "model", "provider", "rotationRequired", "sessionId", "unusableSamples", "updatedAt"];
+  const allowed = new Set([...required, "lastTokens"]);
+  if (required.some((key) => !(key in input)) || Object.keys(input).some((key) => !allowed.has(key))) throw new SeptError("Durable rollover evidence has invalid fields");
+  if (input.formatVersion !== 1 || typeof input.provider !== "string" || !SAFE_SCOPE.test(input.provider) || typeof input.model !== "string" || !SAFE_SCOPE.test(input.model) || typeof input.sessionId !== "string" || input.sessionId.length < 1 || input.sessionId.length > 4096 || typeof input.rotationRequired !== "boolean") throw new SeptError("Durable rollover evidence is invalid");
+  if (!Number.isSafeInteger(input.contextWindow) || (input.contextWindow as number) < MIN_CONTEXT_WINDOW || (input.contextWindow as number) > MAX_CONTEXT_WINDOW || !Number.isSafeInteger(input.unusableSamples) || (input.unusableSamples as number) < 0 || (input.unusableSamples as number) > MAX_UNUSABLE_USAGE_SAMPLES) throw new SeptError("Durable rollover evidence is invalid");
+  if (!Array.isArray(input.growthTokens) || input.growthTokens.length > GROWTH_HISTORY_LIMIT || input.growthTokens.some((item) => !Number.isSafeInteger(item) || (item as number) <= 0)) throw new SeptError("Durable rollover evidence is invalid");
   if (input.lastTokens !== undefined && (!Number.isSafeInteger(input.lastTokens) || (input.lastTokens as number) < 1 || (input.lastTokens as number) > (input.contextWindow as number))) throw new SeptError("Durable rollover evidence is invalid");
-  if (typeof input.updatedAt !== "string" || !Number.isFinite(Date.parse(input.updatedAt))) throw new SeptError("Durable rollover evidence is invalid");
+  if (typeof input.updatedAt !== "string" || !Number.isFinite(Date.parse(input.updatedAt)) || new Date(Date.parse(input.updatedAt)).toISOString() !== input.updatedAt) throw new SeptError("Durable rollover evidence is invalid");
   return input as unknown as RolloverEvidence;
 }
 
@@ -104,9 +88,7 @@ export function loadRolloverEvidence(store: RunStore, provider: string, model: s
   let evidence: RolloverEvidence;
   try { evidence = validateEvidence(JSON.parse(readFileSync(path, "utf8"))); }
   catch (error) { if (error instanceof SeptError) throw error; throw new SeptError("Durable rollover evidence must contain valid JSON"); }
-  if (evidence.provider !== provider || evidence.model !== model || evidence.sessionId !== sessionId || evidence.contextWindow !== contextWindow) {
-    return initialRolloverEvidence(provider, model, sessionId, contextWindow);
-  }
+  if (evidence.provider !== provider || evidence.model !== model || evidence.sessionId !== sessionId || evidence.contextWindow !== contextWindow) return initialRolloverEvidence(provider, model, sessionId, contextWindow);
   return evidence;
 }
 
@@ -115,27 +97,20 @@ export function saveRolloverEvidence(store: RunStore, evidence: RolloverEvidence
 }
 
 export function initialRolloverEvidence(provider: string, model: string, sessionId: string, contextWindow: number): RolloverEvidence {
-  return { formatVersion: 1, provider, model, sessionId, contextWindow, growthTokens: [], unusableSamples: 0, rotationRequired: false, updatedAt: new Date().toISOString() };
+  return validateEvidence({ formatVersion: 1, provider, model, sessionId, contextWindow, growthTokens: [], unusableSamples: 0, rotationRequired: false, updatedAt: new Date().toISOString() });
 }
 
 export function recordUsableSample(current: RolloverEvidence, tokens: number): { evidence: RolloverEvidence; decision: RolloverDecision } {
   if (current.lastTokens !== undefined && tokens < current.lastTokens) throw new SeptError("Provider context usage regressed within an uncompacted Pi session");
   const growth = current.lastTokens === undefined ? undefined : tokens - current.lastTokens;
-  const growthTokens = growth === undefined ? current.growthTokens : [...current.growthTokens, growth].slice(-GROWTH_HISTORY_LIMIT);
+  const growthTokens = growth !== undefined && growth > 0 ? [...current.growthTokens, growth].slice(-GROWTH_HISTORY_LIMIT) : current.growthTokens;
   const decision = decideRollover(tokens, current.contextWindow, growthTokens);
   return {
     decision,
-    evidence: {
-      ...current,
-      lastTokens: tokens,
-      growthTokens,
-      unusableSamples: 0,
-      rotationRequired: current.rotationRequired || decision.rotate,
-      updatedAt: new Date().toISOString(),
-    },
+    evidence: validateEvidence({ ...current, lastTokens: tokens, growthTokens, unusableSamples: 0, rotationRequired: current.rotationRequired || decision.rotate, updatedAt: new Date().toISOString() }),
   };
 }
 
 export function recordUnusableSample(current: RolloverEvidence): RolloverEvidence {
-  return { ...current, unusableSamples: current.unusableSamples + 1, updatedAt: new Date().toISOString() };
+  return validateEvidence({ ...current, unusableSamples: Math.min(MAX_UNUSABLE_USAGE_SAMPLES, current.unusableSamples + 1), updatedAt: new Date().toISOString() });
 }

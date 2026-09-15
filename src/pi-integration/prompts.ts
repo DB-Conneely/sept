@@ -35,6 +35,11 @@ export const ROTATION_STEER = `SEPT_CONTEXT_ROTATION: The active Pi session reac
 Required exact keys:
 {"handover_summary":"...","entry_state_and_done":"...","completed":["..."],"in_flight":["..."],"not_started":["..."],"decisions":["..."],"rejected_approaches":["..."],"verification":["..."],"uncertainties":["..."],"references":["..."],"lessons":["..."],"next_action":"..."}`;
 
+export const ROTATION_RECOVERY_PROMPT = `SEPT_CONTEXT_ROTATION_RECOVERY: The native rotation steer is already durable, but its assistant handover did not finalize before interruption. Do not resume ordinary work or repeat the prior task. Return the required handover JSON now, with no prose outside the JSON.
+
+Required exact keys:
+{"handover_summary":"...","entry_state_and_done":"...","completed":["..."],"in_flight":["..."],"not_started":["..."],"decisions":["..."],"rejected_approaches":["..."],"verification":["..."],"uncertainties":["..."],"references":["..."],"lessons":["..."],"next_action":"..."}`;
+
 export function successorPrompt(manifest: Manifest, value: DurableHandover, messages: OperatorMessage[]): string {
   return `You are the fresh successor SEPT Pi session. Continue immediately; do not rediscover the predecessor's work.
 

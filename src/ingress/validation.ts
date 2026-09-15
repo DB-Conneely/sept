@@ -1,6 +1,7 @@
 import { realpathSync, statSync } from "node:fs";
 import { isAbsolute, relative, resolve, sep } from "node:path";
-import { DEFAULTS, SeptError, type Manifest } from "../durable/index.js";
+import { DEFAULTS, SeptError, type Manifest, type TaskRequest } from "../durable/index.js";
+import { ModelAccessService } from "../model-access/index.js";
 
 export const TASK_KEYS = ["maxEpochs", "maxInvocations", "model", "provider", "role", "task", "thinking", "timeoutSeconds", "workspace"] as const;
 const UNSAFE_CONTROLS = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/;
@@ -50,7 +51,7 @@ export function validateMessageBody(value: unknown): string {
   return validateOperatorMessage(input.message);
 }
 
-export function validateRequest(value: unknown, piVersion: string, workspaceRoot?: string, selected?: { provider: string; model: string }): Omit<Manifest, "runId" | "createdAt"> {
+export function validateRequest(value: unknown, piVersion: string, workspaceRoot?: string): Omit<Manifest, "runId" | "createdAt"> {
   const input = record(value, "task request");
   assertKnownKeys(input, TASK_KEYS, "task request");
   const task = safeText(input.task, "task", 32_768);
@@ -81,14 +82,23 @@ export function validateRequest(value: unknown, piVersion: string, workspaceRoot
     task,
     role,
     workspace,
-    provider: input.provider as string | undefined ?? selected?.provider ?? DEFAULTS.provider,
-    model: input.model as string | undefined ?? selected?.model ?? DEFAULTS.model,
+    provider: input.provider as string | undefined ?? DEFAULTS.provider,
+    model: input.model as string | undefined ?? DEFAULTS.model,
     thinking: input.thinking as Manifest["thinking"] | undefined ?? DEFAULTS.thinking,
     maxInvocations,
     maxEpochs,
     timeoutSeconds,
     piVersion,
   };
+}
+
+export async function resolveTaskManifest(value: unknown, piVersion: string, modelAccess: ModelAccessService, workspaceRoot?: string): Promise<Omit<Manifest, "runId" | "createdAt">> {
+  const validated = validateRequest(value, piVersion, workspaceRoot);
+  const input = value as TaskRequest;
+  const explicit = input.provider !== undefined && input.model !== undefined ? { provider: validated.provider, model: validated.model } : undefined;
+  const resolved = modelAccess.resolveSelection(explicit);
+  const preflight = await modelAccess.preflightSelection(resolved.provider, resolved.model, resolved.source, AbortSignal.timeout(15_000));
+  return { ...validated, provider: preflight.selected.provider, model: preflight.selected.model };
 }
 
 function boundedNumber(value: unknown, fallback: number, name: string, min: number, max: number): number {

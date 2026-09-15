@@ -12,6 +12,7 @@ import { SeptService, validateRequest } from "../../src/ingress/index.js";
 import { createTelemetry, NOOP_TELEMETRY } from "../../src/observability/index.js";
 import type { SessionHost, SessionRunResult } from "../../src/pi-integration/index.js";
 import { CycleController } from "../../src/runtime/index.js";
+import { testModelAccess } from "../support/model-access.js";
 
 const auth = { Authorization: "Bearer observability-test-token" };
 const waiting: SessionRunResult = {
@@ -104,6 +105,7 @@ test("wired lifecycle exports correlated safe spans, metrics, and JSON logs", as
       if (!host) throw new Error("unexpected host creation");
       return host;
     },
+    modelAccessService: await testModelAccess(),
   });
   const address = await service.start();
   const base = `http://${address.host}:${address.port}`;

@@ -3,7 +3,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { posix } from "node:path";
 import test from "node:test";
 
-const mechanisms = new Set(["durable", "ingress", "observability", "pi-integration", "runtime"]);
+const mechanisms = new Set(["durable", "ingress", "model-access", "observability", "pi-integration", "runtime"]);
 
 function sourceFiles(directory = "src"): string[] {
   return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {

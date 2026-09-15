@@ -1,10 +1,10 @@
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
-import { PiModelAccess, type SafeAuthStatus } from "./models.js";
+import { ModelAccessService, type AuthenticationStatus } from "../model-access/index.js";
 
 export { getAgentDir };
 
-export async function inspectPi(agentDir: string, provider: string): Promise<{ provider: string; authenticated: boolean; subscription: boolean; authentication: SafeAuthStatus }> {
-  const access = await PiModelAccess.create(agentDir);
-  const authentication = await access.authStatus(provider, true, AbortSignal.timeout(15_000));
-  return { provider, authenticated: authentication.state === "configured", subscription: authentication.subscription, authentication };
+export async function inspectPi(agentDir: string, provider: string): Promise<{ provider: string; authenticated: boolean; subscription: boolean; authentication: AuthenticationStatus }> {
+  const access = await ModelAccessService.create(agentDir);
+  const authentication = await access.authenticationStatus(provider, AbortSignal.timeout(15_000));
+  return { provider, authenticated: authentication.state === "authenticated", subscription: authentication.method === "subscription", authentication };
 }

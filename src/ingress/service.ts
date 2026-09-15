@@ -1,12 +1,12 @@
 import { timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { ConversationCursorExpiredError, MAX_CONVERSATION_STREAMS, QueueCapacityError, SeptError, type ConversationEvent, type TaskRequest } from "../durable/index.js";
+import { ConversationCursorExpiredError, MAX_CONVERSATION_STREAMS, QueueCapacityError, SeptError, type ConversationEvent } from "../durable/index.js";
+import { ModelAccessService } from "../model-access/index.js";
 import type { Observability } from "../observability/index.js";
 import { classifyError, NOOP_TELEMETRY } from "../observability/index.js";
-import { readModelSelection, type ModelSelection } from "../pi-integration/index.js";
 import { type HostFactory, RunNotFoundError, WorkerConflictError, WorkerRuntime } from "../runtime/index.js";
 import { RequestError } from "./errors.js";
-import { canonicalWorkspaceRoot, validateMessageBody, validateRequest } from "./validation.js";
+import { canonicalWorkspaceRoot, resolveTaskManifest, validateMessageBody } from "./validation.js";
 import { WebhookRouter } from "./webhook-router.js";
 
 export interface ServiceOptions {
@@ -19,6 +19,7 @@ export interface ServiceOptions {
   piVersion: string;
   workspaceRoot?: string;
   telemetry?: Observability;
+  modelAccessService?: ModelAccessService;
 }
 
 /** Authenticated HTTP composition around the transport-independent single-slot runtime. */
@@ -26,9 +27,9 @@ export class SeptService {
   private readonly server;
   private readonly observability: Observability;
   private readonly worker: WorkerRuntime;
-  private readonly webhooks: WebhookRouter;
+  private webhooks?: WebhookRouter;
+  private modelAccess?: ModelAccessService;
   private readonly workspaceRoot: string;
-  private readonly modelSelection: ModelSelection | undefined;
   private listening = false;
   private ready = false;
   private stopPromise?: Promise<void>;
@@ -38,9 +39,8 @@ export class SeptService {
     if (!options.token) throw new SeptError("SEPT_TOKEN is required; refusing to start without bearer authentication");
     this.observability = options.telemetry ?? NOOP_TELEMETRY;
     this.workspaceRoot = canonicalWorkspaceRoot(options.workspaceRoot ?? process.cwd());
-    this.modelSelection = readModelSelection(options.agentDir);
+    this.modelAccess = options.modelAccessService;
     this.worker = new WorkerRuntime({ stateRoot: options.stateRoot, agentDir: options.agentDir, workspaceRoot: this.workspaceRoot, hostFactory: options.hostFactory, observability: this.observability });
-    this.webhooks = new WebhookRouter(options.stateRoot, options.piVersion, this.workspaceRoot, this.worker, this.observability, this.modelSelection);
     this.server = createServer((request, response) => void this.route(request, response));
   }
 
@@ -55,6 +55,8 @@ export class SeptService {
       });
       this.listening = true;
       try {
+        this.modelAccess ??= await ModelAccessService.create(this.options.agentDir);
+        this.webhooks = new WebhookRouter(this.options.stateRoot, this.options.piVersion, this.workspaceRoot, this.worker, this.observability, this.modelAccess);
         const adoption = this.worker.initialize();
         this.ready = true;
         const address = this.server.address();
@@ -135,14 +137,37 @@ export class SeptService {
         await emptyBody(request);
         return json(response, 202, this.worker.drain());
       }
+      if (request.method === "GET" && url.pathname === "/v1/model-access/providers") {
+        noQueryExcept(url, []);
+        const catalogue = await this.access().catalogue(undefined, AbortSignal.timeout(15_000));
+        return json(response, 200, { providers: catalogue.providers, ...(catalogue.error ? { error: catalogue.error } : {}) });
+      }
+      if (request.method === "GET" && url.pathname === "/v1/model-access/models") {
+        noQueryExcept(url, ["provider"]);
+        const providers = url.searchParams.getAll("provider");
+        if (providers.length > 1 || (providers.length === 1 && !providers[0])) throw new RequestError(400, "provider must be one non-empty identifier");
+        const catalogue = await this.access().catalogue(providers[0], AbortSignal.timeout(15_000));
+        return json(response, 200, { models: catalogue.models, ...(catalogue.error ? { error: catalogue.error } : {}) });
+      }
+      if (request.method === "GET" && url.pathname === "/v1/model-access/selection") {
+        noQueryExcept(url, []);
+        const resolved = this.access().resolveSelection();
+        return json(response, 200, await this.access().preflightSelection(resolved.provider, resolved.model, resolved.source, AbortSignal.timeout(15_000)));
+      }
+      if (request.method === "PUT" && url.pathname === "/v1/model-access/selection") {
+        noQueryExcept(url, []);
+        const selection = selectionBody(await body<unknown>(request, 8 * 1024));
+        return json(response, 200, await this.access().setPodDefault(selection.provider, selection.model, AbortSignal.timeout(15_000)));
+      }
       if (request.method === "POST" && url.pathname === "/v1/tasks") {
-        const input = await body<TaskRequest>(request, 256 * 1024);
-        const result = this.worker.createTask(validateRequest(input, this.options.piVersion, this.workspaceRoot, this.modelSelection));
+        this.worker.assertTaskAvailable();
+        const input = await body<unknown>(request, 256 * 1024);
+        const result = this.worker.createTask(await resolveTaskManifest(input, this.options.piVersion, this.access(), this.workspaceRoot));
         return json(response, 202, result);
       }
       if (request.method === "POST" && url.pathname === "/v1/webhooks") {
         const input = await body<unknown>(request, 256 * 1024);
-        const result = this.webhooks.receive(input);
+        const result = await this.webhookRouter().receive(input);
         return json(response, result.status, result.body);
       }
       const match = url.pathname.match(/^\/v1\/tasks\/([A-Za-z0-9_-]+)(?:\/(events|log|messages|conversation|stream|cancel))?$/);
@@ -187,6 +212,16 @@ export class SeptService {
       const message = error instanceof RequestError || error instanceof SeptError ? error.message : error instanceof SyntaxError ? "request body must be valid JSON" : "internal error";
       return json(response, status, { error: message });
     }
+  }
+
+  private access(): ModelAccessService {
+    if (!this.modelAccess) throw new SeptError("model access is not ready");
+    return this.modelAccess;
+  }
+
+  private webhookRouter(): WebhookRouter {
+    if (!this.webhooks) throw new SeptError("webhook routing is not ready");
+    return this.webhooks;
   }
 
   private streamConversation(request: IncomingMessage, response: ServerResponse, store: ReturnType<WorkerRuntime["findRun"]>, after: number): void {
@@ -252,6 +287,17 @@ export class SeptService {
   }
 }
 
+function selectionBody(value: unknown): { provider: string; model: string } {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new SeptError("selection request must be an object");
+  const input = value as Record<string, unknown>;
+  if (Object.keys(input).sort().join() !== "model,provider" || typeof input.provider !== "string" || typeof input.model !== "string") throw new SeptError("selection request requires only provider and model identifiers");
+  return { provider: input.provider, model: input.model };
+}
+
+function noQueryExcept(url: URL, allowed: readonly string[]): void {
+  if ([...url.searchParams.keys()].some((key) => !allowed.includes(key))) throw new RequestError(400, "request query has unexpected fields");
+}
+
 function queryInteger(parameters: URLSearchParams, name: string, fallback: number, minimum: number, maximum: number): number {
   const values = parameters.getAll(name);
   if (!values.length) return fallback;
@@ -309,6 +355,7 @@ function routeTemplate(method: string, pathname: string): string {
   if (method === "POST" && pathname === "/v1/tasks") return "/v1/tasks";
   if (method === "POST" && pathname === "/v1/drain") return "/v1/drain";
   if (method === "POST" && pathname === "/v1/webhooks") return "/v1/webhooks";
+  if ((method === "GET" || method === "PUT") && pathname.startsWith("/v1/model-access/")) return pathname;
   const match = pathname.match(/^\/v1\/tasks\/[A-Za-z0-9_-]+(?:\/(events|log|messages|conversation|stream|cancel))?$/);
   if (!match) return "unmatched";
   return `/v1/tasks/{runId}${match[1] ? `/${match[1]}` : ""}`;

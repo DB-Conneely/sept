@@ -1,14 +1,14 @@
 #!/usr/bin/env node
 import { readFileSync } from "node:fs";
-import { Writable } from "node:stream";
-import { createInterface } from "node:readline";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { acquireStateRootLease, listRuns, RunStore, SeptError, WorkerLifecycleStore, type TaskRequest } from "./durable/index.js";
 import { SeptService, validateRequest } from "./ingress/index.js";
+import { ModelAccessService } from "./model-access/index.js";
 import { classifyError, createTelemetry, NOOP_TELEMETRY } from "./observability/index.js";
-import { getAgentDir, inspectPi, PiModelAccess, readModelSelection, validateModelsConfiguration, type LoginInteraction } from "./pi-integration/index.js";
+import { getAgentDir, inspectPi } from "./pi-integration/index.js";
 import { CycleController } from "./runtime/index.js";
+import { createTerminalAuthInteraction } from "./cli/auth-interaction.js";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const pkg = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8")) as { dependencies: Record<string, string>; version: string };
@@ -45,47 +45,6 @@ function int(value: string | undefined): number | undefined { return value === u
 
 let telemetry = NOOP_TELEMETRY;
 
-function cleanDisplay(value: string): string {
-  return value.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "").replace(/\bBearer\s+\S+/gi, "[redacted]").slice(0, 2048);
-}
-
-function terminalInteraction(): LoginInteraction & { close(): void } {
-  let muted = false;
-  const output = new Writable({ write(chunk, _encoding, callback) { if (!muted) process.stdout.write(chunk); callback(); } }) as Writable & { isTTY?: boolean; columns?: number };
-  output.isTTY = process.stdout.isTTY;
-  output.columns = process.stdout.columns;
-  const input = createInterface({ input: process.stdin, output, terminal: process.stdin.isTTY === true });
-  const question = (message: string, secret: boolean, signal?: AbortSignal): Promise<string> => new Promise((resolvePromise, reject) => {
-    if (signal?.aborted) return reject(new Error("Login cancelled"));
-    const abort = (): void => { input.close(); reject(new Error("Login cancelled")); };
-    signal?.addEventListener("abort", abort, { once: true });
-    if (secret && process.stdin.isTTY) { process.stdout.write(`${cleanDisplay(message)}: `); muted = true; }
-    input.question(secret && process.stdin.isTTY ? "" : `${cleanDisplay(message)}: `, { signal }, (answer) => {
-      signal?.removeEventListener("abort", abort);
-      if (secret && process.stdin.isTTY) { muted = false; process.stdout.write("\n"); }
-      resolvePromise(answer);
-    });
-  });
-  return {
-    prompt: async (prompt) => {
-      if (prompt.type === "select") {
-        process.stdout.write(`${cleanDisplay(prompt.message)}\n${prompt.options.map((option) => `  ${option.id}: ${cleanDisplay(option.label)}${option.description ? ` — ${cleanDisplay(option.description)}` : ""}`).join("\n")}\n`);
-        const selected = await question("Selection", false, prompt.signal);
-        if (!prompt.options.some((option) => option.id === selected)) throw new Error("Login selection is invalid");
-        return selected;
-      }
-      return question(prompt.message, prompt.type === "secret" || prompt.type === "manual_code", prompt.signal);
-    },
-    notify: (event) => {
-      if (event.type === "auth_url") process.stdout.write(`Open this provider authorization URL:\n${cleanDisplay(event.url)}\n${event.instructions ? `${cleanDisplay(event.instructions)}\n` : ""}`);
-      else if (event.type === "device_code") process.stdout.write(`Open ${cleanDisplay(event.verificationUri)} and enter code ${cleanDisplay(event.userCode)}.\n`);
-      else if (event.type === "info") process.stdout.write(`${cleanDisplay(event.message)}${event.links?.length ? `\n${event.links.map((link) => `${cleanDisplay(link.label ?? "Link")}: ${cleanDisplay(link.url)}`).join("\n")}` : ""}\n`);
-      else process.stdout.write(`${cleanDisplay(event.message)}\n`);
-    },
-    close: () => input.close(),
-  };
-}
-
 async function main(): Promise<void> {
   const command = process.argv[2] as Command | undefined;
   if (!command || !Object.hasOwn(OPTION_KEYS, command)) {
@@ -101,27 +60,33 @@ async function main(): Promise<void> {
 
   if (command === "models") {
     if (action === "validate") {
-      process.stdout.write(`${JSON.stringify(validateModelsConfiguration(agentDir), null, 2)}\n`);
+      const access = await ModelAccessService.create(agentDir);
+      process.stdout.write(`${JSON.stringify(access.validateCustomConfiguration(), null, 2)}\n`);
       return;
     }
-    const access = await PiModelAccess.create(agentDir);
+    const access = await ModelAccessService.create(agentDir);
     if (action === "list") {
-      process.stdout.write(`${JSON.stringify(await access.catalogue(options.provider), null, 2)}\n`);
+      process.stdout.write(`${JSON.stringify(await access.catalogue(options.provider, AbortSignal.timeout(15_000)), null, 2)}\n`);
+      return;
+    }
+    if (action === "current") {
+      const resolved = access.resolveSelection();
+      process.stdout.write(`${JSON.stringify(await access.preflightSelection(resolved.provider, resolved.model, resolved.source, AbortSignal.timeout(15_000)), null, 2)}\n`);
       return;
     }
     if (action === "select") {
       if (!options.provider || !options.model) throw new Error("models select requires --provider and --model");
-      process.stdout.write(`${JSON.stringify(await access.select(options.provider, options.model), null, 2)}\n`);
+      process.stdout.write(`${JSON.stringify(await access.setPodDefault(options.provider, options.model, AbortSignal.timeout(15_000)), null, 2)}\n`);
       return;
     }
-    throw new Error("Usage: sept models list|validate|select [--provider <id>] [--model <id>]");
+    throw new Error("Usage: sept models list|current|validate|select [--provider <id>] [--model <id>]");
   }
 
   if (command === "auth") {
     if (!options.provider) throw new Error("auth commands require --provider");
-    const access = await PiModelAccess.create(agentDir);
+    const access = await ModelAccessService.create(agentDir);
     if (action === "status") {
-      process.stdout.write(`${JSON.stringify(await access.authStatus(options.provider, true, AbortSignal.timeout(15_000)), null, 2)}\n`);
+      process.stdout.write(`${JSON.stringify(await access.authenticationStatus(options.provider, AbortSignal.timeout(15_000)), null, 2)}\n`);
       return;
     }
     if (action === "logout") {
@@ -129,9 +94,9 @@ async function main(): Promise<void> {
       return;
     }
     if (action === "login") {
-      const method = options.method === "api-key" ? "api_key" : options.method === "subscription" || options.method === "oauth" ? "oauth" : undefined;
-      if (!method) throw new Error("auth login requires --method api-key|subscription");
-      const interaction = terminalInteraction();
+      const method = options.method === "api-key" ? "api_key" : options.method === "subscription" ? "subscription" : options.method === "oauth" ? "oauth" : undefined;
+      if (!method) throw new Error("auth login requires --method api-key|subscription|oauth");
+      const interaction = createTerminalAuthInteraction();
       try { process.stdout.write(`${JSON.stringify(await access.login(options.provider, method, interaction), null, 2)}\n`); }
       finally { interaction.close(); }
       return;
@@ -176,7 +141,12 @@ async function main(): Promise<void> {
         maxEpochs: int(options["max-epochs"]),
         timeoutSeconds: int(options.timeout),
       };
-      const store = telemetry.spanSync("sept.task.create", {}, () => RunStore.create(stateRoot, validateRequest(request, piVersion, undefined, readModelSelection(agentDir))));
+      const validated = validateRequest(request, piVersion);
+      const access = await ModelAccessService.create(agentDir);
+      const explicit = request.provider !== undefined && request.model !== undefined ? { provider: validated.provider, model: validated.model } : undefined;
+      const resolved = access.resolveSelection(explicit);
+      const preflight = await access.preflightSelection(resolved.provider, resolved.model, resolved.source, AbortSignal.timeout(15_000));
+      const store = telemetry.spanSync("sept.task.create", {}, () => RunStore.create(stateRoot, { ...validated, provider: preflight.selected.provider, model: preflight.selected.model }));
       telemetry.workerStarted("none", "run");
       telemetry.setWorkerState("busy");
       telemetry.setRunState("active", 1, 0, 0);

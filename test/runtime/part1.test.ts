@@ -6,6 +6,7 @@ import test from "node:test";
 import { MAX_CONVERSATION_EVENTS, RunStore, validateWorkResponse } from "../../src/durable/index.js";
 import { SeptService, validateRequest } from "../../src/ingress/index.js";
 import type { SessionHost, SessionRunResult } from "../../src/pi-integration/index.js";
+import { testModelAccess } from "../support/model-access.js";
 
 const auth = { Authorization: "Bearer part1-token" };
 const response = (status: "complete" | "waiting", message: string): SessionRunResult => ({
@@ -92,7 +93,7 @@ function environment() {
 }
 
 async function start(root: string, stateRoot: string, hostFactory?: () => Promise<SessionHost>) {
-  const service = new SeptService({ stateRoot, agentDir: "/pi", workspaceRoot: root, token: "part1-token", host: "127.0.0.1", port: 0, piVersion: "0.85.1", hostFactory });
+  const service = new SeptService({ stateRoot, agentDir: "/pi", workspaceRoot: root, token: "part1-token", host: "127.0.0.1", port: 0, piVersion: "0.85.1", hostFactory, modelAccessService: await testModelAccess() });
   const address = await service.start();
   return { service, base: `http://${address.host}:${address.port}` };
 }

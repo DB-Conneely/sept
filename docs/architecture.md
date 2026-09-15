@@ -1,53 +1,65 @@
 # SEPT module map
 
-SEPT is organized by the mechanisms it owns. Each mechanism has one public `index.ts`; production callers outside that folder use the public surface rather than implementation files. Mechanism-focused tests may import an internal directly when verifying that internal, rather than widening the runtime facade solely for tests.
+SEPT is organized by the mechanisms it owns. Each mechanism has one public `index.ts`; production callers outside that folder use that surface rather than implementation files. Focused tests may import an implementation directly when doing so avoids widening a runtime facade.
 
 ```text
 src/
-  cli.ts                    public CLI composition
+  cli.ts                         installed command dispatch and composition
+  cli/
+    auth-interaction.ts          terminal adapter for Pi AuthInteraction
+  model-access/
+    index.ts                     intentional public surface
+    contracts.ts                 credential-blind provider/model/auth/selection DTOs
+    configuration.ts             Pod default and safe models.json checks
+    service.ts                   thin Pi ModelRuntime facade and preflight
   durable/
-    index.ts                durable state public surface
-    contracts.ts            run, task, handover, conversation, and lifecycle contracts
-    store.ts                fsynced files, ordering, leases, drain/cancel state, and bounded evidence
+    index.ts                     durable state public surface
+    contracts.ts                 run, task, handover, conversation, lifecycle contracts
+    store.ts                     fsynced files, ordering, leases, drain/cancel state
   ingress/
-    index.ts                HTTP/webhook public surface
-    errors.ts               ingress request errors and HTTP status mapping
-    service.ts              authenticated HTTP, transcript replay, and bounded SSE routes
-    validation.ts           task request validation
-    webhook.ts              normalized event validation, hashes, and receipts
-    webhook-router.ts       idempotent event-to-worker routing
+    index.ts                     HTTP public surface
+    errors.ts                    request errors and HTTP status mapping
+    service.ts                   authenticated HTTP, model projection, replay, SSE
+    validation.ts                task/workspace validation and model preflight composition
+    webhook.ts                   normalized event validation, hashes, receipts
+    webhook-router.ts            idempotent event-to-worker routing
   observability/
-    index.ts                injected facade and construction surface
-    contract.ts             business-facing observability contract
-    configuration.ts        identity, resource, and exporter selection
-    logger.ts               bounded redacted JSON stderr logging
-    safe-fields.ts          field allowlist and value bounds
-    exporters.ts            contained trace/metric exporter wrappers
-    metrics.ts              runtime instruments and bounded state
-    telemetry.ts            facade implementation and signal lifecycle
-    tracing.ts              spans, propagation, limits, and trace provider
+    index.ts                     injected facade and construction surface
+    contract.ts                  business-facing observability contract
+    configuration.ts             identity, resource, exporter selection
+    logger.ts                    bounded redacted JSON stderr logging
+    safe-fields.ts               field allowlist and value bounds
+    exporters.ts                 contained exporter wrappers
+    metrics.ts                   runtime instruments and bounded state
+    telemetry.ts                 facade implementation and signal lifecycle
+    tracing.ts                   spans, propagation, limits, provider
   pi-integration/
-    index.ts                Pi integration public surface
-    diagnostics.ts          agent-directory and authentication diagnostics
-    prompts.ts              control, continuation, and handover prompts
-    session.ts              native Pi session lifecycle and context rotation
+    index.ts                     Pi session-policy public surface
+    diagnostics.ts               non-secret installed diagnostics
+    prompts.ts                   control, continuation, handover prompts
+    rollover.ts                  adaptive arithmetic and durable evidence
+    session.ts                   native Pi session and fresh-session lifecycle
   runtime/
-    index.ts                runtime public surface
-    controller.ts           durable invocation/cycling and Pi-native cancellation state machine
-    worker.ts               single resident slot, durable drain, and controller ownership
+    index.ts                     runtime public surface
+    controller.ts               durable cycling and Pi-native cancellation state machine
+    worker.ts                   single resident slot, drain, controller ownership
 ```
 
 The dependency direction is:
 
 ```text
-cli -> ingress -> runtime -> pi-integration
- |        |          |             |
- +--------+----------+-------------+-> durable
-          +----------+-------------+-> observability contract
+cli -> ingress -> runtime -> pi-integration -> model-access
+ |        |                         |               |
+ +--------+-------------------------+---------------+-> durable
+          +-------------------------+-----------------> observability contract
 ```
 
-`durable` has no dependency on higher-level mechanisms. The state-root `worker-state.json` is authoritative for accepting/draining/drained readiness. Each run's bounded `conversation.jsonl` is the sole client-facing event contract; it is separate from internal lifecycle events, logs, Pi sessions, and checkpoint/handover controls. Durable projection markers reconcile the operator queue-to-conversation crash seam without resurrecting records removed by transcript retention. `observability` does not import durable, ingress, runtime, or Pi business implementations. `pi-integration` depends on durable contracts/storage only for the evidence it must record and receives observability through the facade. `runtime` owns execution and slot lifecycle without knowing HTTP, including the process-wide state-root lease, durable drain admission gate, native Pi abort coordination, and graceful checkpoint boundary. Cancellation state is durable before interruption, and checks after Pi awaits make it impossible for a cancelled controller to publish a later lifecycle result. `ingress` translates the stable authenticated API and normalized webhook contract onto the runtime and projects the durable conversation contract through strict bounded replay/SSE; streams hold no authoritative state, and terminal metadata comes from the run snapshot rather than page position.
+`model-access` is normalization and control around the installed Pi `ModelRuntime`, not another provider layer. Pi owns provider/model discovery, auth, credential storage/refresh, availability, compatible endpoint execution, and model requests. SEPT exposes only approved metadata, reads the atomic credential-free Pod default for every admission, and preflights the final pair before `RunStore.create()`. Direct and webhook tasks use the same admission function and service. Login remains UI-neutral in the service; only the installed CLI supplies an interaction adapter. Plain HTTP exposes authenticated read/selection routes but no secret mutation.
 
-A deterministic architecture test enforces index-only cross-mechanism source imports and the absence of observability-to-business imports. `npm run build` first removes `dist` with the Node-built-in cleaner so deleted or moved modules cannot survive as stale executable output.
+`durable` has no dependency on higher mechanisms. Existing format-2 manifests with fixed rollover options remain readable and normalize to format 3; all new manifests contain the resolved provider/model and no rollover knobs or credentials. The state-root `worker-state.json` remains authoritative for accepting/draining/drained readiness. Each run's bounded `conversation.jsonl` remains the sole client-facing event contract, separate from internal lifecycle events, logs, Pi sessions, rollover evidence, and checkpoint/handover controls.
 
-This structure does not add a second agent loop, provider layer, telemetry system, scheduler, or control plane. Pi remains responsible for authentication, tools, model calls, sessions, context accounting, steering, and fresh-session replacement.
+`pi-integration` receives the selected Pi model from the manifest, verifies context/output metadata again at session creation, and disables Pi auto-compaction. `rollover.json` is scoped to provider, model, Pi session ID, and context window. It records finalized provider usage, the last three positive growth deltas, consecutive unusable samples, and the durable rotation-required flag. A recovered flag inspects the resumed Pi session: an already completed steer is reused without another model call or duplicate steer; an uncompleted steer resumes the handover request. Handover JSON, Markdown, event, and state still commit before `AgentSessionRuntime.newSession()`.
+
+`runtime` retains execution, cancellation, wait/wake, shutdown, limits, restart adoption, and slot ownership without knowing HTTP. `ingress` translates the authenticated API and webhook contract onto runtime and model-access services. `observability` imports no business mechanisms and receives only bounded classifications/numbers; model identifiers, credentials, auth interactions, prompts, and provider errors are not telemetry fields.
+
+The architecture suite enforces index-only cross-mechanism imports. `npm run build` cleans `dist`, so deleted or moved modules cannot survive as stale executable output. SEPT does not add ACP, a second agent loop, provider client, tokenizer, compactor, dashboard, cloud service, or model server.

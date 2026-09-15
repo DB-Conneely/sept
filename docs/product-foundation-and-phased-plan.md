@@ -2,7 +2,7 @@
 
 ## Status
 
-This document records the product direction discussed after Part 1. It is a decision brief, not approval to implement Part 2. In particular, it recommends removing ACP from the mandatory Node MVP unless an immediate ACP-client integration is a launch requirement.
+This document records the product direction established after Part 1. Part 2 was subsequently authorized and implemented as Pi-native model access/selection plus adaptive model-neutral rollover. ACP remains outside the mandatory Node MVP unless a concrete ACP client and transport become a launch requirement.
 
 ## Product synopsis
 
@@ -35,19 +35,18 @@ SEPT already accepts `provider` and `model` on a run, resolves that pair through
 
 SEPT supplies the production guarantees around Pi: durable lifecycle state, drain, cancellation, restart recovery, bounded conversation output, wait/wake behavior, adaptive context cycling, workspace policy, Pod identity, and control-plane contracts.
 
-### The missing Node-MVP model-access surface
+### Delivered Node-MVP model-access surface
 
-The Node still needs to expose Pi's existing capabilities coherently:
+Part 2 exposes Pi's existing capabilities coherently:
 
 1. A sanitized provider/model catalog with availability and capability metadata.
-2. A local `sept auth` flow and equivalent local Node API for provider login, logout, status, and validation.
-3. Local API-key entry backed by an OS secret store, with environment variables or customer secret mounts for headless containers.
-4. Pi subscription/OAuth login interactions surfaced through the CLI and later the dashboard.
-5. Explicit provider/model selection when creating a run.
-6. Local/custom-provider configuration with required context and capability metadata.
-7. Opaque credential-profile references if a Node needs more than one account for the same provider.
+2. A local `sept auth` flow for Pi login, logout, and status, plus authenticated credential-blind Node catalogue/status metadata. Secret login is deliberately not exposed over the current plain HTTP listener.
+3. Pi credential storage, environment interpolation, customer secret mounts, and intentional credential commands for headless operation.
+4. Pi subscription/OAuth login interactions surfaced through the CLI and reusable service contract for a later dashboard adapter.
+5. Explicit Pod defaults and per-run provider/model overrides, preflighted before acceptance and persisted in manifests.
+6. Local/custom-provider validation with explicit context-window and maximum-output metadata.
 
-The cloud may learn that a credential profile is available, but never its secret. Initial credential setup should occur directly on the Node. A future remote dashboard can either open a Node-local setup flow or use end-to-end encryption to the paired Node; SEPT Cloud must not receive plaintext credentials.
+Multiple named credential profiles remain deferred because Pi's current `CredentialStore` contract stores one credential per provider. The cloud may learn that a credential profile is available, but never its secret. Initial credential setup should occur directly on the Node. A future remote dashboard can either open a Node-local setup flow or use end-to-end encryption to the paired Node; SEPT Cloud must not receive plaintext credentials.
 
 Examples:
 
@@ -79,7 +78,7 @@ Running the complete Claude Code or Codex CLI harness is also distinct from usin
 
 ### Phase 1: complete the production Node
 
-Deliver the self-contained customer-side runtime:
+Delivered as Parts 1 and 2:
 
 - Existing Part 1 lifecycle and conversational guarantees.
 - Adaptive model-neutral context cycling.
@@ -89,7 +88,7 @@ Deliver the self-contained customer-side runtime:
 - Credential isolation suitable for local and container operation.
 - Installed CLI, worker, Pi, restart, failure, and container verification.
 
-**Deliverable:** a durable Pi-native Pod that can use customer-owned subscription access, API keys, or compatible local models without SEPT Cloud.
+**Delivered:** a durable Pi-native Pod that can use customer-owned subscription access, API keys, or compatible local models without SEPT Cloud. Installed CLI, authenticated worker, production Pi session/runtime, and container evidence are recorded in the Part 1 and Part 2 reports.
 
 ACP is an optional interoperability addition to this phase only if a named launch client requires it.
 
