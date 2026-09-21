@@ -1,0 +1,8 @@
+dist/
+node_modules/
+coverage/
+.sept/
+docs/
+package-lock.json
+*.jsonl
+*.log

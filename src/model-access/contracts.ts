@@ -1,6 +1,14 @@
-export type AuthenticationState = "authenticated" | "authentication_required" | "not_required" | "error";
+/** Credential-blind authentication availability reported for one Pi provider. */
+export type AuthenticationState =
+  | "authenticated"
+  | "authentication_required"
+  | "not_required"
+  | "error";
+
+/** Pi authentication flow exposed without credential values. */
 export type AuthenticationMethod = "api_key" | "subscription" | "oauth";
 
+/** Bounded authentication status projected for operators and admission. */
 export interface AuthenticationStatus {
   provider: string;
   state: AuthenticationState;
@@ -9,6 +17,7 @@ export interface AuthenticationStatus {
   error?: string;
 }
 
+/** Credential-blind provider metadata normalized from Pi. */
 export interface ProviderDescription {
   id: string;
   name: string;
@@ -17,6 +26,7 @@ export interface ProviderDescription {
   availableModelCount: number;
 }
 
+/** Credential-blind model metadata required for selection and rollover. */
 export interface ModelDescription {
   provider: string;
   id: string;
@@ -27,27 +37,32 @@ export interface ModelDescription {
   maxOutputTokens: number;
   capabilities: {
     reasoning: boolean;
-    input: Array<"text" | "image">;
+    input: ("text" | "image")[];
   };
 }
 
+/** Provider and model catalogue with a bounded partial-availability diagnostic. */
 export interface ModelCatalogue {
   providers: ProviderDescription[];
   models: ModelDescription[];
   error?: string;
 }
 
+/** Complete provider/model pair accepted as selection authority. */
 export interface ModelSelection {
   provider: string;
   model: string;
 }
 
+/** Precedence source for the immutable model pair selected at admission. */
 export type SelectionSource = "explicit" | "pod_default" | "built_in_default";
 
+/** Model pair annotated with the selection rule that supplied it. */
 export interface ResolvedModelSelection extends ModelSelection {
   source: SelectionSource;
 }
 
+/** Fully available and authenticated selection safe to persist in a run manifest. */
 export interface PreflightedModelSelection {
   selected: ResolvedModelSelection;
   available: true;
@@ -55,22 +70,42 @@ export interface PreflightedModelSelection {
   model: ModelDescription;
 }
 
+/** UI-neutral prompt delegated directly to an interactive Pi authentication flow. */
 export type LoginPrompt =
-  | { type: "text" | "secret" | "manual_code"; message: string; placeholder?: string; signal?: AbortSignal }
-  | { type: "select"; message: string; options: readonly { id: string; label: string; description?: string }[]; signal?: AbortSignal };
+  | {
+      type: "text" | "secret" | "manual_code";
+      message: string;
+      placeholder?: string;
+      signal?: AbortSignal;
+    }
+  | {
+      type: "select";
+      message: string;
+      options: readonly { id: string; label: string; description?: string }[];
+      signal?: AbortSignal;
+    };
 
+/** Credential-free progress event emitted by a Pi authentication flow. */
 export type LoginEvent =
   | { type: "info"; message: string; links?: readonly { url: string; label?: string }[] }
   | { type: "auth_url"; url: string; instructions?: string }
-  | { type: "device_code"; userCode: string; verificationUri: string; intervalSeconds?: number; expiresInSeconds?: number }
+  | {
+      type: "device_code";
+      userCode: string;
+      verificationUri: string;
+      intervalSeconds?: number;
+      expiresInSeconds?: number;
+    }
   | { type: "progress"; message: string };
 
+/** Operator-owned interaction boundary passed to Pi without retaining secrets. */
 export interface LoginInteraction {
   signal?: AbortSignal;
   prompt(value: LoginPrompt): Promise<string>;
   notify(value: LoginEvent): void;
 }
 
+/** Bounded summary of validated custom Pi provider/model configuration. */
 export interface CustomConfigurationStatus {
   configured: boolean;
   providers: number;

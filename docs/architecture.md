@@ -10,12 +10,32 @@ src/
   model-access/
     index.ts                     intentional public surface
     contracts.ts                 credential-blind provider/model/auth/selection DTOs
-    configuration.ts             Pod default and safe models.json checks
-    service.ts                   thin Pi ModelRuntime facade and preflight
+    input.ts                     hostile-object narrowing at configuration boundaries
+    jsonc.ts                     bounded JSONC parsing for Pi models.json
+    custom-configuration.ts      endpoint, credential, and rollover-metadata safety
+    model-metadata.ts            identifiers, model limits, and built-in fallback pair
+    pod-selection.ts             atomic credential-free Pod default persistence
+    normalization.ts             credential-blind Pi metadata and error projection
+    runtime-factory.ts           validated installed Pi ModelRuntime construction
+    service.ts                   catalogue, authentication, selection, and preflight facade
   durable/
     index.ts                     durable state public surface
     contracts.ts                 run, task, handover, conversation, lifecycle contracts
-    store.ts                     fsynced files, ordering, leases, drain/cancel state
+    errors.ts                    classified durability and capacity failures
+    limits.ts                    queue, record, conversation, and control bounds
+    filesystem.ts                atomic files, fsync ordering, bounded JSONL scanning
+    validation-primitives.ts     shared hostile-input narrowing primitives
+    state-codecs.ts              manifest and lifecycle-snapshot codecs
+    evidence-codecs.ts           event, message, conversation, and readiness codecs
+    control-codecs.ts            assistant control and handover validation
+    lease.ts                     stable process identity and exclusive durable leases
+    run-evidence.ts              sequenced internal events and bounded lifecycle logs
+    conversation-store.ts        bounded client conversation retention and recovery
+    operator-queue.ts            exact input admission, proof, and compaction
+    context-transfer-store.ts    checkpoint and handover durability ordering
+    run-store.ts                 cohesive facade over one run's durable mechanisms
+    run-discovery.ts             fail-closed restart discovery
+    worker-lifecycle-store.ts    durable drain/readiness authority
   ingress/
     index.ts                     HTTP public surface
     errors.ts                    request errors and HTTP status mapping
@@ -31,6 +51,7 @@ src/
     safe-fields.ts               field allowlist and value bounds
     exporters.ts                 contained exporter wrappers
     metrics.ts                   runtime instruments and bounded state
+    setup.ts                     SDK/exporter selection and signal-owner construction
     telemetry.ts                 facade implementation and signal lifecycle
     tracing.ts                   spans, propagation, limits, provider
   pi-integration/

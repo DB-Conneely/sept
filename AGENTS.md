@@ -1,5 +1,9 @@
 # AGENTS.md
 
+## TypeScript delivery rules
+
+All work under `src/**/*.ts` and `test/**/*.ts` must comply with `.codex/rules/typescript.md`. Treat its structural, documentation, typing, error, security, durability, scaling, testing, and installed-runtime requirements as non-negotiable review gates. Read that file before changing TypeScript. Part 1 implementation must not resume until the separately approved foundation refactor satisfies those rules and its required repository gates are wired.
+
 ## Product
 
 SEPT is a thin durable single-slot worker around the native Pi coding-agent SDK. Do not recreate provider clients, agent loops, tool runners, compaction, context tokenizers, TUI features, profiles, or Codex transports. Pi owns those concerns.
@@ -23,7 +27,10 @@ Do not move the current `src` runtime into speculative monorepo folders during P
 ## Commands
 
 ```bash
+npm run check
 npm test
 npm audit --omit=dev
 docker build -t sept:local .
 ```
+
+`npm run gate` composes the strict TypeScript, ESLint, Prettier, complete test, and production dependency-audit gates. Run it after every completed module and before any phase transition. A red or unrun gate is incomplete work, even when the process exits cleanly.

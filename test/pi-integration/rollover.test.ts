@@ -5,12 +5,24 @@ import { join } from "node:path";
 import test from "node:test";
 import { RunStore } from "../../src/durable/index.js";
 import { validateRequest } from "../../src/ingress/index.js";
-import { decideRollover, initialRolloverEvidence, loadRolloverEvidence, providerContextTokens, recordUnusableSample, recordUsableSample, saveRolloverEvidence } from "../../src/pi-integration/index.js";
+import {
+  decideRollover,
+  initialRolloverEvidence,
+  loadRolloverEvidence,
+  providerContextTokens,
+  recordUnusableSample,
+  recordUsableSample,
+  saveRolloverEvidence,
+} from "../../src/pi-integration/index.js";
 
 function store() {
   const root = mkdtempSync(join(tmpdir(), "sept-rollover-"));
-  const workspace = join(root, "workspace"); mkdirSync(workspace);
-  return RunStore.create(join(root, "runs"), validateRequest({ task: "roll over safely", workspace }, "0.85.1"));
+  const workspace = join(root, "workspace");
+  mkdirSync(workspace);
+  return RunStore.create(
+    join(root, "runs"),
+    validateRequest({ task: "roll over safely", workspace }, "0.85.1"),
+  );
 }
 
 test("adaptive arithmetic has exact boundaries across 128k, 272k, and approximately 1M windows", () => {
@@ -51,17 +63,43 @@ test("evidence keeps only positive growth, rejects regression, defers unusable u
   evidence = recordUsableSample(evidence, 18_000).evidence;
   assert.deepEqual(evidence.growthTokens, [5_000, 2_000, 1_000]);
   assert.throws(() => recordUsableSample(evidence, 17_999), /regressed/);
-  evidence = recordUnusableSample(recordUnusableSample(recordUnusableSample(recordUnusableSample(evidence))));
+  evidence = recordUnusableSample(
+    recordUnusableSample(recordUnusableSample(recordUnusableSample(evidence))),
+  );
   assert.equal(evidence.unusableSamples, 3);
   saveRolloverEvidence(run, evidence);
-  assert.deepEqual(loadRolloverEvidence(run, "provider", "model", "session-one", 128_000), evidence);
-  assert.equal(loadRolloverEvidence(run, "provider", "model", "session-two", 128_000).lastTokens, undefined);
+  assert.deepEqual(
+    loadRolloverEvidence(run, "provider", "model", "session-one", 128_000),
+    evidence,
+  );
+  assert.equal(
+    loadRolloverEvidence(run, "provider", "model", "session-two", 128_000).lastTokens,
+    undefined,
+  );
 });
 
 test("only complete positive provider usage can become context evidence", () => {
   const calculate = (value: never): number => (value as { totalTokens: number }).totalTokens;
-  assert.equal(providerContextTokens({ input: 4, output: 2, cacheRead: 0, cacheWrite: 0, totalTokens: 6 }, calculate), 6);
-  assert.equal(providerContextTokens({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 }, calculate), undefined);
-  assert.equal(providerContextTokens({ input: 4, output: -1, cacheRead: 0, cacheWrite: 0, totalTokens: 3 }, calculate), undefined);
+  assert.equal(
+    providerContextTokens(
+      { input: 4, output: 2, cacheRead: 0, cacheWrite: 0, totalTokens: 6 },
+      calculate,
+    ),
+    6,
+  );
+  assert.equal(
+    providerContextTokens(
+      { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 },
+      calculate,
+    ),
+    undefined,
+  );
+  assert.equal(
+    providerContextTokens(
+      { input: 4, output: -1, cacheRead: 0, cacheWrite: 0, totalTokens: 3 },
+      calculate,
+    ),
+    undefined,
+  );
   assert.equal(providerContextTokens(undefined, calculate), undefined);
 });

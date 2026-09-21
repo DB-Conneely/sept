@@ -1,24 +1,35 @@
+/** Durable run facade used by lifecycle and ingress mechanisms. */
+export { RunStore } from "./run-store.js";
+
+/** Durable worker-readiness authority for drain and admission. */
+export { WorkerLifecycleStore } from "./worker-lifecycle-store.js";
+
+/** Classified errors exposed across SEPT mechanism boundaries. */
+export { ConversationCursorExpiredError, QueueCapacityError, SeptError } from "./errors.js";
+
+/** Public durability and bounded-resource limits. */
 export {
-  RunStore,
-  WorkerLifecycleStore,
-  QueueCapacityError,
-  ConversationCursorExpiredError,
-  SeptError,
-  MAX_PENDING_MESSAGES,
-  MAX_PENDING_MESSAGE_BYTES,
-  MAX_CONVERSATION_EVENTS,
   MAX_CONVERSATION_BYTES,
+  MAX_CONVERSATION_EVENTS,
   MAX_CONVERSATION_STREAMS,
-  acquireStateRootLease,
-  atomicCreate,
-  atomicWrite,
-  listRuns,
-  now,
+  MAX_PENDING_MESSAGE_BYTES,
+  MAX_PENDING_MESSAGES,
+} from "./limits.js";
+
+/** State-root lease and atomic persistence primitives used by composition. */
+export { acquireStateRootLease } from "./lease.js";
+export { atomicCreate, atomicWrite, now } from "./filesystem.js";
+
+/** Validated run discovery and agent control codecs. */
+export { listRuns } from "./run-discovery.js";
+export {
   parseJsonObject,
   validateHandover,
   validateWork,
   validateWorkResponse,
-} from "./store.js";
+} from "./control-codecs.js";
+
+/** Stable durable domain contracts shared across SEPT mechanisms. */
 export {
   DEFAULTS,
   type ConversationEvent,
@@ -27,6 +38,7 @@ export {
   type Manifest,
   type OperatorMessage,
   type RunEvent,
+  type RunPhase,
   type RunSnapshot,
   type RunStatus,
   type TaskRequest,

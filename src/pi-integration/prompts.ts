@@ -40,7 +40,11 @@ export const ROTATION_RECOVERY_PROMPT = `SEPT_CONTEXT_ROTATION_RECOVERY: The nat
 Required exact keys:
 {"handover_summary":"...","entry_state_and_done":"...","completed":["..."],"in_flight":["..."],"not_started":["..."],"decisions":["..."],"rejected_approaches":["..."],"verification":["..."],"uncertainties":["..."],"references":["..."],"lessons":["..."],"next_action":"..."}`;
 
-export function successorPrompt(manifest: Manifest, value: DurableHandover, messages: OperatorMessage[]): string {
+export function successorPrompt(
+  manifest: Manifest,
+  value: DurableHandover,
+  messages: OperatorMessage[],
+): string {
   return `You are the fresh successor SEPT Pi session. Continue immediately; do not rediscover the predecessor's work.
 
 Standing task:
