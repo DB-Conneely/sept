@@ -15,12 +15,12 @@ import {
   inspectPi,
   successorPrompt,
 } from "../../src/pi-integration/index.js";
-import { operatorBlock, ROTATION_STEER } from "../../src/pi-integration/prompts.js";
+import { operatorBlock } from "../../src/pi-integration/prompts.js";
+import { sessionMessageText } from "../../src/pi-integration/message-text.js";
 import {
-  isFinalAssistantMessage,
-  rotationRecovery,
-  sessionMessageText,
-} from "../../src/pi-integration/session-recovery.js";
+  readDurableLocator,
+  writeDurableLocator,
+} from "../../src/pi-integration/durable-session-files.js";
 import { fixtureDirectories, fixtureStore } from "./support.js";
 
 await test("inspectPi returns credential-blind status from an isolated installed Pi directory", async () => {
@@ -73,42 +73,78 @@ await test("prompt renderers preserve standing task, control, handover, and exac
   assert.match(operatorBlock(messages), /message-1/);
 });
 
-await test("sessionMessageText and rotationRecovery recognize one finalized native rotation", () => {
+await test("sessionMessageText projects text without tool, reasoning or image blocks", () => {
   const messages = [
     { role: "assistant", content: [{ type: "text", text: "predecessor progress" }] },
     { role: "user", content: [{ type: "text", text: "SEPT_CONTEXT_ROTATION" }] },
     { role: "assistant", content: [{ type: "text", text: "handover" }], stopReason: "stop" },
   ];
   assert.equal(sessionMessageText(messages[0]), "predecessor progress");
-  assert.equal(isFinalAssistantMessage(messages[2]), true);
-  assert.equal(isFinalAssistantMessage({ ...messages[2], stopReason: "aborted" }), false);
-  const rotationMessages = [
-    messages[0],
-    { ...messages[1], content: [{ type: "text", text: ROTATION_STEER }] },
-    messages[2],
-  ];
-  const sessionValue: unknown = { messages: rotationMessages };
-  // CAST: The recovery helper reads only the validated messages array supplied above.
-  const session = sessionValue as Parameters<typeof rotationRecovery>[0];
-  const recovery = rotationRecovery(session, true);
-  assert.equal(recovery.rotationSteerRecorded, true);
-  assert.equal(recovery.preRotationText, "predecessor progress");
+  assert.equal(
+    sessionMessageText({
+      content: [
+        { type: "thinking", thinking: "private" },
+        { type: "image", data: "private" },
+        { type: "text", text: "public" },
+      ],
+    }),
+    "public",
+  );
+  assert.equal(sessionMessageText(undefined), "");
 });
 
-await test("findSuccessorSession ignores malformed candidates and selects the newest matching child", () => {
+function exerciseNativeLocators(): void {
   const directories = fixtureDirectories("sept-pi-successor-");
   const sessionDir = join(directories.root, "sessions");
   mkdirSync(sessionDir);
-  const predecessor = join(sessionDir, "predecessor.jsonl");
+  const predecessor = join(sessionDir, "1.durable.json");
   writeFileSync(
-    join(sessionDir, "001.jsonl"),
-    `${JSON.stringify({ type: "session", parentSession: predecessor })}\n`,
+    predecessor,
+    JSON.stringify({ formatVersion: 1, engine: "pi-durable", conversationId: 1 }),
   );
   writeFileSync(
-    join(sessionDir, "002.jsonl"),
-    `${JSON.stringify({ type: "session", parentSession: predecessor })}\n`,
+    join(sessionDir, "2.durable.json"),
+    JSON.stringify({
+      formatVersion: 1,
+      engine: "pi-durable",
+      conversationId: 2,
+      parentSession: predecessor,
+    }),
   );
-  writeFileSync(join(sessionDir, "003.jsonl"), "not-json\n");
-  assert.equal(findSuccessorSession(sessionDir, predecessor), join(sessionDir, "002.jsonl"));
+  const locator = readDurableLocator(predecessor);
+  assert.equal(writeDurableLocator(sessionDir, locator.conversationId), predecessor);
+  assert.equal(findSuccessorSession(sessionDir, predecessor), join(sessionDir, "2.durable.json"));
+  rejectInvalidNativeLocators(sessionDir, predecessor);
   assert.equal(findSuccessorSession(join(directories.root, "missing"), predecessor), undefined);
-});
+}
+
+function rejectInvalidNativeLocators(sessionDir: string, predecessor: string): void {
+  writeFileSync(
+    join(sessionDir, "3.durable.json"),
+    JSON.stringify({
+      formatVersion: 1,
+      engine: "pi-durable",
+      conversationId: 3,
+      parentSession: predecessor,
+    }),
+  );
+  assert.throws(() => findSuccessorSession(sessionDir, predecessor), /ambiguous/);
+  writeFileSync(
+    join(sessionDir, "3.durable.json"),
+    JSON.stringify({ formatVersion: 1, engine: "pi-durable", conversationId: 1.5 }),
+  );
+  assert.throws(
+    () => readDurableLocator(join(sessionDir, "3.durable.json")),
+    /identity is invalid/,
+  );
+  writeFileSync(join(sessionDir, "legacy.jsonl"), JSON.stringify({ type: "session" }));
+  assert.throws(
+    () => readDurableLocator(join(sessionDir, "legacy.jsonl")),
+    /unknown fields|legacy/,
+  );
+}
+
+await test(
+  "native locators reject legacy/fractional IDs and successor discovery rejects ambiguity",
+  exerciseNativeLocators,
+);

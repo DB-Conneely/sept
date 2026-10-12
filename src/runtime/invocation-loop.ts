@@ -71,7 +71,7 @@ export class RuntimeInvocationLoop {
     const prompt = this.prompt(snapshot, messages);
     const invocation = snapshot.invocations + 1;
     this.recordInvocationStart(host, snapshot, invocation, messages);
-    const result = await this.invoke(host, prompt, snapshot, invocation, messages.length);
+    const result = await this.invoke(host, prompt, snapshot, invocation, messages);
     if (result === undefined) {
       return { kind: "stop" };
     }
@@ -157,15 +157,15 @@ export class RuntimeInvocationLoop {
     prompt: string,
     snapshot: RunSnapshot,
     invocation: number,
-    queueDepth: number,
+    messages: readonly OperatorMessage[],
   ): Promise<SessionRunResult | undefined> {
     const started = Date.now();
     try {
-      const result = await this.spanInvocation(host, prompt, snapshot, invocation, queueDepth);
+      const result = await this.spanInvocation(host, prompt, snapshot, invocation, messages);
       if (this.cancellationRequested()) {
         return undefined;
       }
-      this.recordInvocationSuccess(result, snapshot, invocation, queueDepth, started);
+      this.recordInvocationSuccess(result, snapshot, invocation, messages.length, started);
       return result;
     } catch (error: unknown) {
       this.recordInvocationFailure(error, snapshot, invocation, started);
@@ -178,7 +178,7 @@ export class RuntimeInvocationLoop {
     prompt: string,
     snapshot: RunSnapshot,
     invocation: number,
-    queueDepth: number,
+    messages: readonly OperatorMessage[],
   ): Promise<SessionRunResult> {
     return this.telemetry.span(
       "sept.pi.invoke",
@@ -186,10 +186,16 @@ export class RuntimeInvocationLoop {
         "sept.run.id": this.store.runId,
         "sept.epoch": snapshot.epoch,
         "sept.invocation": invocation,
-        "sept.queue.depth": queueDepth,
+        "sept.queue.depth": messages.length,
       },
       async () => {
-        const result = await runWithActiveDeadline(this.store, host, prompt, this.manifest);
+        const result = await runWithActiveDeadline(
+          this.store,
+          host,
+          prompt,
+          this.manifest,
+          messages,
+        );
         this.telemetry.contextSample(
           result.contextTokens,
           result.contextWindow,

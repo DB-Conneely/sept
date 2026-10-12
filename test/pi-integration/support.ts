@@ -273,7 +273,7 @@ export function fixtureStore(
     maxInvocations: 100,
     maxEpochs: 10,
     timeoutSeconds: 3600,
-    piVersion: "0.85.1",
+    piVersion: "1.1.0",
   };
   return RunStore.create(join(directories.root, suffix), manifest);
 }

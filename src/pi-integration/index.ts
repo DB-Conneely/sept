@@ -17,4 +17,5 @@ export {
   type RolloverEvidence,
 } from "./rollover-evidence.js";
 export { decideRollover, providerContextTokens, type RolloverDecision } from "./rollover.js";
-export { PiSessionHost, findSuccessorSession } from "./session.js";
+export { PiSessionHost } from "./durable-host.js";
+export { findSuccessorSession } from "./durable-session-files.js";

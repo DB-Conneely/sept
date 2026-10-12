@@ -6,7 +6,7 @@ All work under `src/**/*.ts` and `test/**/*.ts` must comply with `.codex/rules/t
 
 ## Product
 
-SEPT is a thin durable single-slot worker around the native Pi coding-agent SDK. Do not recreate provider clients, agent loops, tool runners, compaction, context tokenizers, TUI features, profiles, or Codex transports. Pi owns those concerns.
+SEPT is a thin durable single-slot worker around the native Pi Durable Harness. Pi coding-agent supplies ModelRuntime, trusted resources and the existing coding tools. Do not recreate provider clients, agent loops, tool runners, compaction, context tokenizers, TUI features, profiles, or Codex transports. Pi owns those concerns.
 
 The current repository is the customer-side SEPT Node package. Keep model access as a bounded normalization and control module over Pi, not a new provider abstraction. Provider/model discovery, authentication, local/custom-model compatibility, and requests continue to use the installed Pi `ModelRuntime`. A Pod has one Pi credential per provider for the MVP; credentials remain in its configured Pi agent directory and never enter run state, logs, telemetry, conversations, or cloud-facing metadata.
 
@@ -19,7 +19,8 @@ Do not move the current `src` runtime into speculative monorepo folders during P
 - Wired code is the only completion metric. Exercise the installed CLI/worker path and the exact Pi SDK lifecycle path.
 - Preserve durable ordering: handover JSON + Markdown + event + state must be fsynced before fresh-session replacement.
 - Rotation uses finalized provider-reported Pi assistant usage and the active Pi model context window. Never use cumulative spend or add a local token/character estimate.
-- Auto-compaction stays disabled for SEPT sessions. Rotation uses one native `session.steer()` and a genuine `AgentSessionRuntime.newSession()`.
+- Auto-compaction stays disabled for SEPT conversations. Rotation uses one native input submission with `whenBusy: "steer"`, then a genuinely fresh Durable conversation and provider identity after durable handover.
+- Trusted operator extensions use Pi Durable's native declarative extension API. Legacy coding-agent ExtensionAPI factories require porting; repository instructions or workspace plugins cannot grant brain-code authority.
 - Preserve fail-closed bearer auth, a single active slot, restart adoption, bounded retrieval/logging, exact operator message evidence, and strict limits.
 - Do not expose Pi credentials in logs, output, fixtures, commits, or images.
 - Never deploy. The user deploys manually through GitHub CI/CD.

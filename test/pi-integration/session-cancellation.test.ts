@@ -6,7 +6,8 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { defineTool, type ModelRuntime } from "@earendil-works/pi-coding-agent";
+import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
+import { defineExtension, defineTool } from "@earendil-works/pi-durable";
 import { Type } from "typebox";
 import { NOOP_TELEMETRY } from "../../src/observability/index.js";
 import { PiSessionHost } from "../../src/pi-integration/index.js";
@@ -41,15 +42,20 @@ async function exerciseModelCancellation(): Promise<void> {
     directories.agentDir,
     undefined,
     NOOP_TELEMETRY,
-    { modelRuntime: runtime, tools: [] },
+    { modelRuntime: runtime },
   );
   try {
-    const running = host.run("wait for cancellation");
+    const running = assert.rejects(
+      host.run("wait for cancellation"),
+      /did not finish successfully/,
+    );
     await started;
     await host.abort();
-    const result = await running;
-    assert.equal(result.text, "");
-    assert.equal(result.contextTokens, null);
+    await running;
+    assert.equal(
+      store.events(0, 1000).some((event) => event.type === "context_sample"),
+      false,
+    );
   } finally {
     await host.close();
   }
@@ -58,10 +64,10 @@ async function exerciseModelCancellation(): Promise<void> {
 function blockingTool(markStarted: () => void, markAborted: () => void) {
   return defineTool({
     name: "blocking",
-    label: "blocking",
     description: "wait for cancellation",
     parameters: Type.Object({}),
-    async execute(_id, _params, signal) {
+    async execute(_params, _api, context) {
+      const signal = context.abortSignal;
       markStarted();
       await new Promise<void>((resolve) => {
         if (signal?.aborted) {
@@ -120,10 +126,16 @@ async function exerciseToolCancellation(): Promise<void> {
     directories.agentDir,
     undefined,
     NOOP_TELEMETRY,
-    { modelRuntime: runtime, customTools: [tool], tools: ["blocking"] },
+    {
+      modelRuntime: runtime,
+      extensions: [defineExtension({ name: "blocking-fixture", tools: [tool] })],
+    },
   );
   try {
-    const running = host.run("use the blocking tool");
+    const running = assert.rejects(
+      host.run("use the blocking tool"),
+      /did not finish successfully/,
+    );
     await started;
     await host.abort();
     await running;

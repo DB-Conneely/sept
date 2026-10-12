@@ -4,7 +4,13 @@
  * snapshot fields and measures only active invocation time, never dormant wall-clock age.
  */
 
-import { SeptError, type Manifest, type RunSnapshot, type RunStore } from "../durable/index.js";
+import {
+  SeptError,
+  type Manifest,
+  type OperatorMessage,
+  type RunSnapshot,
+  type RunStore,
+} from "../durable/index.js";
 import type { SessionHost, SessionRunResult } from "../pi-integration/index.js";
 
 type RuntimeSnapshotPatch = {
@@ -60,6 +66,7 @@ export async function runWithActiveDeadline(
   host: SessionHost,
   prompt: string,
   manifest: Manifest,
+  operatorMessages: readonly OperatorMessage[] = [],
 ): Promise<SessionRunResult> {
   const remaining = Math.max(
     1,
@@ -78,7 +85,7 @@ export async function runWithActiveDeadline(
         );
       }, remaining);
     });
-    return await Promise.race([host.run(prompt), timeout]);
+    return await Promise.race([host.run(prompt, operatorMessages), timeout]);
   } finally {
     if (timer !== undefined) {
       clearTimeout(timer);

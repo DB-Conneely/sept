@@ -59,7 +59,15 @@ src/
     diagnostics.ts               non-secret installed diagnostics
     prompts.ts                   control, continuation, handover prompts
     rollover.ts                  adaptive arithmetic and durable evidence
-    session.ts                   native Pi session and fresh-session lifecycle
+    durable-host.ts              native Harness/conversation lifetime and sanitized events
+    durable-runtime.ts           authenticated Models, registry and SQLite FULL construction
+    durable-invocation.ts        native submission/recovery and finalized-usage steering
+    durable-admission.ts         bounded captured operator IDs for native admission
+    durable-session-files.ts     strict native locators and unique successor discovery
+    durable-resources.ts         operator prompts/skills and untrusted repository instructions
+    durable-extensions.ts        bounded trusted native module loading
+    durable-tools.ts             existing Pi tools registered as native durable tasks
+    message-text.ts              text-only native response projection
   runtime/
     index.ts                     runtime public surface
     controller.ts               durable cycling and Pi-native cancellation state machine
@@ -79,7 +87,9 @@ cli -> ingress -> runtime -> pi-integration -> model-access
 
 `durable` has no dependency on higher mechanisms. Existing format-2 manifests with fixed rollover options remain readable and normalize to format 3; all new manifests contain the resolved provider/model and no rollover knobs or credentials. The state-root `worker-state.json` remains authoritative for accepting/draining/drained readiness. Each run's bounded `conversation.jsonl` remains the sole client-facing event contract, separate from internal lifecycle events, logs, Pi sessions, rollover evidence, and checkpoint/handover controls.
 
-`pi-integration` receives the selected Pi model from the manifest, verifies context/output metadata again at session creation, and disables Pi auto-compaction. `rollover.json` is scoped to provider, model, Pi session ID, and context window. It records finalized provider usage, the last three positive growth deltas, consecutive unusable samples, and the durable rotation-required flag. A recovered flag inspects the resumed Pi session: an already completed steer is reused without another model call or duplicate steer; an uncompleted steer resumes the handover request. Handover JSON, Markdown, event, and state still commit before `AgentSessionRuntime.newSession()`.
+`pi-integration` receives the selected Pi model from the manifest, verifies context/output metadata again, and opens the run's native Durable Harness with SQLite FULL and compaction disabled. Native conversation IDs are numeric; SEPT exposes their string form and bounded versioned locators. `rollover.json` remains scoped to provider, model, conversation identity and context window. Native finalized-response hooks supply usage; a stable steering submission is reused after restart or resumed with a distinct interrupted-handover recovery input. Handover JSON, Markdown, event and state commit before a fresh native conversation and provider UUID are created. Exact captured operator IDs accompany admission, so later queue arrivals cannot be marked in an earlier prompt.
+
+Trusted agent-directory modules register native declarative extensions, including supported tools, sections, hooks, wrappers and tasks. Project trust remains false; repository instructions do not execute plugins. The existing Pi tools are adapted into native Durable tasks with explicit replay safety and cancellation. Their local filesystem/shell operations remain an inherited confinement gap; a supplied Harness environment does not mediate those adapters. New runs have one engine, with no coding-agent production host or historical transcript converter.
 
 `runtime` retains execution, cancellation, wait/wake, shutdown, limits, restart adoption, and slot ownership without knowing HTTP. `ingress` translates the authenticated API and webhook contract onto runtime and model-access services. `observability` imports no business mechanisms and receives only bounded classifications/numbers; model identifiers, credentials, auth interactions, prompts, and provider errors are not telemetry fields.
 

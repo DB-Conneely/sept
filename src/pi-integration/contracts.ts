@@ -4,10 +4,9 @@
  * dependency injection is limited to model and tool wiring used by production composition/tests.
  */
 
-import type {
-  CreateAgentSessionFromServicesOptions,
-  ModelRuntime,
-} from "@earendil-works/pi-coding-agent";
+import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
+import type { Extension } from "@earendil-works/pi-durable";
+import type { OperatorMessage } from "../durable/index.js";
 
 /** Observable result of one native Pi invocation, including finalized context evidence. */
 export interface SessionRunResult {
@@ -21,15 +20,14 @@ export interface SessionRunResult {
 /** Optional native Pi construction dependencies; callers retain ownership of injected runtimes. */
 export interface PiSessionHostDependencies {
   modelRuntime?: ModelRuntime;
-  customTools?: CreateAgentSessionFromServicesOptions["customTools"];
-  tools?: CreateAgentSessionFromServicesOptions["tools"];
+  extensions?: readonly Extension[];
 }
 
 /** Runtime-owned handle to exactly one current native Pi session. */
 export interface SessionHost {
   readonly sessionId: string;
   readonly sessionFile: string | undefined;
-  run(prompt: string): Promise<SessionRunResult>;
+  run(prompt: string, operatorMessages?: readonly OperatorMessage[]): Promise<SessionRunResult>;
   newSession(): Promise<{
     predecessorId: string;
     predecessorFile?: string;

@@ -5,8 +5,10 @@
  */
 
 import assert from "node:assert/strict";
+import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
-import { AgentSession, type ModelRuntime } from "@earendil-works/pi-coding-agent";
+import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { NOOP_TELEMETRY } from "../../src/observability/index.js";
 import { PiSessionHost } from "../../src/pi-integration/index.js";
 import { ROTATION_STEER } from "../../src/pi-integration/prompts.js";
@@ -58,7 +60,7 @@ async function completedPredecessor(
     directories.agentDir,
     undefined,
     NOOP_TELEMETRY,
-    { modelRuntime: runtime, tools: [] },
+    { modelRuntime: runtime },
   );
   const rotated = await first.run("trigger rotation");
   const sessionFile = first.sessionFile;
@@ -87,7 +89,7 @@ async function exerciseCompletedRecovery(): Promise<void> {
     directories.agentDir,
     sessionFile,
     NOOP_TELEMETRY,
-    { modelRuntime: runtime, tools: [] },
+    { modelRuntime: runtime },
   );
   try {
     const recovered = await resumed.run("must not become another provider call");
@@ -166,16 +168,17 @@ async function interruptPredecessor(
     directories.agentDir,
     undefined,
     NOOP_TELEMETRY,
-    { modelRuntime: runtime, tools: [] },
+    { modelRuntime: runtime },
   );
-  const interruptedRun = first.run("trigger the interrupted rotation");
+  const interruptedRun = assert.rejects(
+    first.run("trigger the interrupted rotation"),
+    /did not finish successfully/,
+  );
   await handoverStarted;
   await first.abort();
-  const interrupted = await interruptedRun;
+  await interruptedRun;
   const predecessorId = first.sessionId;
   const predecessorFile = first.sessionFile;
-  assert.equal(interrupted.steered, true);
-  assert.equal(interrupted.text, "");
   assert.ok(predecessorFile);
   store.update({
     phase: "running",
@@ -198,7 +201,6 @@ async function recoverWithController(
     (manifest, runStore, directory, existing, telemetry) =>
       PiSessionHost.create(manifest, runStore, directory, existing, telemetry, {
         modelRuntime: runtime,
-        tools: [],
       }),
   );
   await controller.run();
@@ -238,7 +240,23 @@ function assertRecoveredEvidence(
   assert.equal(calls, 4);
 }
 
-await test("interrupted runPiInvocation recovery uses one native steer and durable handover before successor", async () => {
+function nativeSteerCount(store: ReturnType<typeof fixtureStore>): number {
+  const database = new DatabaseSync(join(store.runDir, "pi-durable.sqlite"), { readOnly: true });
+  try {
+    const count = database
+      .prepare(
+        "SELECT COUNT(*) AS count FROM submissions WHERE json_extract(record, '$.requestId') LIKE 'sept-rollover-%' AND json_extract(record, '$.requestId') NOT LIKE 'sept-rollover-recovery-%'",
+      )
+      .get()?.count;
+    assert.equal(typeof count, "number");
+    assert.ok(typeof count === "number");
+    return count;
+  } finally {
+    database.close();
+  }
+}
+
+await test("interrupted native recovery uses one steering submission and durable handover before successor", async () => {
   const directories = fixtureDirectories("sept-pi-rotation-interrupted-");
   const runtime = await fixtureModelRuntime(directories.agentDir);
   const responses = interruptedResponses();
@@ -252,18 +270,13 @@ await test("interrupted runPiInvocation recovery uses one native steer and durab
   });
   registerInterruptedProvider(runtime, responses, contexts, signalStarted, calls);
   const store = fixtureStore(directories, "sept-interrupted", "recover interrupted rotation");
-  // eslint-disable-next-line @typescript-eslint/unbound-method -- The prototype function is restored verbatim after a dynamic-this spy.
-  const originalSteer = AgentSession.prototype.steer;
-  let nativeSteers = 0;
-  AgentSession.prototype.steer = function (text, images) {
-    nativeSteers += 1;
-    return originalSteer.call(this, text, images);
-  };
-  try {
-    const predecessor = await interruptPredecessor(directories, runtime, store, handoverStarted);
-    await recoverWithController(directories, runtime, store);
-    assertRecoveredEvidence(store, predecessor.predecessorId, contexts, calls.count, nativeSteers);
-  } finally {
-    AgentSession.prototype.steer = originalSteer;
-  }
+  const predecessor = await interruptPredecessor(directories, runtime, store, handoverStarted);
+  await recoverWithController(directories, runtime, store);
+  assertRecoveredEvidence(
+    store,
+    predecessor.predecessorId,
+    contexts,
+    calls.count,
+    nativeSteerCount(store),
+  );
 });

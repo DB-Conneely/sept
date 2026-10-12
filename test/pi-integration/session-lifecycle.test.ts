@@ -8,7 +8,8 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
-import { defineTool, type ModelRuntime } from "@earendil-works/pi-coding-agent";
+import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
+import { defineExtension, defineTool } from "@earendil-works/pi-durable";
 import { Type } from "typebox";
 import { NOOP_TELEMETRY } from "../../src/observability/index.js";
 import { PiSessionHost, type SessionHost } from "../../src/pi-integration/index.js";
@@ -62,15 +63,14 @@ function registerLifecycleProvider(
 function atomicTool(toolsFinished: string[]) {
   return defineTool({
     name: "atomic",
-    label: "atomic",
     description: "atomic test tool",
     parameters: Type.Object({ name: Type.String() }),
-    async execute(_id, parameters) {
-      await new Promise<void>((resolve) => {
-        setTimeout(resolve, 5);
-      });
+    execute(parameters) {
       toolsFinished.push(parameters.name);
-      return { content: [{ type: "text", text: `finished ${parameters.name}` }], details: {} };
+      return Promise.resolve({
+        content: [{ type: "text", text: `finished ${parameters.name}` }],
+        details: {},
+      });
     },
   });
 }
@@ -87,6 +87,7 @@ async function createLifecycleHost(
     `import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(sentinel)}, "executed"); export default function () {}\n`,
   );
   writeFileSync(join(directories.workspace, "AGENTS.md"), "PROJECT-CONTEXT-MARKER\n");
+  operatorResourceFixture(directories, "INITIAL");
   const runtime = await fixtureModelRuntime(directories.agentDir);
   registerLifecycleProvider(runtime, calls, toolsFinished);
   const store = fixtureStore(directories, "sept-test", "exercise production host");
@@ -97,7 +98,10 @@ async function createLifecycleHost(
     directories.agentDir,
     undefined,
     NOOP_TELEMETRY,
-    { modelRuntime: runtime, customTools: [tool], tools: ["atomic"] },
+    {
+      modelRuntime: runtime,
+      extensions: [defineExtension({ name: "atomic-fixture", tools: [tool] })],
+    },
   );
   return { host, store };
 }
@@ -110,10 +114,12 @@ async function exerciseRotation(
   sentinel: string,
 ): Promise<void> {
   assert.equal(existsSync(sentinel), false, "project-local extension code must not execute");
+  store.update({ invocations: 1 });
   const localHeuristicProbe = await host.run("x".repeat(100_000));
   assert.equal(localHeuristicProbe.steered, false, "local text length must not trigger rotation");
   assert.equal(localHeuristicProbe.contextTokens, 11);
   assert.match(calls[0] ?? "", /PROJECT-CONTEXT-MARKER/);
+  store.update({ invocations: 2 });
   const rotated = await host.run("perform the atomic batch");
   assert.equal(rotated.steered, true);
   assert.deepEqual(toolsFinished.toSorted(), ["a", "b"]);
@@ -127,7 +133,25 @@ async function exerciseRotation(
   );
 }
 
-async function exerciseFreshSession(host: SessionHost, sentinel: string): Promise<void> {
+function operatorResourceFixture(directories: PiFixtureDirectories, marker: string): void {
+  writeFileSync(join(directories.agentDir, "SYSTEM.md"), `${marker}-TRUSTED-SYSTEM`);
+  writeFileSync(join(directories.agentDir, "APPEND_SYSTEM.md"), `${marker}-TRUSTED-APPEND`);
+  mkdirSync(join(directories.agentDir, "skills", "fixture"), { recursive: true });
+  writeFileSync(
+    join(directories.agentDir, "skills", "fixture", "SKILL.md"),
+    `---\nname: fixture\ndescription: ${marker}-TRUSTED-SKILL\n---\nHarmless fixture.\n`,
+  );
+}
+
+async function exerciseFreshSession(
+  host: SessionHost,
+  sentinel: string,
+  directories: PiFixtureDirectories,
+  calls: string[],
+): Promise<void> {
+  assert.match(calls[0] ?? "", /INITIAL-TRUSTED-SKILL/);
+  operatorResourceFixture(directories, "FRESH");
+  writeFileSync(join(directories.workspace, "AGENTS.md"), "FRESH-PROJECT-CONTEXT");
   const predecessor = host.sessionId;
   const replacement = await host.newSession();
   assert.equal(replacement.predecessorId, predecessor);
@@ -135,9 +159,18 @@ async function exerciseFreshSession(host: SessionHost, sentinel: string): Promis
   const successor = await host.run("fresh successor receives full handover");
   assert.equal(successor.steered, false);
   assert.equal(existsSync(sentinel), false);
+  for (const marker of [
+    "FRESH-TRUSTED-SYSTEM",
+    "FRESH-TRUSTED-APPEND",
+    "FRESH-TRUSTED-SKILL",
+    "FRESH-PROJECT-CONTEXT",
+  ]) {
+    assert.match(calls[3] ?? "", new RegExp(marker));
+  }
+  assert.doesNotMatch(calls[3] ?? "", /INITIAL-TRUSTED-|PROJECT-CONTEXT-MARKER/);
 }
 
-await test("production PiSessionHost uses real SDK lifecycle, native steer/newSession, and untrusted resources", async () => {
+await test("production PiSessionHost uses native Durable lifecycle, steering, fresh conversations and untrusted resources", async () => {
   const directories = fixtureDirectories("sept-pi-host-");
   const sentinel = join(directories.root, "project-extension-executed");
   const calls: string[] = [];
@@ -145,7 +178,7 @@ await test("production PiSessionHost uses real SDK lifecycle, native steer/newSe
   const { host, store } = await createLifecycleHost(directories, sentinel, calls, toolsFinished);
   try {
     await exerciseRotation(host, store, calls, toolsFinished, sentinel);
-    await exerciseFreshSession(host, sentinel);
+    await exerciseFreshSession(host, sentinel, directories, calls);
     assert.equal(calls.length, 4);
   } finally {
     await host.close();
@@ -180,7 +213,6 @@ function registerUnusableProvider(runtime: ModelRuntime, counts: { provider: num
 function countingStep(counts: { tool: number }) {
   return defineTool({
     name: "step",
-    label: "step",
     description: "complete active work",
     parameters: Type.Object({}),
     execute: () => {
@@ -203,7 +235,10 @@ async function exerciseUnusableUsage(): Promise<void> {
     directories.agentDir,
     undefined,
     NOOP_TELEMETRY,
-    { modelRuntime: runtime, customTools: [step], tools: ["step"] },
+    {
+      modelRuntime: runtime,
+      extensions: [defineExtension({ name: "step-fixture", tools: [step] })],
+    },
   );
   try {
     await assert.rejects(

@@ -85,7 +85,7 @@ The repository gate is `npm run gate`. `npm run check` composes strict typecheck
 - Pi remains the only agent runtime. Do not implement provider clients, agent loops, tool runners, compaction, context estimation, or alternate model orchestration in SEPT.
 - `durable/` owns codecs, atomic persistence, fsync ordering, leases, and recovery. It does not import ingress, runtime, Pi, connector, or provider behavior.
 - `runtime/` owns the single resident-run lifecycle and coordinates domain services. It does not own HTTP parsing, provider-specific trigger logic, or connector protocol implementations.
-- `pi-integration/` is the narrow production seam to native Pi sessions and tools. It does not become a second runtime or policy store.
+- `pi-integration/` is the narrow production seam to native Pi Durable conversations, tasks, resources and tools. It does not become a second runtime or policy store. Native steering and fresh conversation/provider identity replace the coding-agent session lifecycle; only operator-owned native extensions execute.
 - `ingress/` authenticates, bounds, validates, and translates transport requests. Business state machines and provider behavior do not live in route handlers.
 - `model-access/` remains a bounded normalization/control layer over Pi's installed `ModelRuntime`.
 - `observability/` receives sanitized bounded facts and imports no SEPT business mechanism.

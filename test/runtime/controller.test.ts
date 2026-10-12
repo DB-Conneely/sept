@@ -131,11 +131,16 @@ void test("restart adopts an already materialized successor without creating a d
   const { store } = controllerFixture();
   const sessionDir = join(store.runDir, "pi-sessions");
   mkdirSync(sessionDir);
-  const predecessorFile = join(sessionDir, "predecessor.jsonl");
-  const successorFile = join(sessionDir, "successor.jsonl");
+  const predecessorFile = join(sessionDir, "1.durable.json");
+  const successorFile = join(sessionDir, "2.durable.json");
   writeFileSync(
     successorFile,
-    `${JSON.stringify({ type: "session", version: 3, id: "pi-existing-successor", timestamp: new Date().toISOString(), cwd: store.manifest().workspace, parentSession: predecessorFile })}\n`,
+    JSON.stringify({
+      formatVersion: 1,
+      engine: "pi-durable",
+      conversationId: 2,
+      parentSession: predecessorFile,
+    }),
   );
   store.update({
     phase: "running",
