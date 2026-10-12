@@ -5,11 +5,14 @@ import { join } from "node:path";
 import type { ConversationId } from "@earendil-works/pi-durable";
 import { atomicWrite, SeptError, type OperatorMessage, type RunStore } from "../durable/index.js";
 
-interface DurableAdmission {
-  formatVersion: 1;
+/** One bounded invocation identity; SEPT checkpoints it only after its domain transition is durable. */
+export interface DurableAdmission {
+  formatVersion: 2;
   conversationId: number;
   requestId: string;
   operatorMessageIds: string[];
+  prompt: string;
+  checkpointed: boolean;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -20,7 +23,14 @@ function admissionRecord(value: unknown): Record<string, unknown> {
   if (!isRecord(value)) {
     throw new SeptError("Pi Durable admission must be an object");
   }
-  const allowed = ["formatVersion", "conversationId", "requestId", "operatorMessageIds"];
+  const allowed = [
+    "formatVersion",
+    "conversationId",
+    "requestId",
+    "operatorMessageIds",
+    "prompt",
+    "checkpointed",
+  ];
   if (Object.keys(value).some((key) => !allowed.includes(key))) {
     throw new SeptError("Pi Durable admission contains unknown fields");
   }
@@ -46,7 +56,7 @@ function admittedMessageIds(value: unknown): string[] {
 function validateAdmission(value: unknown): DurableAdmission {
   const input = admissionRecord(value);
   if (
-    input.formatVersion !== 1 ||
+    input.formatVersion !== 2 ||
     typeof input.conversationId !== "number" ||
     !Number.isSafeInteger(input.conversationId) ||
     input.conversationId < 1
@@ -59,11 +69,19 @@ function validateAdmission(value: unknown): DurableAdmission {
   ) {
     throw new SeptError("Pi Durable admission request identity is invalid");
   }
+  if (typeof input.prompt !== "string" || Buffer.byteLength(input.prompt) > 4 * 1024 * 1024) {
+    throw new SeptError("Pi Durable admission prompt is invalid or oversized");
+  }
+  if (typeof input.checkpointed !== "boolean") {
+    throw new SeptError("Pi Durable admission checkpoint authority is invalid");
+  }
   return {
-    formatVersion: 1,
+    formatVersion: 2,
     conversationId: input.conversationId,
     requestId: input.requestId,
     operatorMessageIds: admittedMessageIds(input.operatorMessageIds),
+    prompt: input.prompt,
+    checkpointed: input.checkpointed,
   };
 }
 
@@ -73,14 +91,17 @@ export function writeDurableAdmission(
   conversationId: ConversationId,
   requestId: string,
   messages: readonly OperatorMessage[],
+  prompt: string,
 ): void {
   atomicWrite(
     join(store.runDir, "pi-durable-admission.json"),
     validateAdmission({
-      formatVersion: 1,
+      formatVersion: 2,
       conversationId,
       requestId,
       operatorMessageIds: messages.map((message) => message.id),
+      prompt,
+      checkpointed: false,
     }),
   );
 }
@@ -91,21 +112,41 @@ export function readDurableAdmission(
   conversationId: ConversationId,
   requestId: string | undefined,
 ): readonly string[] {
+  const admission = readInvocationAdmission(store);
+  if (admission?.conversationId !== conversationId || admission.requestId !== requestId) {
+    throw new SeptError("Pi Durable recovery admission identity does not match native work");
+  }
+  return admission.operatorMessageIds;
+}
+
+/** Read the bounded identity without dispatch or writes; malformed present evidence never means fresh. */
+export function readInvocationAdmission(store: RunStore): DurableAdmission | undefined {
   const path = join(store.runDir, "pi-durable-admission.json");
   try {
-    if (!existsSync(path) || statSync(path).size > 32 * 1024) {
-      throw new SeptError("Pi Durable recovery admission evidence is missing or oversized");
+    if (!existsSync(path)) {
+      return undefined;
+    }
+    if (!statSync(path).isFile() || statSync(path).size > 5 * 1024 * 1024) {
+      throw new SeptError("Pi Durable recovery admission evidence is oversized");
     }
     const value: unknown = JSON.parse(readFileSync(path, "utf8"));
-    const admission = validateAdmission(value);
-    if (admission.conversationId !== conversationId || admission.requestId !== requestId) {
-      throw new SeptError("Pi Durable recovery admission identity does not match native work");
-    }
-    return admission.operatorMessageIds;
+    return validateAdmission(value);
   } catch (error: unknown) {
     if (error instanceof SeptError) {
       throw error;
     }
     throw new SeptError("Pi Durable recovery admission evidence is unreadable", { cause: error });
   }
+}
+
+/** Acknowledge only the result whose complete domain checkpoint/transition has already been fsynced. */
+export function completeDurableAdmission(store: RunStore, requestId: string): void {
+  const admission = readInvocationAdmission(store);
+  if (admission?.requestId !== requestId) {
+    throw new SeptError("Pi Durable checkpoint identity does not match admission");
+  }
+  atomicWrite(join(store.runDir, "pi-durable-admission.json"), {
+    ...admission,
+    checkpointed: true,
+  });
 }

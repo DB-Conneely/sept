@@ -6,6 +6,7 @@
 
 import { listRuns, SeptError, type RunStore } from "../durable/index.js";
 import type { Observability } from "../observability/index.js";
+import { assertCompatibleStateRoot, isLegacyRun } from "../pi-integration/index.js";
 import { updateRuntimeSnapshot } from "./runtime-state.js";
 import type { WorkerAdoption } from "./contracts.js";
 
@@ -47,9 +48,12 @@ export function recoverWorkerResident(
   telemetry: Observability,
   assertWorkspace: (store: RunStore) => void,
 ): WorkerRecoveryResult {
+  assertCompatibleStateRoot(stateRoot, telemetry);
   const stores = listRuns(stateRoot);
   for (const store of stores) {
-    reconcileStore(store);
+    if (!isLegacyRun(store)) {
+      reconcileStore(store);
+    }
   }
   const residents = stores.filter((store) => {
     const status = store.snapshot().status;

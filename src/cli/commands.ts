@@ -15,7 +15,7 @@ import {
 import { SeptService, validateRequest } from "../ingress/index.js";
 import { ModelAccessService, type AuthenticationMethod } from "../model-access/index.js";
 import { classifyError, type Observability } from "../observability/index.js";
-import { getAgentDir, inspectPi } from "../pi-integration/index.js";
+import { assertCompatibleStateRoot, getAgentDir, inspectPi } from "../pi-integration/index.js";
 import { CycleController } from "../runtime/index.js";
 import { createTerminalAuthInteraction } from "./auth-interaction.js";
 import { CliError } from "./errors.js";
@@ -234,6 +234,7 @@ async function executeDirectRun(context: CommandContext, store: RunStore): Promi
 
 async function runDirect(context: CommandContext): Promise<void> {
   const root = stateRoot(context.options);
+  assertCompatibleStateRoot(root, context.telemetry);
   const releaseRoot = acquireStateRootLease(root);
   try {
     assertRunSlotAvailable(root);

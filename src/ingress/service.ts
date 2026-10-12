@@ -10,6 +10,7 @@ import { SeptError } from "../durable/index.js";
 import { ModelAccessService } from "../model-access/index.js";
 import type { Observability } from "../observability/index.js";
 import { classifyError, NOOP_TELEMETRY } from "../observability/index.js";
+import { assertCompatibleStateRoot } from "../pi-integration/index.js";
 import { type HostFactory, WorkerRuntime, type WorkerRuntimeOptions } from "../runtime/index.js";
 import { ConversationStreams } from "./conversation-stream.js";
 import { jsonResponse, normalizeHttpMethod, routeTemplate, safePathname } from "./http.js";
@@ -61,6 +62,7 @@ export class SeptService {
 
   /** Bind before adopting durable work, then expose readiness only after all facades exist. */
   public async start(): Promise<{ host: string; port: number }> {
+    assertCompatibleStateRoot(this.options.stateRoot, this.observability);
     return this.observability.span("sept.worker.start", {}, async () => {
       const host = this.options.host ?? "127.0.0.1";
       const port = this.options.port ?? 8090;

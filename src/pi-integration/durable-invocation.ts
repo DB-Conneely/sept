@@ -5,17 +5,31 @@ import type { AssistantMessage } from "@earendil-works/pi-ai";
 import {
   AssistantEntry,
   GenerationTask,
+  ToolTask,
   hook,
   type Conversation,
   type HookRegistration,
   type Harness,
   type Submission,
+  type EntryId,
 } from "@earendil-works/pi-durable";
-import { SeptError, type Manifest, type OperatorMessage, type RunStore } from "../durable/index.js";
+import {
+  SeptError,
+  type Manifest,
+  type OperatorMessage,
+  type RunStore,
+  type WorkResponse,
+} from "../durable/index.js";
 import { NOOP_TELEMETRY, type Observability } from "../observability/index.js";
-import type { SessionRunResult } from "./contracts.js";
-import { operatorBlock, ROTATION_RECOVERY_PROMPT, ROTATION_STEER } from "./prompts.js";
-import { readDurableAdmission, writeDurableAdmission } from "./durable-admission.js";
+import type {
+  SessionRunResult,
+  SessionResponseValidator,
+  ValidatedSessionResponse,
+} from "./contracts.js";
+import { ROTATION_RECOVERY_PROMPT, ROTATION_STEER } from "./prompts.js";
+import { readInvocationAdmission } from "./durable-admission.js";
+import { DurableSubmission } from "./durable-submission.js";
+import { DurableGuard } from "./durable-guard.js";
 import {
   loadRolloverEvidence,
   MAX_UNUSABLE_USAGE_SAMPLES,
@@ -33,19 +47,25 @@ export class DurableInvocation {
   private evidence: RolloverEvidence | undefined;
   private steer: Promise<Submission> | undefined;
   private preRotationText: string | undefined;
-  private violation: unknown;
-  private recoveredMessages: Submission[] = [];
+  private readonly guard = new DurableGuard();
+  private readonly submissions: DurableSubmission;
+  private validate: SessionResponseValidator | undefined;
+  private validated: { text: string; response: ValidatedSessionResponse } | undefined;
+  private preRotationResponse: WorkResponse | undefined;
 
   public constructor(
     private readonly manifest: Manifest,
     private readonly store: RunStore,
     private readonly contextWindow: number,
     private readonly telemetry: Observability = NOOP_TELEMETRY,
-  ) {}
+  ) {
+    this.submissions = new DurableSubmission(store);
+  }
 
   /** Bind restored/fresh identity before allowing the native scheduler to dispatch. */
   public bind(conversation: Conversation): void {
     this.conversation = conversation;
+    this.submissions.bind(conversation);
     this.evidence = loadRolloverEvidence(
       this.store,
       this.manifest.provider,
@@ -55,16 +75,48 @@ export class DurableInvocation {
     );
     this.steer = undefined;
     this.preRotationText = undefined;
+    this.preRotationResponse = undefined;
   }
 
   /** Native hooks contain errors explicitly because ordinary Harness hook throws are advisory. */
   public hooks(): HookRegistration[] {
-    return [hook(GenerationTask, { afterResponse: (message) => this.observe(message) })];
+    return [
+      hook(GenerationTask, {
+        beforeRequest: () => {
+          this.guard.assertHealthy();
+          return undefined;
+        },
+        afterResponse: (message) => this.observe(message),
+      }),
+      hook(ToolTask, {
+        beforeTool: () => {
+          this.guard.assertHealthy();
+          return undefined;
+        },
+      }),
+    ];
+  }
+
+  /** Attach the supported native stop seam before any submission can enable scheduling. */
+  public bindHarness(harness: Harness): void {
+    this.guard.bind(harness);
+  }
+
+  /** Original uncheckpointed request count, including already-settled native work. */
+  public get recoveryInvocation(): number | undefined {
+    return this.submissions.recoveryInvocation;
+  }
+
+  /** Release the bounded invocation identity only after the domain transition is durable. */
+  public acknowledge(result: SessionRunResult): void {
+    if (result.requestId !== undefined) {
+      this.submissions.acknowledge(result.requestId);
+    }
   }
 
   /** Hold a native advisory failure for explicit settlement by the installed controller. */
   public report(error: unknown): void {
-    this.violation ??= error;
+    this.guard.report(error);
   }
 
   private async observe(message: AssistantMessage): Promise<void> {
@@ -74,15 +126,29 @@ export class DurableInvocation {
       }
       const evidence = this.requireEvidence();
       if (evidence.rotationRequired) {
+        this.validateFinal(message, "handover");
         return;
       }
       this.recordSample(evidence, providerContextTokens(message.usage));
+      this.validateFinal(message, "control");
       if (this.requireEvidence().rotationRequired) {
         this.preRotationText = sessionMessageText(message) || undefined;
+        this.preRotationResponse =
+          this.validated?.response.kind === "control"
+            ? this.validated.response.response
+            : undefined;
         await this.queueSteer();
       }
     } catch (error: unknown) {
       this.report(error);
+    }
+  }
+
+  private validateFinal(message: AssistantMessage, kind: "control" | "handover"): void {
+    const calls = message.content.some((entry) => entry.type === "toolCall");
+    if (this.validate !== undefined && !calls) {
+      const text = sessionMessageText(message);
+      this.validated = { text, response: this.validate(text, kind) };
     }
   }
 
@@ -117,6 +183,9 @@ export class DurableInvocation {
       });
     }
     saveRolloverEvidence(this.store, this.requireEvidence());
+    if (this.requireEvidence().unusableSamples >= MAX_UNUSABLE_USAGE_SAMPLES) {
+      throw new SeptError("Provider usage is incompatible with safe autonomous rollover");
+    }
   }
 
   private queueSteer(): Promise<Submission> {
@@ -164,90 +233,44 @@ export class DurableInvocation {
     return this.conversation;
   }
 
-  private async submission(
-    harness: Harness,
-    prompt: string,
-    messages: readonly OperatorMessage[],
-  ): Promise<Submission> {
-    const conversation = this.requireConversation();
-    const pending = (await harness.inspect(BACKGROUND_CONTEXT)).submissions.find(
-      (entry) =>
-        entry.conversationId === conversation.id &&
-        entry.type === "input" &&
-        entry.requestId?.startsWith("sept-invocation-"),
-    );
-    if (pending !== undefined) {
-      const restored = await harness.submission(pending.id, BACKGROUND_CONTEXT);
-      if (restored === undefined) {
-        throw new SeptError("Pi Durable lost an admitted submission");
-      }
-      const admittedIds = readDurableAdmission(this.store, conversation.id, pending.requestId);
-      await this.forwardRecoveredMessages(admittedIds);
-      return restored;
-    }
-    const requestId = `sept-invocation-${String(this.store.snapshot().invocations)}`;
-    writeDurableAdmission(this.store, conversation.id, requestId, messages);
-    return conversation.submit(
-      {
-        type: "input",
-        content: prompt,
-        requestId,
-      },
-      BACKGROUND_CONTEXT,
-    );
-  }
-
-  private async forwardRecoveredMessages(admittedIds: readonly string[]): Promise<void> {
-    for (const message of this.store.pendingMessages()) {
-      if (admittedIds.includes(message.id)) {
-        continue;
-      }
-      this.recoveredMessages.push(
-        await this.requireConversation().submit(
-          {
-            type: "input",
-            content: operatorBlock([message]),
-            requestId: `sept-operator-${message.id}`,
-            whenBusy: "steer",
-          },
-          BACKGROUND_CONTEXT,
-        ),
-      );
-    }
-  }
-
-  private async wait(submission: Submission): Promise<void> {
-    const settled = await submission.wait(BACKGROUND_CONTEXT);
-    if (settled.status !== "done") {
-      throw new SeptError("Pi Durable submission did not finish successfully");
-    }
-  }
-
   /** Invoke or reattach native durable work and return the existing bounded SEPT result contract. */
   public async run(
     harness: Harness,
     prompt: string,
     messages: readonly OperatorMessage[] = [],
+    validate?: SessionResponseValidator,
   ): Promise<SessionRunResult> {
-    this.recoveredMessages = [];
+    this.validate = validate;
+    this.validated = undefined;
+    try {
+      return await this.invoke(harness, prompt, messages);
+    } finally {
+      await this.guard.settle();
+    }
+  }
+
+  private async invoke(
+    harness: Harness,
+    prompt: string,
+    messages: readonly OperatorMessage[],
+  ): Promise<SessionRunResult> {
     if (this.requireEvidence().unusableSamples >= MAX_UNUSABLE_USAGE_SAMPLES) {
       throw new SeptError("Provider usage is incompatible with safe autonomous rollover");
     }
     if (this.requireEvidence().rotationRequired) {
-      await this.recoverRotation();
-      return this.result();
+      const answer = await this.recoverRotation();
+      const admission = readInvocationAdmission(this.store);
+      return this.result(answer, admission?.requestId, []);
     }
-    await this.wait(await this.submission(harness, prompt, messages));
-    for (const message of this.recoveredMessages) {
-      await this.wait(message);
-    }
+    const submitted = await this.submissions.run(harness, prompt, messages);
+    let answer = submitted.answer;
     if (this.requireEvidence().rotationRequired) {
-      await this.wait(await this.queueSteer());
+      answer = await this.submissions.wait(await this.queueSteer());
     }
-    return this.result();
+    return this.result(answer, submitted.requestId, submitted.deliveredMessageIds);
   }
 
-  private async recoverRotation(): Promise<void> {
+  private async recoverRotation(): Promise<EntryId> {
     const conversation = this.requireConversation();
     const entries = await conversation.entries({}, 250, undefined, BACKGROUND_CONTEXT);
     const marker = entries.items.findIndex((entry) =>
@@ -273,34 +296,34 @@ export class DurableInvocation {
         BACKGROUND_CONTEXT,
       );
     }
-    await this.wait(submission);
+    return this.submissions.wait(submission);
   }
 
-  private async result(): Promise<SessionRunResult> {
-    if (this.violation !== undefined) {
-      throw new SeptError("Pi Durable reported an invocation failure", { cause: this.violation });
-    }
+  private async result(
+    answer: EntryId,
+    requestId: string | undefined,
+    deliveredMessageIds: readonly string[],
+  ): Promise<SessionRunResult> {
     const evidence = this.requireEvidence();
-    if (evidence.unusableSamples >= MAX_UNUSABLE_USAGE_SAMPLES) {
-      throw new SeptError("Provider usage is incompatible with safe autonomous rollover");
-    }
-    const entries = await this.requireConversation().entries(
-      {},
-      250,
-      undefined,
-      BACKGROUND_CONTEXT,
-    );
-    const assistant = entries.items.find((entry) => AssistantEntry.is(entry));
-    const message = assistant?.model?.find((entry) => entry.role === "assistant");
-    if (message === undefined) {
-      throw new SeptError("Pi Durable ended without a finalized assistant response");
-    }
+    const text = await this.submissions.text(answer);
+    const validatedResponse =
+      this.validated?.text === text
+        ? this.validated.response
+        : this.validate?.(text, evidence.rotationRequired ? "handover" : "control");
     return {
-      text: sessionMessageText(message),
+      text,
       ...(this.preRotationText === undefined ? {} : { preRotationText: this.preRotationText }),
       steered: evidence.rotationRequired,
       contextTokens: evidence.lastTokens ?? null,
       contextWindow: this.contextWindow,
+      ...(requestId === undefined ? {} : { requestId }),
+      deliveredMessageIds,
+      responseId: `assistant-native-${String(this.requireConversation().id)}-${String(answer)}`,
+      preRotationResponseId: `assistant-native-rotation-${String(this.requireConversation().id)}`,
+      ...(validatedResponse === undefined ? {} : { validatedResponse }),
+      ...(this.preRotationResponse === undefined
+        ? {}
+        : { preRotationResponse: this.preRotationResponse }),
     };
   }
 }

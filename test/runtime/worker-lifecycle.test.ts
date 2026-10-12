@@ -18,6 +18,7 @@ import test from "node:test";
 import { RunStore } from "../../src/durable/index.js";
 import { SeptService } from "../../src/ingress/index.js";
 import { testModelAccess } from "../support/model-access.js";
+import { nativeFixtureFactory } from "../support/native-identity.js";
 import {
   complete,
   FakeHost,
@@ -112,7 +113,7 @@ void test("worker keeps its single slot busy while waiting to adopt a recent lea
     token: "secret",
     port: 0,
     piVersion: "0.85.1",
-    hostFactory: () => Promise.resolve(host),
+    hostFactory: nativeFixtureFactory(() => Promise.resolve(host)),
     modelAccessService: await testModelAccess(),
   });
   const address = await service.start();
@@ -152,7 +153,7 @@ async function gracefulFixture(): Promise<{
     host: "127.0.0.1",
     port: 0,
     piVersion: "0.85.1",
-    hostFactory: () => Promise.resolve(host),
+    hostFactory: nativeFixtureFactory(() => Promise.resolve(host)),
     modelAccessService: await testModelAccess(),
   });
   return { service, host, workspace, stateRoot };

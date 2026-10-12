@@ -10,8 +10,15 @@ import {
   type OperatorMessage,
   type RunSnapshot,
   type RunStore,
+  parseJsonObject,
+  validateHandover,
+  validateWorkResponse,
 } from "../durable/index.js";
-import type { SessionHost, SessionRunResult } from "../pi-integration/index.js";
+import type {
+  SessionHost,
+  SessionRunResult,
+  ValidatedSessionResponse,
+} from "../pi-integration/index.js";
 
 type RuntimeSnapshotPatch = {
   [Key in keyof RunSnapshot]?: RunSnapshot[Key] | undefined;
@@ -85,7 +92,10 @@ export async function runWithActiveDeadline(
         );
       }, remaining);
     });
-    return await Promise.race([host.run(prompt, operatorMessages), timeout]);
+    return await Promise.race([
+      host.run(prompt, operatorMessages, validateNativeResponse),
+      timeout,
+    ]);
   } finally {
     if (timer !== undefined) {
       clearTimeout(timer);
@@ -95,4 +105,13 @@ export async function runWithActiveDeadline(
       activeMilliseconds: snapshot.activeMilliseconds + Math.max(0, Date.now() - started),
     });
   }
+}
+
+function validateNativeResponse(
+  text: string,
+  kind: "control" | "handover",
+): ValidatedSessionResponse {
+  return kind === "control"
+    ? { kind, response: validateWorkResponse(parseJsonObject(text)) }
+    : { kind, handover: validateHandover(parseJsonObject(text)) };
 }

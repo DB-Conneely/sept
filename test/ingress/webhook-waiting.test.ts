@@ -22,6 +22,7 @@ import {
   waitFor,
   waitForWorker,
 } from "./webhook-support.js";
+import { nativeFixtureIdentity } from "../support/native-identity.js";
 
 void test("waiting webhook wakes the same Pi session exactly once", async () => {
   const { workspace, stateRoot } = environment();
@@ -50,7 +51,7 @@ void test("waiting webhook wakes the same Pi session exactly once", async () => 
     await wakeAndAssertDuplicate(base, runId);
     await waitFor(() => store.snapshot().status === "complete");
     assert.equal(creations, 2);
-    assert.deepEqual(opened, [undefined, "/tmp/webhook-test-session.jsonl"]);
+    assert.deepEqual(opened, [undefined, store.snapshot().activeSessionFile]);
     assert.match(requiredAt(secondHost.prompts, 0), /bounded observation payload/);
     assert.equal(store.pendingMessages().length, 0);
     assert.equal(eventCount(store, "operator_message_queued"), 1);
@@ -86,7 +87,7 @@ async function wakeAndAssertDuplicate(base: string, runId: string): Promise<void
 
 void test("worker restart keeps a waiting run dormant with its slot and session", async () => {
   const { workspace, stateRoot } = environment();
-  const store = waitingRun(stateRoot, workspace, "remain asleep", "pi-dormant");
+  const store = await waitingRun(stateRoot, workspace, "remain asleep");
   let creations = 0;
   const { service, base } = await start(stateRoot, () => {
     creations++;
@@ -117,7 +118,7 @@ void test("worker restart keeps a waiting run dormant with its slot and session"
 
 void test("restart recovers a queued waiting wake and adopts the existing session", async () => {
   const { workspace, stateRoot } = environment();
-  const store = waitingRun(stateRoot, workspace, "recover wake", "webhook-test-session");
+  const store = await waitingRun(stateRoot, workspace, "recover wake");
   const message = store.enqueueMessage("accepted before the wake transition committed");
   const host = new CompletingHost();
   let opened: string | undefined;
@@ -127,7 +128,7 @@ void test("restart recovers a queued waiting wake and adopts the existing sessio
   });
   try {
     await waitFor(() => store.snapshot().status === "complete");
-    assert.equal(opened, "/tmp/webhook-test-session.jsonl");
+    assert.equal(opened, store.snapshot().activeSessionFile);
     assert.match(requiredAt(host.prompts, 0), /accepted before the wake transition committed/);
     assert.equal(store.pendingMessages().length, 0);
     assert.deepEqual(
@@ -168,7 +169,7 @@ void test("message during waiting settlement launches no overlapping controller"
     firstHost.release();
     await waitFor(() => store.snapshot().status === "complete");
     assert.equal(creations, 2);
-    assert.equal(reopenedExisting, "/tmp/webhook-test-session.jsonl");
+    assert.equal(reopenedExisting, store.snapshot().activeSessionFile);
     assert.match(requiredAt(secondHost.prompts, 0), /arrived while old runtime was closing/);
     assert.equal(store.pendingMessages().length, 0);
   } finally {
@@ -177,18 +178,14 @@ void test("message during waiting settlement launches no overlapping controller"
   }
 });
 
-function waitingRun(
-  stateRoot: string,
-  workspace: string,
-  task: string,
-  sessionId: string,
-): RunStore {
+async function waitingRun(stateRoot: string, workspace: string, task: string): Promise<RunStore> {
   const store = RunStore.create(stateRoot, validateRequest({ task, workspace }, "0.85.1"));
+  const identity = await nativeFixtureIdentity(store);
   store.update({
     status: "waiting",
     phase: "waiting",
-    activeSessionId: sessionId,
-    activeSessionFile: "/tmp/webhook-test-session.jsonl",
+    activeSessionId: identity.sessionId,
+    activeSessionFile: identity.sessionFile,
     reason: "waiting for input",
   });
   return store;

@@ -4,7 +4,13 @@
  * so Pi authority and replacement semantics cannot be bypassed accidentally.
  */
 
-export type { PiSessionHostDependencies, SessionHost, SessionRunResult } from "./contracts.js";
+export type {
+  PiSessionHostDependencies,
+  SessionHost,
+  SessionRunResult,
+  SessionResponseValidator,
+  ValidatedSessionResponse,
+} from "./contracts.js";
 export { getAgentDir, inspectPi } from "./diagnostics.js";
 export { continuationPrompt, initialPrompt, successorPrompt } from "./prompts.js";
 export {
@@ -19,3 +25,4 @@ export {
 export { decideRollover, providerContextTokens, type RolloverDecision } from "./rollover.js";
 export { PiSessionHost } from "./durable-host.js";
 export { findSuccessorSession } from "./durable-session-files.js";
+export { assertCompatibleStateRoot, assertNativeRun, isLegacyRun } from "./durable-preflight.js";

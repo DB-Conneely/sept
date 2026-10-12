@@ -14,6 +14,7 @@ import {
 } from "../durable/index.js";
 import type { Observability } from "../observability/index.js";
 import { NOOP_TELEMETRY } from "../observability/index.js";
+import { assertCompatibleStateRoot, assertNativeRun } from "../pi-integration/index.js";
 import type {
   WorkerAdoption,
   WorkerRuntimeOptions,
@@ -75,6 +76,7 @@ export class WorkerRuntime {
     if (this.stopping) {
       throw new SeptError("Worker runtime is stopping");
     }
+    assertCompatibleStateRoot(this.options.stateRoot, this.observability);
     this.releaseRoot = acquireStateRootLease(this.options.stateRoot);
     try {
       const recovered = recoverWorkerResident(
@@ -146,6 +148,7 @@ export class WorkerRuntime {
     status: ReturnType<RunStore["snapshot"]>["status"];
     cancelled: boolean;
   }> {
+    assertNativeRun(store);
     const before = store.snapshot();
     if (before.status === "complete" || before.status === "blocked" || before.status === "failed") {
       return { runId: store.runId, status: before.status, cancelled: false };
@@ -232,6 +235,7 @@ export class WorkerRuntime {
 
   /** Adopt an already-durable webhook task into the slot without re-creating its evidence. */
   public adoptWebhookTask(store: RunStore): { kind: "task"; runId: string; status: "active" } {
+    assertNativeRun(store);
     this.assertAssignedWorkspace(store);
     if (store.snapshot().status === "active" && !this.execution.isActive()) {
       this.launch(store);
@@ -241,6 +245,7 @@ export class WorkerRuntime {
 
   /** Recheck whether a message may be accepted, treating an existing ID as idempotent replay. */
   public assertMessageAvailable(store: RunStore, existing: boolean): void {
+    assertNativeRun(store);
     this.messageAdmission(store, existing);
   }
 
@@ -250,6 +255,7 @@ export class WorkerRuntime {
     text: string,
     fixedId?: string,
   ): ReturnType<RunStore["enqueueMessage"]> {
+    assertNativeRun(store);
     return this.observability.spanSync(
       "sept.operator.enqueue",
       { "sept.run.id": store.runId },

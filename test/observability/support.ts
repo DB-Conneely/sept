@@ -14,6 +14,7 @@ import { SeptService } from "../../src/ingress/index.js";
 import type { Observability } from "../../src/observability/index.js";
 import type { SessionHost, SessionRunResult } from "../../src/pi-integration/index.js";
 import { testModelAccess } from "../support/model-access.js";
+import { nativeFixtureFactory } from "../support/native-identity.js";
 
 /**
  * Authentication header for the isolated observability worker fixture.
@@ -70,7 +71,7 @@ export class ObservabilityFixtureError extends Error {
  */
 export class ResultHost implements SessionHost {
   readonly sessionId = "sensitive-session-id";
-  readonly sessionFile = "/secret/pi/session-file.jsonl";
+  readonly sessionFile: string | undefined;
 
   constructor(private readonly result: SessionRunResult) {}
 
@@ -217,13 +218,13 @@ export async function startObservedService(
     port: 0,
     piVersion: "0.85.1",
     telemetry,
-    hostFactory: () => {
+    hostFactory: nativeFixtureFactory(() => {
       const host = hosts.shift();
       if (host === undefined) {
         return Promise.reject(new ObservabilityFixtureError("unexpected host creation"));
       }
       return Promise.resolve(host);
-    },
+    }),
     modelAccessService: await testModelAccess(),
   });
   const address = await service.start();

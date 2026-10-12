@@ -12,6 +12,7 @@ import { SeptService } from "../../src/ingress/index.js";
 import type { SessionHost, SessionRunResult } from "../../src/pi-integration/index.js";
 import type { HostFactory } from "../../src/runtime/index.js";
 import { testModelAccess } from "../support/model-access.js";
+import { nativeFixtureFactory } from "../support/native-identity.js";
 
 /** Authentication header used by the isolated worker listener. */
 export const AUTH = { Authorization: "Bearer test-token" };
@@ -45,7 +46,7 @@ export const WAITING: SessionRunResult = {
 /** Deterministic session host that records prompts and completes immediately. */
 export class CompletingHost implements SessionHost {
   public sessionId = "webhook-test-session";
-  public sessionFile: string | undefined = "/tmp/webhook-test-session.jsonl";
+  public sessionFile: string | undefined;
   public prompts: string[] = [];
 
   public run(prompt: string): Promise<SessionRunResult> {
@@ -137,7 +138,7 @@ export async function start(
     port: 0,
     piVersion: "0.85.1",
     modelAccessService: await testModelAccess(),
-    ...(hostFactory === undefined ? {} : { hostFactory }),
+    ...(hostFactory === undefined ? {} : { hostFactory: nativeFixtureFactory(hostFactory) }),
   });
   const address = await service.start();
   return { service, base: `http://${address.host}:${String(address.port)}` };

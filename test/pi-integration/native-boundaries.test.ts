@@ -12,6 +12,8 @@ import { PiSessionHost } from "../../src/pi-integration/index.js";
 import {
   readDurableAdmission,
   writeDurableAdmission,
+  readInvocationAdmission,
+  completeDurableAdmission,
 } from "../../src/pi-integration/durable-admission.js";
 import { loadTrustedExtensions } from "../../src/pi-integration/durable-extensions.js";
 import { DurableInvocation } from "../../src/pi-integration/durable-invocation.js";
@@ -175,18 +177,31 @@ function admissionBounds(
     text: "bounded fixture",
     createdAt: new Date().toISOString(),
   }));
-  writeDurableAdmission(store, conversationId, "sept-invocation-1", messages);
+  writeDurableAdmission(store, conversationId, "sept-invocation-1", messages, "captured prompt");
+  assert.equal(readInvocationAdmission(store)?.prompt, "captured prompt");
+  completeDurableAdmission(store, "sept-invocation-1");
+  assert.equal(readInvocationAdmission(store)?.checkpointed, true);
   assert.equal(readDurableAdmission(store, conversationId, "sept-invocation-1").length, 64);
   assert.throws(
     () => readDurableAdmission(store, conversationId, "sept-invocation-2"),
     /does not match/,
   );
   assert.throws(() => {
-    writeDurableAdmission(store, conversationId, "sept-invocation-1", [
-      ...messages,
-      { id: "extra", text: "extra", createdAt: new Date().toISOString() },
-    ]);
+    writeDurableAdmission(
+      store,
+      conversationId,
+      "sept-invocation-1",
+      [...messages, { id: "extra", text: "extra", createdAt: new Date().toISOString() }],
+      "captured prompt",
+    );
   }, /exceed their bound/);
+  malformedAdmission(store, conversationId);
+}
+
+function malformedAdmission(
+  store: ReturnType<typeof fixtureStore>,
+  conversationId: Parameters<typeof writeDurableAdmission>[1],
+): void {
   writeFileSync(
     join(store.runDir, "pi-durable-admission.json"),
     JSON.stringify({
@@ -248,7 +263,7 @@ function raceController(
         modelRuntime: models,
       });
       const run = host.run.bind(host);
-      host.run = (prompt, messages) => {
+      host.run = (prompt, messages, validate) => {
         if (store.snapshot().invocations === 1) {
           store.enqueueMessage("LATE-OPERATOR-DIRECTION");
           assert.deepEqual(
@@ -256,7 +271,7 @@ function raceController(
             [capturedId],
           );
         }
-        return run(prompt, messages);
+        return run(prompt, messages, validate);
       };
       return host;
     },

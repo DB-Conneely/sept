@@ -6,7 +6,10 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import test from "node:test";
 import { NOOP_TELEMETRY } from "../../src/observability/index.js";
-import { loadNativeSqliteDriver } from "../../src/pi-integration/sqlite-driver.js";
+import {
+  loadNativeSqliteDriver,
+  loadNativeSqliteReader,
+} from "../../src/pi-integration/sqlite-driver.js";
 
 await test("loadNativeSqliteDriver shares one import, logs SQLite notice and preserves unrelated warnings", async () => {
   const notices: string[] = [];
@@ -34,6 +37,8 @@ await test("loadNativeSqliteDriver shares one import, logs SQLite notice and pre
   await first;
   assert.equal(process.emitWarning === original, true);
   assert.deepEqual(notices, ["pi.sqlite.experimental"]);
+  assert.equal(typeof loadNativeSqliteReader(telemetry).DatabaseSync, "function");
+  assert.equal(process.emitWarning === original, true);
 });
 
 await test("native SQLite import failure restores the exact warning emitter", () => {

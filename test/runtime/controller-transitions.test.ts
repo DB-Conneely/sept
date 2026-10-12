@@ -57,7 +57,7 @@ void test("waiting durably checkpoints and releases Pi without another invocatio
   assert.equal(store.snapshot().status, "waiting");
   assert.equal(store.snapshot().phase, "waiting");
   assert.equal(store.snapshot().activeSessionId, "pi-predecessor");
-  assert.equal(store.snapshot().activeSessionFile, "/pi/predecessor.jsonl");
+  assert.equal(store.snapshot().activeSessionFile, undefined);
   assert.equal(host.prompts.length, 1);
   assert.equal(existsSync(store.leasePath), false);
   const events = store.events(0, 1000);

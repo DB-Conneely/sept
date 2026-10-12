@@ -14,6 +14,7 @@ import {
   type RunSnapshot,
   type RunStore,
   type WorkControl,
+  type WorkResponse,
 } from "../durable/index.js";
 import type { Observability } from "../observability/index.js";
 import type { SessionHost, SessionRunResult } from "../pi-integration/index.js";
@@ -56,8 +57,8 @@ export class RuntimeTransitions {
       "sept.epoch": snapshot.epoch,
       "sept.invocation": invocation,
     });
-    this.recordPreRotationMessage(result.preRotationText, snapshot, invocation);
-    const handover = validateHandover(parseJsonObject(result.text));
+    this.recordPreRotationMessage(result, snapshot, invocation);
+    const handover = this.handover(result);
     const durable = this.store.persistHandover(
       snapshot.epoch,
       host.sessionId,
@@ -76,29 +77,43 @@ export class RuntimeTransitions {
       : { kind: "stop" };
   }
 
+  private handover(result: SessionRunResult): ReturnType<typeof validateHandover> {
+    return result.validatedResponse?.kind === "handover"
+      ? result.validatedResponse.handover
+      : validateHandover(parseJsonObject(result.text));
+  }
+
   private recordPreRotationMessage(
-    text: string | undefined,
+    result: SessionRunResult,
     snapshot: RunSnapshot,
     invocation: number,
   ): void {
+    const {
+      preRotationText: text,
+      preRotationResponse: validated,
+      preRotationResponseId: responseId,
+    } = result;
     if (text === undefined) {
       return;
     }
+    let response: WorkResponse;
     try {
-      const response = validateWorkResponse(parseJsonObject(text));
-      if (response.message !== undefined) {
-        this.store.conversationMessage(
-          `assistant-${String(snapshot.epoch)}-${String(invocation)}`,
-          "assistant",
-          response.message,
-        );
-      }
+      response = validated ?? validateWorkResponse(parseJsonObject(text));
     } catch {
       this.store.event("conversation_message_deferred", {
         epoch: snapshot.epoch,
         invocation,
         reason: "invalid_pre_rotation_response",
       });
+      return;
+    }
+    // Publication failures must stop replacement; only malformed optional progress may be deferred.
+    if (response.message !== undefined) {
+      this.store.conversationMessage(
+        responseId ?? `assistant-${String(snapshot.epoch)}-${String(invocation)}`,
+        "assistant",
+        response.message,
+      );
     }
   }
 
@@ -128,11 +143,14 @@ export class RuntimeTransitions {
     invocation: number,
     messages: OperatorMessage[],
   ): RuntimeTransition {
-    const response = validateWorkResponse(parseJsonObject(result.text));
+    const response =
+      result.validatedResponse?.kind === "control"
+        ? result.validatedResponse.response
+        : validateWorkResponse(parseJsonObject(result.text));
     const control = response.control;
     if (response.message !== undefined) {
       this.store.conversationMessage(
-        `assistant-${String(snapshot.epoch)}-${String(invocation)}`,
+        result.responseId ?? `assistant-${String(snapshot.epoch)}-${String(invocation)}`,
         "assistant",
         response.message,
       );

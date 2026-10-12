@@ -44,7 +44,7 @@ function sqliteNotice(warning: string | Error, type: WarningOptions | undefined)
   );
 }
 
-async function importSqlite(telemetry: Observability): Promise<SqliteDriver> {
+function adaptSqliteNotice(telemetry: Observability): () => void {
   // eslint-disable-next-line @typescript-eslint/unbound-method -- Saved only for exact restoration; forwarding uses the bound emitter.
   const original = process.emitWarning;
   const emit = original.bind(process);
@@ -60,10 +60,31 @@ async function importSqlite(telemetry: Observability): Promise<SqliteDriver> {
     }
     forwardWarning(emit, warning, type, code, ctor);
   };
+  return () => {
+    process.emitWarning = original;
+  };
+}
+
+async function importSqlite(telemetry: Observability): Promise<SqliteDriver> {
+  const restore = adaptSqliteNotice(telemetry);
   try {
     return await import("@earendil-works/pi-durable/storage/sqlite/node");
   } finally {
-    process.emitWarning = original;
+    restore();
+  }
+}
+
+/** Load Node's canonical read-only database constructor through the same exact notice adapter. */
+export function loadNativeSqliteReader(
+  telemetry: Observability,
+): Pick<typeof import("node:sqlite"), "DatabaseSync"> {
+  const restore = adaptSqliteNotice(telemetry);
+  try {
+    const native: unknown = process.getBuiltinModule("node:sqlite");
+    // CAST: This is Node's canonical builtin module, not provider or durable input.
+    return native as Pick<typeof import("node:sqlite"), "DatabaseSync">;
+  } finally {
+    restore();
   }
 }
 

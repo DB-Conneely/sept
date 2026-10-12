@@ -23,6 +23,7 @@ import { loadDurableSections } from "./durable-resources.js";
 import { readDurableLocator, writeDurableLocator } from "./durable-session-files.js";
 import { createDurableCodingTools } from "./durable-tools.js";
 import { loadNativeSqliteDriver } from "./sqlite-driver.js";
+import { assertNativeRun } from "./durable-preflight.js";
 
 /** SEPT rollover disables compaction; native retries remain bounded. */
 const HARNESS_SETTINGS = {
@@ -158,6 +159,7 @@ async function openHarness(
       },
       BACKGROUND_CONTEXT,
     );
+    invocation.bindHarness(harness);
     return { harness, invocation, refreshResources };
   } catch (error: unknown) {
     await storage.close(BACKGROUND_CONTEXT);
@@ -200,6 +202,7 @@ export async function openDurableRuntime(
   telemetry: Observability = NOOP_TELEMETRY,
   dependencies: PiSessionHostDependencies = {},
 ): Promise<OpenedDurableRuntime> {
+  assertNativeRun(store, telemetry);
   if (existingSessionFile !== undefined) {
     readDurableLocator(existingSessionFile);
   }

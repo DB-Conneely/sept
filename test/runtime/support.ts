@@ -13,6 +13,7 @@ import { SeptService, validateRequest } from "../../src/ingress/index.js";
 import type { SessionHost, SessionRunResult } from "../../src/pi-integration/index.js";
 import type { HostFactory } from "../../src/runtime/index.js";
 import { testModelAccess } from "../support/model-access.js";
+import { nativeFixtureFactory } from "../support/native-identity.js";
 
 export { complete, handover, waiting } from "./fixture-data.js";
 
@@ -43,7 +44,7 @@ export function sessionResponse(status: "complete" | "waiting", message: string)
 /** Scripted host that records prompts and performs deterministic native-session replacement. */
 export class FakeHost implements SessionHost {
   public sessionId = "pi-predecessor";
-  public sessionFile: string | undefined = "/pi/predecessor.jsonl";
+  public sessionFile: string | undefined;
   public readonly prompts: string[] = [];
   public replacements = 0;
 
@@ -63,12 +64,11 @@ export class FakeHost implements SessionHost {
     const predecessorFile = this.sessionFile;
     this.replacements += 1;
     this.sessionId = `pi-successor-${String(this.replacements)}`;
-    this.sessionFile = `/pi/successor-${String(this.replacements)}.jsonl`;
+    this.sessionFile = undefined;
     return Promise.resolve({
       predecessorId,
       ...(predecessorFile === undefined ? {} : { predecessorFile }),
       successorId: this.sessionId,
-      successorFile: this.sessionFile,
     });
   }
 
@@ -84,7 +84,7 @@ export class FakeHost implements SessionHost {
 /** Host gate used to prove graceful stop waits for a durable invocation boundary. */
 export class GracefulStopHost implements SessionHost {
   public readonly sessionId = "graceful-session";
-  public readonly sessionFile: string | undefined = "/pi/graceful.jsonl";
+  public readonly sessionFile: string | undefined;
   public readonly prompts: string[] = [];
   public closed = false;
   private finish: (() => void) | undefined;
@@ -129,7 +129,7 @@ export class GracefulStopHost implements SessionHost {
 /** Host gate whose single invocation can be completed by a cancellation or test owner. */
 export class GateHost implements SessionHost {
   public readonly sessionId = "part1-gate";
-  public readonly sessionFile = "/tmp/part1-gate.jsonl";
+  public readonly sessionFile: string | undefined;
   public readonly prompts: string[] = [];
   public aborted = 0;
   private finish: ((value: SessionRunResult) => void) | undefined;
@@ -164,7 +164,7 @@ export class GateHost implements SessionHost {
 /** Host gate used to expose cancellation while native session replacement is in flight. */
 export class ReplacementGateHost implements SessionHost {
   public sessionId = "replacement-predecessor";
-  public sessionFile: string | undefined = "/tmp/replacement-predecessor.jsonl";
+  public sessionFile: string | undefined;
   public aborts = 0;
   private markReplacement: (() => void) | undefined;
   public readonly replacementStarted = new Promise<void>((resolve) => {
@@ -203,12 +203,11 @@ export class ReplacementGateHost implements SessionHost {
     const predecessorId = this.sessionId;
     const predecessorFile = this.sessionFile;
     this.sessionId = "replacement-successor";
-    this.sessionFile = "/tmp/replacement-successor.jsonl";
+    this.sessionFile = undefined;
     return {
       predecessorId,
       ...(predecessorFile === undefined ? {} : { predecessorFile }),
       successorId: this.sessionId,
-      successorFile: this.sessionFile,
     };
   }
 
@@ -229,7 +228,7 @@ export class ReplacementGateHost implements SessionHost {
 /** Scripted host for deterministic waiting and completion responses. */
 export class ResultHost implements SessionHost {
   public readonly sessionId = "part1-result";
-  public readonly sessionFile = "/tmp/part1-result.jsonl";
+  public readonly sessionFile: string | undefined;
   public readonly prompts: string[] = [];
 
   public constructor(private readonly values: SessionRunResult[]) {}
@@ -291,7 +290,7 @@ export async function startService(
     host: "127.0.0.1",
     port: 0,
     piVersion: "0.85.1",
-    ...(hostFactory === undefined ? {} : { hostFactory }),
+    ...(hostFactory === undefined ? {} : { hostFactory: nativeFixtureFactory(hostFactory) }),
     modelAccessService: await testModelAccess(),
   });
   const address = await service.start();

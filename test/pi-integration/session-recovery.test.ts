@@ -62,6 +62,12 @@ async function completedPredecessor(
     NOOP_TELEMETRY,
     { modelRuntime: runtime },
   );
+  store.update({
+    phase: "running",
+    invocations: 1,
+    activeSessionId: first.sessionId,
+    activeSessionFile: first.sessionFile,
+  });
   const rotated = await first.run("trigger rotation");
   const sessionFile = first.sessionFile;
   assert.equal(rotated.steered, true);
@@ -170,6 +176,12 @@ async function interruptPredecessor(
     NOOP_TELEMETRY,
     { modelRuntime: runtime },
   );
+  store.update({
+    phase: "running",
+    invocations: 1,
+    activeSessionId: first.sessionId,
+    activeSessionFile: first.sessionFile,
+  });
   const interruptedRun = assert.rejects(
     first.run("trigger the interrupted rotation"),
     /did not finish successfully/,

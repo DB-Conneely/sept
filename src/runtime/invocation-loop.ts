@@ -11,6 +11,7 @@ import {
   type RunSnapshot,
   type RunStore,
   type WorkControl,
+  SeptError,
 } from "../durable/index.js";
 import type { Observability } from "../observability/index.js";
 import { classifyError } from "../observability/index.js";
@@ -65,11 +66,14 @@ export class RuntimeInvocationLoop {
 
   private async step(host: SessionHost): Promise<RuntimeTransition> {
     const snapshot = this.store.snapshot();
-    enforceInvocationLimits(this.manifest, snapshot);
+    const recovering = host.recoveryInvocation;
+    if (recovering === undefined) {
+      enforceInvocationLimits(this.manifest, snapshot);
+    }
     const messages = this.store.pendingMessages();
     this.recordDelivery(host, snapshot, messages);
     const prompt = this.prompt(snapshot, messages);
-    const invocation = snapshot.invocations + 1;
+    const invocation = recovering ?? snapshot.invocations + 1;
     this.recordInvocationStart(host, snapshot, invocation, messages);
     const result = await this.invoke(host, prompt, snapshot, invocation, messages);
     if (result === undefined) {
@@ -81,9 +85,28 @@ export class RuntimeInvocationLoop {
       steered: result.steered,
       textBytes: Math.min(Buffer.byteLength(result.text), 64_001),
     });
-    return result.steered
-      ? this.transitions.rotate(host, result, snapshot, invocation, messages)
-      : this.transitions.control(host, result, snapshot, invocation, messages);
+    const delivered = this.deliveredMessages(result, messages);
+    const transition = result.steered
+      ? await this.transitions.rotate(host, result, snapshot, invocation, delivered)
+      : this.transitions.control(host, result, snapshot, invocation, delivered);
+    host.acknowledge?.(result);
+    return transition;
+  }
+
+  private deliveredMessages(
+    result: SessionRunResult,
+    captured: OperatorMessage[],
+  ): OperatorMessage[] {
+    if (result.deliveredMessageIds === undefined) {
+      return captured;
+    }
+    return result.deliveredMessageIds.map((id) => {
+      const message = this.store.operatorMessage(id);
+      if (message === undefined) {
+        throw new SeptError("Pi Durable delivered an unknown operator identity");
+      }
+      return message;
+    });
   }
 
   private recordDelivery(

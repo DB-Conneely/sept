@@ -5,7 +5,12 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { watchEvents, type AgentEvent, type AgentEventStream } from "@earendil-works/pi-durable";
 import { SeptError, type Manifest, type OperatorMessage, type RunStore } from "../durable/index.js";
 import { NOOP_TELEMETRY, type Observability } from "../observability/index.js";
-import type { PiSessionHostDependencies, SessionHost, SessionRunResult } from "./contracts.js";
+import type {
+  PiSessionHostDependencies,
+  SessionHost,
+  SessionRunResult,
+  SessionResponseValidator,
+} from "./contracts.js";
 import {
   createDurableConversation,
   openDurableRuntime,
@@ -61,6 +66,16 @@ export class PiSessionHost implements SessionHost {
     return this.native.sessionFile;
   }
 
+  /** Recovered work keeps its original invocation budget and public output identity. */
+  public get recoveryInvocation(): number | undefined {
+    return this.native.invocation.recoveryInvocation;
+  }
+
+  /** Settle native admission only after the installed controller fsyncs its complete transition. */
+  public acknowledge(result: SessionRunResult): void {
+    this.native.invocation.acknowledge(result);
+  }
+
   private async bindEvents(): Promise<void> {
     this.events = await watchEvents(
       this.native.harness,
@@ -90,15 +105,20 @@ export class PiSessionHost implements SessionHost {
       this.store.event("pi_compaction_violation", { sessionId: this.sessionId });
     }
     // Only bounded lifecycle classifications enter operational evidence, never native payloads.
-    this.store.log({ type: event.type, sessionId: this.sessionId });
+    try {
+      this.store.log({ type: event.type, sessionId: this.sessionId });
+    } catch (error: unknown) {
+      this.native.invocation.report(error);
+    }
   }
 
   /** Invoke/recover a native submission through the installed controller's sole engine. */
   public run(
     prompt: string,
     operatorMessages: readonly OperatorMessage[] = [],
+    validate?: SessionResponseValidator,
   ): Promise<SessionRunResult> {
-    return this.native.invocation.run(this.native.harness, prompt, operatorMessages);
+    return this.native.invocation.run(this.native.harness, prompt, operatorMessages, validate);
   }
 
   /** Commit a fresh native conversation after SEPT fsyncs the predecessor handover. */

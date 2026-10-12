@@ -245,10 +245,10 @@ async function exerciseUnusableUsage(): Promise<void> {
       host.run("finish the active tool chain"),
       /incompatible with safe autonomous rollover/,
     );
-    assert.deepEqual(counts, { provider: 4, tool: 3 });
+    assert.deepEqual(counts, { provider: 3, tool: 2 });
     assert.equal(
       store.events(0, 1000).filter((event) => event.type === "context_sample_deferred").length,
-      4,
+      3,
     );
   } finally {
     await host.close();
@@ -256,6 +256,6 @@ async function exerciseUnusableUsage(): Promise<void> {
 }
 
 await test(
-  "persistent unusable finalized usage blocks only after the active Pi invocation reaches a safe seam",
+  "the third unusable finalized sample blocks the next native tool and generation",
   exerciseUnusableUsage,
 );
