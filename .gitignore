@@ -13,3 +13,6 @@ build/
 .vscode/
 .cortex
 cortex-context
+graphify-out/
+.graphify_analysis.json
+.graphify_labels.json
