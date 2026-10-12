@@ -1,3 +1,9 @@
+/**
+ * Verifies credential-blind authentication normalization against injected native Pi providers.
+ * Pi owns credential flows and storage; fixtures prove keyless, ambient, and subscription outcomes
+ * expose only bounded method/state metadata while preserving every ephemeral interaction form.
+ */
+
 import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";

@@ -1,3 +1,9 @@
+/**
+ * Defines credential-blind model-access contracts projected from Pi. ModelRuntime remains the owner
+ * of provider discovery, authentication, and model transport; SEPT exposes only bounded metadata,
+ * selection authority, and ephemeral operator interaction callbacks.
+ */
+
 /** Credential-blind authentication availability reported for one Pi provider. */
 export type AuthenticationState =
   | "authenticated"

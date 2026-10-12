@@ -1,3 +1,9 @@
+/**
+ * Decodes hostile JSONL evidence into bounded conversation, operator, run, and worker records.
+ * Persistence owners call these codecs on every recovery read so malformed evidence fails closed
+ * before it can influence cursor order, readiness, queue identity, or lifecycle authority.
+ */
+
 import type {
   ConversationEvent,
   OperatorMessage,

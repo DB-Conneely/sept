@@ -1,3 +1,9 @@
+/**
+ * Owns the credential-free Pod default provider/model pair in the Pi agent directory. Admission
+ * rereads this atomic record rather than caching authority; only validated identifiers are persisted,
+ * and authentication material is never accepted into selection state.
+ */
+
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { atomicWrite, SeptError } from "../durable/index.js";
@@ -52,6 +58,7 @@ export function writePodDefault(agentDir: string, selection: ModelSelection): vo
     provider: selection.provider,
     model: selection.model,
   });
+  // The selection file is authority only for future admission and must contain no Pi credentials.
   atomicWrite(join(resolve(agentDir), SELECTION_FILE), {
     formatVersion: 1,
     provider: validated.provider,

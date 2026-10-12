@@ -1,3 +1,9 @@
+/**
+ * Projects installed Pi provider, model, and failure data into bounded credential-blind contracts.
+ * ModelAccessService owns orchestration; these helpers never expose auth sources, credential values,
+ * raw provider failures, or alternate provider behavior.
+ */
+
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import type {
   AuthenticationMethod,

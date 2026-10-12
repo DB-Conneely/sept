@@ -9,7 +9,7 @@ SEPT does not contain a separate provider abstraction, a TUI, or a Codex CLI/app
 ```bash
 npm ci
 npm run build
-npx @earendil-works/pi-coding-agent@0.85.1
+npx @earendil-works/pi-coding-agent@0.87.1
 ```
 
 Build once, then use the installed `./sept` entry point. Authentication delegates to Pi and reads secrets or manual codes from a hidden TTY prompt or standard input—never a command-line option. Pi stores and refreshes credentials in `${PI_CODING_AGENT_DIR:-~/.pi/agent}/auth.json`; SEPT never copies them into defaults, runs, logs, telemetry, conversation, or API responses.
@@ -22,7 +22,7 @@ Build once, then use the installed `./sept` entry point. Authentication delegate
 ./sept doctor
 
 ./sept models list --provider openai-codex
-./sept models select --provider openai-codex --model gpt-5.6-sol
+./sept models select --provider openai-codex --model gpt-6-sol
 ./sept models current
 ./sept models validate
 ```
@@ -37,10 +37,11 @@ Build once, then use the installed `./sept` entry point. Authentication delegate
   --role "Act as the repository maintainer" \
   --workspace /absolute/path/to/repository \
   --provider openai-codex \
-  --model gpt-5.6-sol
+  --model gpt-6-sol \
+  --thinking xhigh
 ```
 
-Selection precedence is an explicit provider/model pair, the current Pod default, then `openai-codex/gpt-5.6-sol` only when Pi reports it valid and authenticated. Each admission rereads the Pod default, preflights Pi metadata, availability, and resolved authentication, and persists the final pair in the immutable run manifest before execution. The cwd-relative `.sept/runs` default is only a local-development fallback for an explicitly launched command. Server and container operation must set `--state-dir` or `SEPT_STATE_DIR` to a persistent external state root; never rely on a checkout-local directory or an ephemeral container layer.
+Selection precedence is an explicit provider/model pair, the current Pod default, then `openai-codex/gpt-6-sol` only when Pi reports it valid and authenticated. Omitted thinking defaults to `xhigh`. Each admission rereads the Pod default, preflights Pi metadata, availability, and resolved authentication, and persists the final pair in the immutable run manifest before execution. The cwd-relative `.sept/runs` default is only a local-development fallback for an explicitly launched command. Server and container operation must set `--state-dir` or `SEPT_STATE_DIR` to a persistent external state root; never rely on a checkout-local directory or an ephemeral container layer.
 
 ## Worker
 

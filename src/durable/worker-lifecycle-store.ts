@@ -1,3 +1,9 @@
+/**
+ * Owns the state-root readiness record consulted by worker admission. WorkerRuntime decides when
+ * quiescence permits settlement; this store persists monotonic accepting-to-draining-to-drained
+ * authority so restart cannot accidentally reopen admission.
+ */
+
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import type { WorkerLifecycleState } from "./contracts.js";

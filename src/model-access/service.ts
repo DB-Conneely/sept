@@ -1,3 +1,9 @@
+/**
+ * Provides SEPT's credential-blind model catalogue, authentication delegation, and admission
+ * preflight facade over installed Pi ModelRuntime. Pi owns credentials and provider behavior; this
+ * service bounds diagnostics and persists only validated provider/model selection authority.
+ */
+
 import { resolve } from "node:path";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { SeptError } from "../durable/index.js";
@@ -118,6 +124,7 @@ export class ModelAccessService {
     }
     this.assertLoginSupported(providerId, method, provider.auth);
     try {
+      // Prompt answers flow directly to Pi and are never retained in SEPT state or diagnostics.
       const piMethod = method === "api_key" ? "api_key" : "oauth";
       await this.runtime.login(providerId, piMethod, interaction);
     } catch (error: unknown) {
@@ -224,6 +231,7 @@ export class ModelAccessService {
   ): Promise<AvailabilityResult> {
     const keys = new Set<string>();
     let failed = false;
+    // Provider failures are isolated so one unavailable catalogue cannot suppress safe siblings.
     for (const providerId of providerIds) {
       try {
         const models = await this.runtime.getAvailable(providerId, signalOptions(signal));

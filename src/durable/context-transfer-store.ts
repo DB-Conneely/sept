@@ -1,3 +1,9 @@
+/**
+ * Owns checkpoint and handover persistence below RunStore. Runtime supplies lifecycle decisions, while
+ * this store guarantees recoverable evidence and message-consumption proof before session authority
+ * advances; handover JSON, Markdown, event, and snapshot must be durable before replacement.
+ */
+
 import { join, resolve } from "node:path";
 import type {
   DurableHandover,

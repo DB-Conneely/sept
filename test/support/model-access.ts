@@ -1,3 +1,9 @@
+/**
+ * Provides a credential-isolated native Pi ModelRuntime for tests that do not perform provider work.
+ * Each caller receives a private agent directory and no ambient credential dependency; production
+ * ModelAccessService remains the only SEPT-facing model-access path.
+ */
+
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -20,7 +26,7 @@ export async function testModelAccess(): Promise<ModelAccessService> {
     api: "openai-completions",
     models: [
       {
-        id: "gpt-5.6-sol",
+        id: "gpt-6-sol",
         name: "deterministic",
         reasoning: false,
         input: ["text"],

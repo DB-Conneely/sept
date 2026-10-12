@@ -1,3 +1,9 @@
+/**
+ * Exercises durable storage through public facades using real private filesystem state. The suite
+ * verifies atomic publication, fail-closed recovery, lease authority, exact bounded input, cursor
+ * retention, and proof-before-consumption ordering without bypassing production codecs.
+ */
+
 import assert from "node:assert/strict";
 import {
   appendFileSync,

@@ -1,10 +1,11 @@
+/**
+ * Verifies adaptive rollover arithmetic and durable evidence independently of Pi session execution.
+ * The suite exercises exact context-window boundaries, bounded growth history, restart scoping, and
+ * rejection of incomplete provider usage without introducing a local token estimate.
+ */
+
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import test from "node:test";
-import { RunStore } from "../../src/durable/index.js";
-import { validateRequest } from "../../src/ingress/index.js";
 import {
   decideRollover,
   initialRolloverEvidence,
@@ -14,18 +15,14 @@ import {
   recordUsableSample,
   saveRolloverEvidence,
 } from "../../src/pi-integration/index.js";
+import { fixtureDirectories, fixtureStore, usage } from "./support.js";
 
-function store() {
-  const root = mkdtempSync(join(tmpdir(), "sept-rollover-"));
-  const workspace = join(root, "workspace");
-  mkdirSync(workspace);
-  return RunStore.create(
-    join(root, "runs"),
-    validateRequest({ task: "roll over safely", workspace }, "0.85.1"),
-  );
+function store(): ReturnType<typeof fixtureStore> {
+  const directories = fixtureDirectories("sept-rollover-");
+  return fixtureStore(directories, "provider", "roll over safely");
 }
 
-test("adaptive arithmetic has exact boundaries across 128k, 272k, and approximately 1M windows", () => {
+await test("adaptive arithmetic has exact boundaries across 128k, 272k, and approximately 1M windows", () => {
   const cases = [
     { window: 128_000, headroom: 28_672, at: 99_328 },
     { window: 272_000, headroom: 59_840, at: 212_160 },
@@ -39,7 +36,7 @@ test("adaptive arithmetic has exact boundaries across 128k, 272k, and approximat
   }
 });
 
-test("ordinary and tool-heavy growth use the largest of the last three positive deltas without a cap", () => {
+await test("ordinary and tool-heavy growth use the largest of the last three positive deltas without a cap", () => {
   const ordinary = decideRollover(100_000, 272_000, [4_000, 6_000]);
   assert.equal(ordinary.nextTurnReserveTokens, 16_320);
   assert.equal(ordinary.confidenceMarginTokens, 8_160);
@@ -53,7 +50,7 @@ test("ordinary and tool-heavy growth use the largest of the last three positive 
   assert.equal(heavy.reason, "required_headroom_reached");
 });
 
-test("evidence keeps only positive growth, rejects regression, defers unusable usage, and scopes restart state", () => {
+await test("evidence keeps positive growth, rejects regression, bounds deferrals, and scopes restart state", () => {
   const run = store();
   let evidence = initialRolloverEvidence("provider", "model", "session-one", 128_000);
   evidence = recordUsableSample(evidence, 10_000).evidence;
@@ -78,28 +75,14 @@ test("evidence keeps only positive growth, rejects regression, defers unusable u
   );
 });
 
-test("only complete positive provider usage can become context evidence", () => {
-  const calculate = (value: never): number => (value as { totalTokens: number }).totalTokens;
+await test("only complete positive provider usage can become context evidence", () => {
+  assert.equal(providerContextTokens(usage(4, 2)), 6);
   assert.equal(
-    providerContextTokens(
-      { input: 4, output: 2, cacheRead: 0, cacheWrite: 0, totalTokens: 6 },
-      calculate,
-    ),
+    providerContextTokens({ ...usage(4, 2), cost: { ...usage(0).cost, total: 0.001 } }),
     6,
   );
-  assert.equal(
-    providerContextTokens(
-      { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 },
-      calculate,
-    ),
-    undefined,
-  );
-  assert.equal(
-    providerContextTokens(
-      { input: 4, output: -1, cacheRead: 0, cacheWrite: 0, totalTokens: 3 },
-      calculate,
-    ),
-    undefined,
-  );
-  assert.equal(providerContextTokens(undefined, calculate), undefined);
+  assert.equal(providerContextTokens(usage(0, 0)), undefined);
+  assert.equal(providerContextTokens({ ...usage(4, 0), output: -1, totalTokens: 3 }), undefined);
+  assert.equal(providerContextTokens({ ...usage(4, 2), cost: undefined }), undefined);
+  assert.equal(providerContextTokens(undefined), undefined);
 });

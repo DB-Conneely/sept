@@ -1,3 +1,9 @@
+/**
+ * Provides the durable facade for one run and composes specialized evidence, queue, conversation,
+ * handover, state, and lease owners. Runtime controls lifecycle policy; RunStore validates and fsyncs
+ * every visible transition while preserving cancellation and consumption authority across restart.
+ */
+
 import { existsSync, mkdirSync, renameSync } from "node:fs";
 import { basename, join } from "node:path";
 import { randomUUID } from "node:crypto";

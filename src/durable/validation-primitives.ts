@@ -1,3 +1,9 @@
+/**
+ * Supplies strict primitive decoders for durable codecs. Callers retain record-specific semantics;
+ * these helpers narrow hostile unknown values, enforce exact schemas and bounds, and reject unsafe
+ * controls before data can enter persisted domain state.
+ */
+
 import { SeptError } from "./errors.js";
 
 const UNSAFE_CONTROL_CHARACTERS = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/;

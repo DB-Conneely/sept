@@ -1,3 +1,9 @@
+/**
+ * Validates hostile assistant control and context-transfer output at the durable boundary. Runtime
+ * receives only bounded domain values; secrets and internal control syntax cannot enter the public
+ * conversation, and no handover is writable until its complete schema passes.
+ */
+
 import type {
   DurableHandover,
   Handover,

@@ -1,3 +1,9 @@
+/**
+ * Validates immutable manifests and authoritative lifecycle snapshots read from disk. RunStore owns
+ * writes and runtime owns transition intent; these codecs reject unknown fields, invalid phase/status
+ * combinations, unsafe paths, and incomplete handover or cancellation authority.
+ */
+
 import { isAbsolute } from "node:path";
 import type { Manifest, RunPhase, RunSnapshot, RunStatus, TerminalCause } from "./contracts.js";
 import { SeptError } from "./errors.js";

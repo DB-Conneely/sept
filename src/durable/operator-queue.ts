@@ -1,3 +1,9 @@
+/**
+ * Owns bounded, exact, idempotent operator input below RunStore. Conversation projection is a
+ * subordinate view; queue records remain pending until matching fsynced checkpoint or handover
+ * evidence proves delivery, preventing loss across crashes and session rollover.
+ */
+
 import { randomUUID } from "node:crypto";
 import type { OperatorMessage, RunEvent } from "./contracts.js";
 import { ConversationStore } from "./conversation-store.js";

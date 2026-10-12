@@ -1,3 +1,8 @@
+/**
+ * Enforces source dependency direction from filesystem imports. The test owns no product behavior:
+ * each mechanism may cross only through a public index, and observability remains dependency-free.
+ */
+
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import { posix } from "node:path";
@@ -16,29 +21,30 @@ function sourceFiles(directory = "src"): string[] {
   return readdirSync(directory, { withFileTypes: true })
     .flatMap((entry) => {
       const path = `${directory}/${entry.name}`;
-      return entry.isDirectory()
-        ? sourceFiles(path)
-        : entry.isFile() && entry.name.endsWith(".ts")
-          ? [path]
-          : [];
+      if (entry.isDirectory()) {
+        return sourceFiles(path);
+      }
+      return entry.isFile() && entry.name.endsWith(".ts") ? [path] : [];
     })
     .sort();
 }
 
 function mechanism(path: string): string | undefined {
   const candidate = path.split("/")[1];
-  return mechanisms.has(candidate) ? candidate : undefined;
+  return candidate !== undefined && mechanisms.has(candidate) ? candidate : undefined;
 }
 
 function relativeImports(path: string): string[] {
   const source = readFileSync(path, "utf8");
   return [...source.matchAll(/(?:\bfrom\s+|\bimport\s*(?:\(\s*)?)["']([^"']+)["']/g)]
-    .map((match) => match[1])
-    .filter((specifier) => specifier.startsWith("."))
+    .flatMap((match) => {
+      const specifier = match[1];
+      return specifier?.startsWith(".") ? [specifier] : [];
+    })
     .sort();
 }
 
-test("source mechanisms cross boundaries only through public index modules", () => {
+void test("source mechanisms cross boundaries only through public index modules", () => {
   let crossings = 0;
   const observabilityForeignImports: string[] = [];
   for (const source of sourceFiles()) {
@@ -46,15 +52,18 @@ test("source mechanisms cross boundaries only through public index modules", () 
     for (const specifier of relativeImports(source)) {
       const target = posix.normalize(posix.join(posix.dirname(source), specifier));
       const targetMechanism = mechanism(target);
-      if (!targetMechanism || targetMechanism === sourceMechanism) continue;
+      if (!targetMechanism || targetMechanism === sourceMechanism) {
+        continue;
+      }
       crossings++;
       assert.equal(
         target,
         `src/${targetMechanism}/index.js`,
         `${source} imports ${targetMechanism} implementation ${specifier}`,
       );
-      if (sourceMechanism === "observability")
+      if (sourceMechanism === "observability") {
         observabilityForeignImports.push(`${source} -> ${target}`);
+      }
     }
   }
   assert.ok(crossings > 0, "expected the architecture check to inspect cross-mechanism imports");

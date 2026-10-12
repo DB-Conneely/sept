@@ -1,3 +1,9 @@
+/**
+ * Parses Pi-compatible JSONC without adding a configuration dependency. Custom configuration owns
+ * schema and credential policy; this scanner preserves string content, strips only comments and
+ * trailing commas, and returns hostile unknown input for downstream validation.
+ */
+
 import { SeptError } from "../durable/index.js";
 
 type CommentState = "content" | "string" | "line-comment" | "block-comment";

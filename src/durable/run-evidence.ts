@@ -1,3 +1,9 @@
+/**
+ * Owns sequenced internal run events and bounded payload-free diagnostics beneath RunStore. Lifecycle
+ * callers supply facts, while this store fsyncs event order, streams bounded retrieval, and truncates
+ * logs without allowing diagnostics to become durable authority.
+ */
+
 import { existsSync, readFileSync, statSync } from "node:fs";
 import type { RunEvent } from "./contracts.js";
 import { validateRunEvent } from "./evidence-codecs.js";

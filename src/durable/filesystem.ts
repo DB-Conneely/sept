@@ -1,3 +1,9 @@
+/**
+ * Owns private filesystem creation, atomic replacement, fsync ordering, and bounded JSONL scanning.
+ * Higher durable stores supply validated domain records; this lowest layer makes file contents and
+ * authority-bearing directory entries recoverable without interpreting business lifecycle state.
+ */
+
 import {
   closeSync,
   constants,

@@ -1,21 +1,20 @@
-export {
-  PiSessionHost,
-  findSuccessorSession,
-  type PiSessionHostDependencies,
-  type SessionHost,
-  type SessionRunResult,
-} from "./session.js";
+/**
+ * Public mechanism boundary for native Pi diagnostics, prompts, rollover evidence, and session
+ * lifecycle. Other SEPT mechanisms import only this barrel; implementation modules remain internal
+ * so Pi authority and replacement semantics cannot be bypassed accidentally.
+ */
+
+export type { PiSessionHostDependencies, SessionHost, SessionRunResult } from "./contracts.js";
 export { getAgentDir, inspectPi } from "./diagnostics.js";
+export { continuationPrompt, initialPrompt, successorPrompt } from "./prompts.js";
 export {
   MAX_UNUSABLE_USAGE_SAMPLES,
-  decideRollover,
   initialRolloverEvidence,
   loadRolloverEvidence,
-  providerContextTokens,
   recordUnusableSample,
   recordUsableSample,
   saveRolloverEvidence,
-  type RolloverDecision,
   type RolloverEvidence,
-} from "./rollover.js";
-export { continuationPrompt, initialPrompt, successorPrompt } from "./prompts.js";
+} from "./rollover-evidence.js";
+export { decideRollover, providerContextTokens, type RolloverDecision } from "./rollover.js";
+export { PiSessionHost, findSuccessorSession } from "./session.js";

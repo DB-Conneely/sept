@@ -1,3 +1,9 @@
+/**
+ * Owns exclusive run and state-root lease files for process-local single-slot authority. Callers own
+ * lifecycle work; this module validates owner evidence, refuses ambiguous takeover, refreshes only
+ * its own lease, and makes release idempotent so cleanup cannot revoke another owner.
+ */
+
 import { readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";

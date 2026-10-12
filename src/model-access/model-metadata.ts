@@ -1,3 +1,9 @@
+/**
+ * Owns bounded model identity and rollover-metadata policy above Pi discovery. Pi supplies model
+ * records; SEPT accepts only safe identifiers and trustworthy context/output limits before selection
+ * can become manifest authority or drive adaptive rollover.
+ */
+
 import { DEFAULTS, SeptError } from "../durable/index.js";
 import type { ModelSelection } from "./contracts.js";
 

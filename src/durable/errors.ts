@@ -1,3 +1,9 @@
+/**
+ * Defines classifiable failures owned by durable storage. Runtime and ingress may map these classes
+ * without parsing messages; errors carry bounded operational context and never credential values or
+ * hostile durable payloads.
+ */
+
 /** Classified base error for bounded SEPT durability and lifecycle failures. */
 export class SeptError extends Error {
   public constructor(message: string, options?: ErrorOptions) {

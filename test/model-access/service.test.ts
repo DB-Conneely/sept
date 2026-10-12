@@ -1,3 +1,9 @@
+/**
+ * Verifies the ModelAccessService facade over isolated installed Pi runtimes. Native Pi remains the
+ * provider/auth owner; tests assert credential-blind catalogue projection, login/logout delegation,
+ * fresh selection preflight, bounded failures, and private agent-directory construction.
+ */
+
 import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";

@@ -1,3 +1,9 @@
+/**
+ * Owns the bounded client-facing conversation projection beneath RunStore. Internal event/queue
+ * evidence remains authoritative; this store preserves exact accepted text, strict cursors,
+ * idempotent crash recovery, and terminal state without exposing operational payloads.
+ */
+
 import { existsSync } from "node:fs";
 import type { ConversationEvent, OperatorMessage, RunSnapshot } from "./contracts.js";
 import {

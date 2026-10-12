@@ -1,3 +1,9 @@
+/**
+ * Exercises model configuration and Pod-selection safety at their filesystem boundaries. Tests prove
+ * bounded JSONC, endpoint and plaintext-credential rejection, required rollover metadata, atomic
+ * credential-free defaults, and strict model identity without invoking provider transports.
+ */
+
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -121,24 +127,24 @@ await test("custom configuration rejects plaintext credentials and unsupported A
 await test("Pod defaults are exact, credential-free, atomic, and strictly validated", () => {
   const directory = agent();
   assert.equal(readPodDefault(directory), undefined);
-  writePodDefault(directory, { provider: "openai-codex", model: "gpt-5.6-sol" });
+  writePodDefault(directory, { provider: "openai-codex", model: "gpt-6-sol" });
   assert.deepEqual(readPodDefault(directory), {
     provider: "openai-codex",
-    model: "gpt-5.6-sol",
+    model: "gpt-6-sol",
   });
   const path = join(directory, "sept-model.json");
   assert.equal(statSync(path).mode & 0o777, 0o600);
   assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), {
     formatVersion: 1,
     provider: "openai-codex",
-    model: "gpt-5.6-sol",
+    model: "gpt-6-sol",
   });
   writeFileSync(
     path,
     JSON.stringify({
       formatVersion: 1,
       provider: "openai-codex",
-      model: "gpt-5.6-sol",
+      model: "gpt-6-sol",
       token: "forbidden",
     }),
   );
@@ -150,7 +156,7 @@ await test("model identity, fallback, and rollover metadata contracts fail close
   assert.throws(() => safeModelIdentifier(" invalid ", "model"), /invalid/);
   assert.deepEqual(builtInDefault(), {
     provider: "openai-codex",
-    model: "gpt-5.6-sol",
+    model: "gpt-6-sol",
   });
   assert.doesNotThrow(() => {
     assertModelMetadata({

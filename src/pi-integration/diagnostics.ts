@@ -1,8 +1,15 @@
+/**
+ * Exposes bounded, credential-blind Pi installation diagnostics to CLI composition. Model access
+ * retains authentication authority and credential storage; this adapter returns only normalized
+ * provider status and never reads or projects credential values.
+ */
+
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { ModelAccessService, type AuthenticationStatus } from "../model-access/index.js";
 
 export { getAgentDir };
 
+/** Inspect one Pi provider through model access with a fixed timeout and secret-free projection. */
 export async function inspectPi(
   agentDir: string,
   provider: string,

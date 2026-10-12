@@ -1,3 +1,9 @@
+/**
+ * Public boundary of the durable mechanism. Runtime, ingress, and composition depend on documented
+ * facades and contracts here; codecs, queue internals, filesystem ordering, and lease implementation
+ * remain owned below this barrel.
+ */
+
 /** Durable run facade used by lifecycle and ingress mechanisms. */
 export { RunStore } from "./run-store.js";
 

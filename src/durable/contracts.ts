@@ -1,3 +1,9 @@
+/**
+ * Defines credential-free durable domain records shared with higher mechanisms. Durable codecs own
+ * validation and persistence; these contracts encode lifecycle authority, bounded evidence, and the
+ * recoverable state needed across process or native-session replacement.
+ */
+
 /** Ordered array fields required in every context-rotation handover. */
 export const HANDOVER_FIELDS = [
   "completed",
@@ -178,8 +184,8 @@ export interface RunEvent extends Record<string, unknown> {
 /** Conservative task defaults applied only when admission omits a value. */
 export const DEFAULTS = {
   provider: "openai-codex",
-  model: "gpt-5.6-sol",
-  thinking: "high" as const,
+  model: "gpt-6-sol",
+  thinking: "xhigh" as const,
   maxInvocations: 100,
   maxEpochs: 20,
   timeoutSeconds: 86_400,

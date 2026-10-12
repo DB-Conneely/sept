@@ -1,6 +1,6 @@
 # Pi contract pinned by SEPT
 
-SEPT pins `@earendil-works/pi-coding-agent` 0.85.1 and uses its installed public contracts directly.
+SEPT pins `@earendil-works/pi-coding-agent` 0.87.1 and uses its installed public contracts directly. The built-in default is `openai-codex/gpt-6-sol` with `xhigh` reasoning.
 
 ## Model access and authentication
 

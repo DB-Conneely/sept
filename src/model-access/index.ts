@@ -1,3 +1,9 @@
+/**
+ * Public boundary for SEPT's bounded normalization and control layer over Pi ModelRuntime. Callers
+ * receive credential-free contracts and selection operations; provider clients, auth persistence,
+ * discovery, and request execution remain exclusively Pi-owned.
+ */
+
 /** Credential-blind Pi model-access facade used by composition and admission. */
 export { ModelAccessService } from "./service.js";
 

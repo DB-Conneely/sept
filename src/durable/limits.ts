@@ -1,3 +1,9 @@
+/**
+ * Centralizes hard durable and public-projection resource bounds. Storage and transport owners use
+ * these constants to reject or compact before buffering becomes unbounded; changing a limit changes
+ * recovery capacity and therefore requires corresponding boundary tests.
+ */
+
 /** Maximum operator messages awaiting a durable consumption proof. */
 export const MAX_PENDING_MESSAGES = 64;
 

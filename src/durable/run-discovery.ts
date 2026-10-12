@@ -1,3 +1,9 @@
+/**
+ * Discovers restart-adoptable runs beneath one state root. Worker recovery owns adoption decisions;
+ * discovery ignores reserved or legacy directories but fails closed when current-format authority is
+ * partial, malformed, or inconsistent with its directory identity.
+ */
+
 import { existsSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { SeptError } from "./errors.js";

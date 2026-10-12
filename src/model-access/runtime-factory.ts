@@ -1,3 +1,9 @@
+/**
+ * Constructs the installed Pi ModelRuntime using one private agent directory after SEPT safety
+ * validation. Pi retains provider, credential, discovery, and transport ownership; callers may
+ * control cancellation/network refresh but cannot substitute a second runtime abstraction.
+ */
+
 import { mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";

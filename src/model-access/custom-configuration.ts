@@ -1,3 +1,9 @@
+/**
+ * Validates optional Pi models.json safety constraints before installed runtime construction. Pi owns
+ * compatibility and execution; SEPT bounds the file, requires rollover metadata, confines insecure
+ * HTTP to deliberate private endpoints, and rejects plaintext credential material.
+ */
+
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { SeptError } from "../durable/index.js";
@@ -64,6 +70,7 @@ function parsedUrl(value: unknown, name: string): URL {
   }
 }
 
+// Endpoint validation prevents embedded credentials and accidental cleartext traffic to public hosts.
 function safeBaseUrl(value: unknown, name: string): URL {
   const url = parsedUrl(value, name);
   if (url.username || url.password || url.search || url.hash) {
@@ -94,6 +101,7 @@ function credentialString(value: unknown, name: string): string {
   return value;
 }
 
+// Credentials stay owned by Pi storage, environment interpolation, or an explicit helper command.
 function credentialValue(value: unknown, name: string, policy: PlaintextPolicy): void {
   const credential = credentialString(value, name);
   const command = credential.startsWith("!") && credential.length > 1;
