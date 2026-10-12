@@ -16,22 +16,26 @@ export class WorkerMessages {
     private readonly launch: (store: RunStore) => void,
   ) {}
 
-  /** Enqueue exact text idempotently and wake a blocked/waiting run when the ID is new. */
+  /** Repair accepted but unconsumed input through projection and wake before acknowledging it. */
   public send(
     store: RunStore,
     text: string,
     fixedId: string | undefined,
   ): ReturnType<RunStore["enqueueMessage"]> {
     const existing = fixedId === undefined ? undefined : store.operatorMessage(fixedId);
-    const snapshot = this.admission(store, existing !== undefined);
+    const pending =
+      existing !== undefined &&
+      store.pendingMessages().some((message) => message.id === existing.id);
+    const consumed = existing !== undefined && !pending;
+    const snapshot = this.admission(store, consumed);
     const message = store.enqueueMessage(text, fixedId);
     const queueDepth = store.pendingMessages().length;
     this.recordQueued(store, snapshot.status, queueDepth, existing !== undefined);
-    if (
-      existing === undefined &&
-      (snapshot.status === "blocked" || snapshot.status === "waiting")
-    ) {
+    if (!consumed && (snapshot.status === "blocked" || snapshot.status === "waiting")) {
       this.wake(store, snapshot, message.id, queueDepth);
+    } else if (!consumed && snapshot.status === "active") {
+      // A crash may have published the wake state before launch; the worker retains live slot checks.
+      this.launch(store);
     }
     return message;
   }

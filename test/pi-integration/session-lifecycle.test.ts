@@ -9,6 +9,7 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
+import { registerSessionResourceCleanup } from "@earendil-works/pi-ai";
 import { defineExtension, defineTool } from "@earendil-works/pi-durable";
 import { Type } from "typebox";
 import { NOOP_TELEMETRY } from "../../src/observability/index.js";
@@ -259,3 +260,40 @@ await test(
   "the third unusable finalized sample blocks the next native tool and generation",
   exerciseUnusableUsage,
 );
+
+await test("native replacement and close release only the owned provider session resources", async () => {
+  const directories = fixtureDirectories("sept-provider-cleanup-");
+  const runtime = await fixtureModelRuntime(directories.agentDir);
+  const requested: (string | undefined)[] = [];
+  const released: (string | undefined)[] = [];
+  registerFixtureProvider(runtime, "cleanup", (_model, _context, options) => {
+    requested.push(options?.sessionId);
+    return streamOf(assistant([{ type: "text", text: "complete" }], 10, "stop"));
+  });
+  const unregister = registerSessionResourceCleanup((id) => released.push(id));
+  const store = fixtureStore(directories, "cleanup", "owned cleanup");
+  const host = await PiSessionHost.create(
+    store.manifest(),
+    store,
+    directories.agentDir,
+    undefined,
+    NOOP_TELEMETRY,
+    { modelRuntime: runtime },
+  );
+  try {
+    store.update({ invocations: 1 });
+    await host.run("first");
+    assert.equal(typeof requested[0], "string");
+    await host.newSession();
+    assert.deepEqual(released, [requested[0]]);
+    await host.run("successor");
+    assert.notEqual(requested[1], requested[0]);
+    await host.close();
+    await host.close();
+    assert.deepEqual(released, requested);
+    assert.ok(released.every((id) => typeof id === "string"));
+  } finally {
+    await host.close();
+    unregister();
+  }
+});

@@ -71,3 +71,13 @@ void test("classified errors and composed ingress owners remain explicit", () =>
   assert.equal(typeof textResponse, "function");
   assert.equal(typeof respondWithError, "function");
 });
+
+void test("route telemetry admits only canonical installed model paths", () => {
+  for (const method of ["GET", "PUT"]) {
+    assert.equal(routeTemplate(method, "/v1/model-access/SHORT-PRIVATE-CANARY"), "unmatched");
+    assert.equal(routeTemplate(method, "/v1/model-access/selection"), "/v1/model-access/selection");
+  }
+  assert.equal(routeTemplate("GET", "/v1/model-access/providers"), "/v1/model-access/providers");
+  assert.equal(routeTemplate("GET", "/v1/model-access/models"), "/v1/model-access/models");
+  assert.equal(routeTemplate("PUT", "/v1/model-access/models"), "unmatched");
+});

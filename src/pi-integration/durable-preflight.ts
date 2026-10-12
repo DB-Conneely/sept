@@ -15,6 +15,7 @@ import { readInvocationAdmission, type DurableAdmission } from "./durable-admiss
 import { readDurableLocator } from "./durable-session-files.js";
 import type { DurableSessionLocator } from "./durable-session-files.js";
 import { assertDurableDatabase } from "./durable-database-preflight.js";
+import { readDurableInitialization } from "./durable-initialization.js";
 import { NOOP_TELEMETRY, type Observability } from "../observability/index.js";
 
 interface SessionFormats {
@@ -122,21 +123,13 @@ function classifyRun(store: RunStore, telemetry: Observability): boolean {
   const sessions = sessionFormats(store);
   const admission = readInvocationAdmission(store);
   assertAdmissionBinding(store.snapshot(), admission);
-  const nativeEvidence = existsSync(engine) || sessions.native || admission !== undefined;
+  const initializing = readDurableInitialization(store, telemetry);
+  const nativeEvidence =
+    existsSync(engine) || sessions.native || admission !== undefined || initializing !== undefined;
   if (existsSync(engine)) {
     validateEngine(engine);
   }
-  if (existsSync(database)) {
-    if (!existsSync(engine)) {
-      throw new SeptError(
-        "Pi Durable engine evidence is missing; refusing partial native adoption",
-      );
-    }
-    validateDatabase(database);
-    assertDurableDatabase(database, sessions.locators, telemetry);
-  } else if (nativeEvidence) {
-    throw new SeptError("Pi Durable database evidence is missing");
-  }
+  validateNativeArtifacts(database, engine, sessions, admission, initializing, telemetry);
   if (sessions.legacy && nativeEvidence) {
     throw new SeptError("Pi Durable and legacy session evidence are mixed");
   }
@@ -144,6 +137,34 @@ function classifyRun(store: RunStore, telemetry: Observability): boolean {
     assertPublishedIdentity(store, nativeEvidence);
   }
   return sessions.legacy;
+}
+
+function validateNativeArtifacts(
+  database: string,
+  engine: string,
+  sessions: SessionFormats,
+  admission: DurableAdmission | undefined,
+  initializing: ReturnType<typeof readDurableInitialization>,
+  telemetry: Observability,
+): void {
+  if (existsSync(database)) {
+    if (!existsSync(engine) && initializing === undefined) {
+      throw new SeptError(
+        "Pi Durable engine evidence is missing; refusing partial native adoption",
+      );
+    }
+    if (initializing === undefined) {
+      validateDatabase(database);
+    }
+    assertDurableDatabase(
+      database,
+      sessions.locators,
+      telemetry,
+      initializing === undefined ? undefined : { initializing: true },
+    );
+  } else if (existsSync(engine) || sessions.native || admission !== undefined) {
+    throw new SeptError("Pi Durable database evidence is missing");
+  }
 }
 
 function assertPublishedIdentity(store: RunStore, nativeEvidence: boolean): void {

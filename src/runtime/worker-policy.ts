@@ -19,6 +19,7 @@ interface MessageAuthority {
   stopping: boolean;
   initialized: boolean;
   activeRunId: string | undefined;
+  residentRunId: string | undefined;
 }
 
 function terminallyClosed(snapshot: RunSnapshot): boolean {
@@ -105,7 +106,7 @@ function assertRunCapacity(store: RunStore, snapshot: RunSnapshot): void {
   }
 }
 
-/** Recheck live worker and run authority before accepting a non-duplicate operator message. */
+/** Recheck live slot authority before accepting or repairing input; consumed duplicates are inert. */
 export function assertMessageAdmission(
   store: RunStore,
   existing: boolean,
@@ -120,11 +121,11 @@ export function assertMessageAdmission(
   // may wake only when the resident slot is empty or already belongs to that same run.
   const blockedDuringSettlement =
     snapshot.status === "blocked" && authority.activeRunId !== undefined;
-  const waitingBehindAnotherRun =
-    snapshot.status === "waiting" &&
-    authority.activeRunId !== undefined &&
-    authority.activeRunId !== store.runId;
-  if (blockedDuringSettlement || waitingBehindAnotherRun) {
+  const residentBehindAnotherRun =
+    authority.residentRunId !== undefined && authority.residentRunId !== store.runId;
+  const activeBehindAnotherRun =
+    authority.activeRunId !== undefined && authority.activeRunId !== store.runId;
+  if (blockedDuringSettlement || residentBehindAnotherRun || activeBehindAnotherRun) {
     throw new WorkerConflictError("single worker slot is busy; retry the message when idle");
   }
   assertRunCapacity(store, snapshot);

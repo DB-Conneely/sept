@@ -14,7 +14,7 @@ import {
   utimesSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
@@ -245,4 +245,40 @@ await test("assistant work and handover controls are bounded before durable use"
     next_action: "continue",
   };
   assert.throws(() => validateHandover(handover), /completed must be an array of at most 64/);
+});
+
+await test("stale foreign and malformed leases fail closed while proved dead local leases recover", () => {
+  const { stateRoot } = fixture();
+  const path = join(stateRoot, "worker.lease");
+  const stale = new Date(Date.now() - 6_000);
+  for (const owner of [
+    {
+      ownerId: "foreign",
+      pid: 999_999,
+      hostname: "foreign-fixture",
+      processStartedAt: 1,
+      heartbeatAt: stale.toISOString(),
+    },
+    { malformed: true },
+  ]) {
+    writeFileSync(path, JSON.stringify(owner));
+    utimesSync(path, stale, stale);
+    assert.throws(() => acquireStateRootLease(stateRoot), /Cannot verify/);
+    assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), owner);
+  }
+  assert.throws(() => process.kill(999_999, 0));
+  writeFileSync(
+    path,
+    JSON.stringify({
+      ownerId: "dead-local",
+      pid: 999_999,
+      hostname: hostname(),
+      processStartedAt: 1,
+      heartbeatAt: stale.toISOString(),
+    }),
+  );
+  utimesSync(path, stale, stale);
+  const release = acquireStateRootLease(stateRoot);
+  release();
+  assert.throws(() => readFileSync(path));
 });

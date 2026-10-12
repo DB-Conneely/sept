@@ -178,3 +178,39 @@ await test("model identity, fallback, and rollover metadata contracts fail close
     });
   }, /maximum-output metadata/);
 });
+
+await test("private HTTP uses parsed address ranges and rejects deceptive DNS spellings", () => {
+  const directory = agent();
+  const path = join(directory, "models.json");
+  for (const hostname of [
+    "127.deceptive.invalid",
+    "10.deceptive.invalid",
+    "192.168.deceptive.invalid",
+    "172.16.deceptive.invalid",
+    "172.15.0.1",
+    "172.32.0.1",
+    "192.169.0.1",
+  ]) {
+    writeFileSync(
+      path,
+      JSON.stringify({ providers: { local: provider(`http://${hostname}/v1`, "local") } }),
+    );
+    assert.throws(() => validateCustomConfiguration(directory), /must use HTTPS/);
+  }
+  for (const hostname of [
+    "localhost",
+    "host.docker.internal",
+    "[::1]",
+    "127.255.0.1",
+    "10.0.0.1",
+    "192.168.0.1",
+    "172.16.0.1",
+    "172.31.255.255",
+  ]) {
+    writeFileSync(
+      path,
+      JSON.stringify({ providers: { local: provider(`http://${hostname}/v1`, "local") } }),
+    );
+    assert.equal(validateCustomConfiguration(directory).configured, true);
+  }
+});

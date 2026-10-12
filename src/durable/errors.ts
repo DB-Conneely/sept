@@ -15,6 +15,9 @@ export class SeptError extends Error {
 /** Indicates that durable operator input reached its configured capacity. */
 export class QueueCapacityError extends SeptError {}
 
+/** Native dispatch must stop once SEPT's durable active-time authority is exhausted. */
+export class ExecutionTimeoutError extends SeptError {}
+
 /** Indicates that a requested conversation cursor is older than retained evidence. */
 export class ConversationCursorExpiredError extends SeptError {
   public constructor(public readonly retainedFrom: number) {

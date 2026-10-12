@@ -3,7 +3,6 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import {
-  AssistantEntry,
   GenerationTask,
   ToolTask,
   hook,
@@ -12,6 +11,7 @@ import {
   type Harness,
   type Submission,
   type EntryId,
+  type HookApi,
 } from "@earendil-works/pi-durable";
 import {
   SeptError,
@@ -27,7 +27,11 @@ import type {
   ValidatedSessionResponse,
 } from "./contracts.js";
 import { ROTATION_RECOVERY_PROMPT, ROTATION_STEER } from "./prompts.js";
-import { readInvocationAdmission } from "./durable-admission.js";
+import {
+  isRotationResponse,
+  recoveredRotationMessages,
+  recoveredPreRotationText,
+} from "./durable-rotation-recovery.js";
 import { DurableSubmission } from "./durable-submission.js";
 import { DurableGuard } from "./durable-guard.js";
 import {
@@ -83,14 +87,14 @@ export class DurableInvocation {
     return [
       hook(GenerationTask, {
         beforeRequest: () => {
-          this.guard.assertHealthy();
+          this.guard.assertDispatchBudget(this.store, this.manifest.timeoutSeconds * 1000);
           return undefined;
         },
-        afterResponse: (message) => this.observe(message),
+        afterResponse: (message, api) => this.observe(message, api),
       }),
       hook(ToolTask, {
         beforeTool: () => {
-          this.guard.assertHealthy();
+          this.guard.assertDispatchBudget(this.store, this.manifest.timeoutSeconds * 1000);
           return undefined;
         },
       }),
@@ -119,29 +123,37 @@ export class DurableInvocation {
     this.guard.report(error);
   }
 
-  private async observe(message: AssistantMessage): Promise<void> {
+  private async observe(message: AssistantMessage, api: HookApi): Promise<void> {
     try {
       if (message.stopReason === "error" || message.stopReason === "aborted") {
         return;
       }
       const evidence = this.requireEvidence();
-      if (evidence.rotationRequired) {
+      if (
+        evidence.rotationRequired &&
+        (await isRotationResponse(this.requireConversation(), api.taskId))
+      ) {
         this.validateFinal(message, "handover");
         return;
       }
-      this.recordSample(evidence, providerContextTokens(message.usage));
+      // Replayed unsteered responses retain the already-fsynced usage/rotation decision.
+      if (!evidence.rotationRequired) {
+        this.recordSample(evidence, providerContextTokens(message.usage));
+      }
       this.validateFinal(message, "control");
       if (this.requireEvidence().rotationRequired) {
-        this.preRotationText = sessionMessageText(message) || undefined;
-        this.preRotationResponse =
-          this.validated?.response.kind === "control"
-            ? this.validated.response.response
-            : undefined;
-        await this.queueSteer();
+        await this.steerAfterControl(message);
       }
     } catch (error: unknown) {
       this.report(error);
     }
+  }
+
+  private async steerAfterControl(message: AssistantMessage): Promise<void> {
+    this.preRotationText = sessionMessageText(message) || undefined;
+    this.preRotationResponse =
+      this.validated?.response.kind === "control" ? this.validated.response.response : undefined;
+    await this.queueSteer();
   }
 
   private validateFinal(message: AssistantMessage, kind: "control" | "handover"): void {
@@ -258,9 +270,9 @@ export class DurableInvocation {
       throw new SeptError("Provider usage is incompatible with safe autonomous rollover");
     }
     if (this.requireEvidence().rotationRequired) {
+      const recovered = await recoveredRotationMessages(this.store, this.requireConversation());
       const answer = await this.recoverRotation();
-      const admission = readInvocationAdmission(this.store);
-      return this.result(answer, admission?.requestId, []);
+      return this.result(answer, recovered.requestId, recovered.deliveredMessageIds);
     }
     const submitted = await this.submissions.run(harness, prompt, messages);
     let answer = submitted.answer;
@@ -272,18 +284,7 @@ export class DurableInvocation {
 
   private async recoverRotation(): Promise<EntryId> {
     const conversation = this.requireConversation();
-    const entries = await conversation.entries({}, 250, undefined, BACKGROUND_CONTEXT);
-    const marker = entries.items.findIndex((entry) =>
-      entry.model?.some(
-        (message) => message.role === "user" && sessionMessageText(message) === ROTATION_STEER,
-      ),
-    );
-    if (marker >= 0) {
-      const predecessor = entries.items.slice(marker + 1).find((entry) => AssistantEntry.is(entry));
-      this.preRotationText =
-        sessionMessageText(predecessor?.model?.find((message) => message.role === "assistant")) ||
-        undefined;
-    }
+    this.preRotationText = await recoveredPreRotationText(conversation);
     let submission = await this.queueSteer();
     const status = await submission.status(BACKGROUND_CONTEXT);
     if (status.status === "unanswered") {

@@ -9,6 +9,9 @@ import {
 } from "../../src/pi-integration/index.js";
 import { CycleController } from "../../src/runtime/index.js";
 import { DurableSubmission } from "../../src/pi-integration/durable-submission.js";
+import { writeDurableAdmission } from "../../src/pi-integration/durable-admission.js";
+import { readDurableLocator } from "../../src/pi-integration/durable-session-files.js";
+import { ExecutionTimeoutError } from "../../src/durable/index.js";
 import { readInvocationAdmission } from "../../src/pi-integration/durable-admission.js";
 import {
   assistant,
@@ -171,4 +174,39 @@ await test("unanswered native work rejects recovery before forwarding accepted l
   } finally {
     database.close();
   }
+});
+
+await test("settled answer survives an exhausted crash budget without another native request", async () => {
+  const fixture = await settledFixture();
+  await fixture.host.run(initialPrompt(fixture.store.manifest()), []);
+  await fixture.host.close();
+  fixture.store.update({ activeStartedAt: Date.now() - 4_000_000 });
+  await new CycleController(fixture.store, fixture.directories.agentDir, fixture.factory).run();
+  assert.equal(fixture.calls(), 1);
+  assert.equal(fixture.store.snapshot().status, "complete");
+  assert.equal(fixture.store.snapshot().activeStartedAt, undefined);
+  assert.equal(
+    fixture.store.snapshot().activeMilliseconds,
+    fixture.store.manifest().timeoutSeconds * 1000,
+  );
+});
+
+await test("exhausted crash budget prevents dispatch of an admitted but unsubmitted native request", async () => {
+  const fixture = await settledFixture();
+  writeDurableAdmission(
+    fixture.store,
+    readDurableLocator(fixture.host.sessionFile).conversationId,
+    "sept-invocation-1",
+    [],
+    "admitted immediately before process death",
+  );
+  await fixture.host.close();
+  fixture.store.update({ activeStartedAt: Date.now() - 4_000_000 });
+  await assert.rejects(
+    new CycleController(fixture.store, fixture.directories.agentDir, fixture.factory).run(),
+    ExecutionTimeoutError,
+  );
+  assert.equal(fixture.calls(), 0);
+  assert.equal(fixture.store.snapshot().status, "blocked");
+  assert.equal(fixture.store.snapshot().terminalCause, "timeout");
 });

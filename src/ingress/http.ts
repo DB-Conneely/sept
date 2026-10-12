@@ -176,7 +176,7 @@ export function routeTemplate(method: string, pathname: string): string {
   if (method === "POST" && ["/v1/tasks", "/v1/drain", "/v1/webhooks"].includes(pathname)) {
     return pathname;
   }
-  if ((method === "GET" || method === "PUT") && pathname.startsWith("/v1/model-access/")) {
+  if (isModelRoute(method, pathname)) {
     return pathname;
   }
   const match =
@@ -187,6 +187,17 @@ export function routeTemplate(method: string, pathname: string): string {
     return "unmatched";
   }
   return `/v1/tasks/{runId}${match[1] === undefined ? "" : `/${match[1]}`}`;
+}
+
+function isModelRoute(method: string, pathname: string): boolean {
+  if (method === "GET") {
+    return [
+      "/v1/model-access/providers",
+      "/v1/model-access/models",
+      "/v1/model-access/selection",
+    ].includes(pathname);
+  }
+  return method === "PUT" && pathname === "/v1/model-access/selection";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

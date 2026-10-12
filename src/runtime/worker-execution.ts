@@ -12,7 +12,7 @@ import { CycleController, type HostFactory } from "./controller.js";
 interface ActiveExecution {
   store: RunStore;
   controller: CycleController;
-  promise: Promise<void>;
+  promise: Promise<boolean>;
 }
 
 /** Manages at most one active controller without owning resident-run admission decisions. */
@@ -24,7 +24,7 @@ export class WorkerExecutionSlot {
     private readonly hostFactory: HostFactory | undefined,
     private readonly observability: Observability,
     private readonly stopping: () => boolean,
-    private readonly settled: (store: RunStore) => void,
+    private readonly settled: (store: RunStore, outcome: "success" | "failure") => void,
   ) {}
 
   /** Return whether any controller currently owns the execution slot. */
@@ -72,13 +72,14 @@ export class WorkerExecutionSlot {
       this.observability,
       this.stopping,
     );
-    const execution: ActiveExecution = { store, controller, promise: Promise.resolve() };
-    execution.promise = this.control(store, controller).finally(() => {
+    const execution: ActiveExecution = { store, controller, promise: Promise.resolve(true) };
+    execution.promise = this.control(store, controller).then((succeeded) => {
       if (this.active !== execution) {
-        return;
+        return succeeded;
       }
       this.active = undefined;
-      this.settled(store);
+      this.settled(store, succeeded ? "success" : "failure");
+      return succeeded;
     });
     this.active = execution;
   }
@@ -100,20 +101,21 @@ export class WorkerExecutionSlot {
     });
   }
 
-  private async control(store: RunStore, controller: CycleController): Promise<void> {
+  private async control(store: RunStore, controller: CycleController): Promise<boolean> {
     while (store.snapshot().status === "active") {
       try {
         await controller.run();
-        return;
+        return true;
       } catch (error: unknown) {
         if (!this.retryableLeaseExit(store, error) || this.stopping()) {
-          return;
+          return false;
         }
         await new Promise<void>((resolve) => {
           setTimeout(resolve, 1_000);
         });
       }
     }
+    return true;
   }
 
   private retryableLeaseExit(store: RunStore, error: unknown): boolean {

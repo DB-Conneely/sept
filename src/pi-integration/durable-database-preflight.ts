@@ -1,6 +1,7 @@
 /** Verifies pinned native SQLite metadata/schema/locators without initializing or migrating storage. */
 
 import { SeptError } from "../durable/index.js";
+import type { ConversationId } from "@earendil-works/pi-durable";
 import type { Observability } from "../observability/index.js";
 import type { DurableSessionLocator } from "./durable-session-files.js";
 import { loadNativeSqliteReader } from "./sqlite-driver.js";
@@ -10,13 +11,13 @@ export function assertDurableDatabase(
   path: string,
   locators: readonly DurableSessionLocator[],
   telemetry: Observability,
-): void {
+  options?: { initializing: true },
+): ConversationId | undefined {
   const { DatabaseSync } = loadNativeSqliteReader(telemetry);
   try {
     const database = new DatabaseSync(path, { readOnly: true });
     try {
-      validateSchema(database);
-      validateLocators(database, locators);
+      return inspectDatabase(database, locators, options);
     } finally {
       database.close();
     }
@@ -28,6 +29,61 @@ export function assertDurableDatabase(
       cause: error,
     });
   }
+}
+
+function inspectDatabase(
+  database: import("node:sqlite").DatabaseSync,
+  locators: readonly DurableSessionLocator[],
+  options: { initializing: true } | undefined,
+): ConversationId | undefined {
+  const empty =
+    database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' LIMIT 1").get() ===
+    undefined;
+  if (options?.initializing && empty) {
+    if (locators.length > 0) {
+      throw new SeptError("Pi Durable locator precedes its initialized native schema");
+    }
+    return undefined;
+  }
+  validateSchema(database);
+  validateLocators(database, locators);
+  return options?.initializing ? initialConversation(database) : undefined;
+}
+
+function initialConversation(
+  database: import("node:sqlite").DatabaseSync,
+): ConversationId | undefined {
+  const work = database
+    .prepare(
+      "SELECT id FROM tasks UNION ALL SELECT id FROM submissions UNION ALL SELECT id FROM entries LIMIT 1",
+    )
+    .get();
+  if (work !== undefined) {
+    throw new SeptError(
+      "Pi Durable initialization contains native work without published authority",
+    );
+  }
+  const conversations = database.prepare("SELECT id, record FROM conversations LIMIT 2").all();
+  if (conversations.length > 1) {
+    throw new SeptError("Pi Durable initial conversation identity is ambiguous");
+  }
+  const conversation = conversations[0];
+  if (conversation === undefined) {
+    return undefined;
+  }
+  if (
+    typeof conversation.id !== "number" ||
+    !Number.isSafeInteger(conversation.id) ||
+    conversation.id < 1
+  ) {
+    throw new SeptError("Pi Durable initial conversation identity is invalid");
+  }
+  const record = validateConversation(conversation.record, conversation.id);
+  if (record.owner !== undefined || record.parent !== undefined) {
+    throw new SeptError("Pi Durable initial conversation must be ownerless and unforked");
+  }
+  // CAST: A positive safe native ID was validated above, before Harness lookup.
+  return conversation.id as ConversationId;
 }
 
 function validateLocators(
@@ -45,7 +101,7 @@ function validateLocators(
   }
 }
 
-function validateConversation(record: unknown, conversationId: number): void {
+function validateConversation(record: unknown, conversationId: number): Record<string, unknown> {
   if (typeof record !== "string" || Buffer.byteLength(record) > 16 * 1024) {
     throw new SeptError("Pi Durable conversation evidence is invalid or oversized");
   }
@@ -59,6 +115,7 @@ function validateConversation(record: unknown, conversationId: number): void {
   ) {
     throw new SeptError("Pi Durable conversation evidence does not match its locator");
   }
+  return value;
 }
 
 function validateSchema(database: import("node:sqlite").DatabaseSync): void {

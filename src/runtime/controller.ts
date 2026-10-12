@@ -4,12 +4,16 @@
  * the controller guarantees host cleanup and lease release on every exit path.
  */
 
-import { RunStore, type Manifest } from "../durable/index.js";
+import { ExecutionTimeoutError, RunStore, type Manifest } from "../durable/index.js";
 import type { Observability } from "../observability/index.js";
 import { classifyError, NOOP_TELEMETRY } from "../observability/index.js";
 import { PiSessionHost, type SessionHost } from "../pi-integration/index.js";
 import { RuntimeInvocationLoop } from "./invocation-loop.js";
-import { RuntimeLimitError, updateRuntimeSnapshot } from "./runtime-state.js";
+import {
+  reconcileActiveDeadline,
+  RuntimeLimitError,
+  updateRuntimeSnapshot,
+} from "./runtime-state.js";
 import { RuntimeSessionLifecycle } from "./session-lifecycle.js";
 import { RuntimeTransitions } from "./transitions.js";
 
@@ -30,6 +34,15 @@ function defaultHostFactory(
   telemetry?: Observability,
 ): Promise<SessionHost> {
   return PiSessionHost.create(manifest, store, agentDir, existingSessionFile, telemetry);
+}
+
+function failureCause(
+  error: unknown,
+): "timeout" | "invocation_limit" | "epoch_limit" | "controller_failure" {
+  if (error instanceof ExecutionTimeoutError) {
+    return "timeout";
+  }
+  return error instanceof RuntimeLimitError ? error.cause : "controller_failure";
 }
 
 /** Coordinates one active durable run while preserving single-session and lease authority. */
@@ -90,6 +103,7 @@ export class CycleController {
     if (snapshot.status !== "active") {
       return;
     }
+    reconcileActiveDeadline(this.store);
     this.recordStarted(snapshot);
     const sessions = new RuntimeSessionLifecycle(
       this.store,
@@ -140,14 +154,14 @@ export class CycleController {
   private recordFailure(error: unknown): void {
     const message = error instanceof Error ? error.message : String(error);
     const current = this.store.snapshot();
+    const terminalCause = failureCause(error);
+    const limit = terminalCause !== "controller_failure";
     const recoverableHandover =
-      !(error instanceof RuntimeLimitError) &&
-      (current.phase === "handover_durable" || current.phase === "replacing");
+      !limit && (current.phase === "handover_durable" || current.phase === "replacing");
     if (current.status !== "active" || recoverableHandover) {
       return;
     }
-    const outcome = error instanceof RuntimeLimitError ? "blocked" : "failed";
-    const terminalCause = error instanceof RuntimeLimitError ? error.cause : "controller_failure";
+    const outcome = limit ? "blocked" : "failed";
     updateRuntimeSnapshot(this.store, {
       status: outcome,
       phase: "terminal",

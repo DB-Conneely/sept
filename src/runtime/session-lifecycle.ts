@@ -43,12 +43,23 @@ export class RuntimeSessionLifecycle {
       },
       () => this.hostFactory(manifest, this.store, this.agentDir, existing, this.telemetry),
     );
-    if (this.cancellationRequested()) {
-      await host.abort();
-      return { host, successorHandover, runnable: false };
+    try {
+      if (this.cancellationRequested()) {
+        await host.abort();
+        return { host, successorHandover, runnable: false };
+      }
+      const runnable = await this.reconcile(host, manifest, snapshot, recovering);
+      return { host, successorHandover, runnable };
+    } catch (error: unknown) {
+      // Ownership has not reached the controller; close here without masking the publication failure.
+      try {
+        await host.close();
+      } catch (closeError: unknown) {
+        this.telemetry.log("pi.session.closed", { "sept.outcome": "failure" }, "warn");
+        void closeError;
+      }
+      throw error;
     }
-    const runnable = await this.reconcile(host, manifest, snapshot, recovering);
-    return { host, successorHandover, runnable };
   }
 
   private existingSession(snapshot: RunSnapshot, recovering: boolean): string | undefined {

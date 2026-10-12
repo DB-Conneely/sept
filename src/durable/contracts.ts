@@ -86,6 +86,8 @@ export interface RunSnapshot {
   epoch: number;
   invocations: number;
   activeMilliseconds: number;
+  /** Durable start of unsettled active work; restart conservatively charges its uncertain interval. */
+  activeStartedAt?: number;
   activeSessionId?: string;
   activeSessionFile?: string;
   predecessorSessionId?: string;

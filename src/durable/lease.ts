@@ -101,7 +101,8 @@ function assertOtherProcessIsDead(owner: LeaseOwner | undefined, scope: LeaseSco
   const isOtherLocalProcess =
     owner?.hostname === PROCESS_IDENTITY.hostname && owner.pid !== PROCESS_IDENTITY.pid;
   if (!isOtherLocalProcess) {
-    return;
+    // Heartbeat age cannot prove death across hosts, containers, or an ambiguous PID identity.
+    throw new SeptError(scopeMessage(scope, "unverifiable"));
   }
   try {
     process.kill(owner.pid, 0);

@@ -28,7 +28,7 @@ import { WorkerMessages } from "./worker-messages.js";
 import { recoverWorkerResident } from "./worker-recovery.js";
 
 function workerStatus(active: boolean, resident: RunStore | undefined): WorkerStatus {
-  if (active) {
+  if (active || resident?.snapshot().status === "active") {
     return "busy";
   }
   return resident?.snapshot().status === "waiting" ? "waiting" : "idle";
@@ -53,8 +53,8 @@ export class WorkerRuntime {
       options.hostFactory,
       this.observability,
       () => this.stopping,
-      (store) => {
-        this.finishController(store);
+      (store, outcome) => {
+        this.finishController(store, outcome);
       },
     );
     this.messages = new WorkerMessages(
@@ -264,20 +264,23 @@ export class WorkerRuntime {
   }
 
   private launch(store: RunStore): void {
+    if (this.resident !== undefined && this.resident.runId !== store.runId) {
+      throw new WorkerConflictError("single worker slot already has a resident");
+    }
     this.resident = store;
     this.execution.launch(store);
   }
 
-  private finishController(store: RunStore): void {
+  private finishController(store: RunStore, outcome: "success" | "failure"): void {
     if (store.snapshot().status === "cancelling") {
       store.finishCancellation();
     }
     const status = store.snapshot().status;
-    if (status === "active" && !this.stopping) {
+    if (status === "active" && !this.stopping && outcome === "success") {
       this.launch(store);
       return;
     }
-    if (status !== "waiting" && this.resident?.runId === store.runId) {
+    if (status !== "waiting" && status !== "active" && this.resident?.runId === store.runId) {
       this.resident = undefined;
     }
     this.syncObservability();
@@ -324,6 +327,7 @@ export class WorkerRuntime {
       stopping: this.stopping,
       initialized: this.initialized,
       activeRunId: this.execution.activeRunId(),
+      residentRunId: this.resident?.runId,
     });
   }
 

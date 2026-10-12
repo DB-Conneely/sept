@@ -5,6 +5,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
+import type { RunStore } from "../../src/durable/index.js";
 import { NOOP_TELEMETRY } from "../../src/observability/index.js";
 import { RuntimeInvocationLoop } from "../../src/runtime/invocation-loop.js";
 import { RunNotFoundError, WorkerConflictError } from "../../src/runtime/errors.js";
@@ -12,6 +13,7 @@ import {
   enforceEpochLimit,
   enforceInvocationLimits,
   runWithActiveDeadline,
+  reconcileActiveDeadline,
   RuntimeLimitError,
   updateRuntimeSnapshot,
 } from "../../src/runtime/runtime-state.js";
@@ -83,6 +85,7 @@ void test("message admission rejects same-run blocked settlement and workspace e
         stopping: false,
         initialized: true,
         activeRunId: store.runId,
+        residentRunId: store.runId,
       }),
     WorkerConflictError,
   );
@@ -99,3 +102,110 @@ void test("worker recovery reports no resident for an empty state root", () => {
   assert.equal(result.resident, undefined);
   assert.equal(result.adoption, "none");
 });
+
+void test("waiting resident ownership blocks another dormant run and pending duplicate repair", () => {
+  const { store } = controllerFixture();
+  updateRuntimeSnapshot(store, { status: "blocked", phase: "terminal" });
+  assert.throws(
+    () =>
+      assertMessageAdmission(store, false, {
+        readiness: "accepting",
+        stopping: false,
+        initialized: true,
+        activeRunId: undefined,
+        residentRunId: "other-waiting-run",
+      }),
+    WorkerConflictError,
+  );
+});
+
+void test("interrupted active budget is debited once and dormant waiting has no start to charge", () => {
+  const { store } = controllerFixture();
+  store.update({ activeMilliseconds: 100, activeStartedAt: Date.now() - 500 });
+  reconcileActiveDeadline(store);
+  const charged = store.snapshot().activeMilliseconds;
+  assert.ok(charged >= 600);
+  assert.equal(store.snapshot().activeStartedAt, undefined);
+  reconcileActiveDeadline(store);
+  assert.equal(store.snapshot().activeMilliseconds, charged);
+  store.update({ status: "waiting", phase: "waiting" });
+  reconcileActiveDeadline(store);
+  assert.equal(store.snapshot().activeMilliseconds, charged);
+});
+
+void test("unconsumed duplicate repairs projection and wake while consumed duplicate stays inert", () => {
+  for (const status of ["waiting", "blocked"] as const) {
+    const { store } = controllerFixture();
+    store.update({ status, phase: status === "waiting" ? "waiting" : "terminal" });
+    let launches = 0;
+    const messages = new WorkerMessages(
+      NOOP_TELEMETRY,
+      (target, consumed) =>
+        assertMessageAdmission(target, consumed, {
+          readiness: "accepting",
+          stopping: false,
+          initialized: true,
+          activeRunId: undefined,
+          residentRunId: status === "waiting" ? target.runId : undefined,
+        }),
+      () => {
+        launches += 1;
+      },
+    );
+    const restoreProjection = interruptProjection(store);
+    assert.throws(() => messages.send(store, "exact retry text", "retry"));
+    assert.equal(store.pendingMessages().length, 1);
+    assert.equal(launches, 0);
+    restoreProjection();
+    messages.send(store, "exact retry text", "retry");
+    assert.equal(store.snapshot().status, "active");
+    assert.equal(launches, 1);
+    store.checkpoint(
+      { status: "complete", summary: "done", verification: [], next_action: "" },
+      store.pendingMessages(),
+      "fixture",
+    );
+    store.update({ status: "complete", phase: "terminal" });
+    messages.send(store, "exact retry text", "retry");
+    assert.equal(launches, 1);
+  }
+});
+
+void test("failed running-state publication closes the acquired host before controller ownership", async () => {
+  const { store } = controllerFixture();
+  const host = new FakeHost([]);
+  let closed = 0;
+  host.close = () => {
+    closed += 1;
+    return Promise.resolve();
+  };
+  const update = store.update.bind(store);
+  store.update = (patch) => {
+    if (patch.phase === "running") {
+      throw new WorkerConflictError("fixture publication failure");
+    }
+    return update(patch);
+  };
+  const lifecycle = new RuntimeSessionLifecycle(
+    store,
+    "/pi",
+    () => Promise.resolve(host),
+    NOOP_TELEMETRY,
+    () => false,
+  );
+  await assert.rejects(lifecycle.open(store.manifest()), /fixture publication failure/);
+  assert.equal(closed, 1);
+});
+
+function interruptProjection(store: RunStore): () => void {
+  const event = store.event.bind(store);
+  store.event = (type, fields) => {
+    if (type === "operator_conversation_recorded") {
+      throw new WorkerConflictError("fixture interrupted projection marker");
+    }
+    return event(type, fields);
+  };
+  return () => {
+    store.event = event;
+  };
+}

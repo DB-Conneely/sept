@@ -67,6 +67,24 @@ export function enforceInvocationLimits(manifest: Manifest, snapshot: RunSnapsho
   }
 }
 
+/** Debit an interrupted active interval under the controller lease before native scheduling resumes. */
+export function reconcileActiveDeadline(store: RunStore): void {
+  const snapshot = store.snapshot();
+  if (snapshot.activeStartedAt === undefined) {
+    return;
+  }
+  // Death time is unknowable: charge the uncertain interval up to the hard budget, never waiting age.
+  const elapsed = Math.max(0, Date.now() - snapshot.activeStartedAt);
+  const remaining = Math.max(
+    0,
+    store.manifest().timeoutSeconds * 1000 - snapshot.activeMilliseconds,
+  );
+  updateRuntimeSnapshot(store, {
+    activeMilliseconds: snapshot.activeMilliseconds + Math.min(elapsed, remaining),
+    activeStartedAt: undefined,
+  });
+}
+
 /** Run one native Pi invocation within remaining active time and durably add elapsed time. */
 export async function runWithActiveDeadline(
   store: RunStore,
@@ -75,11 +93,16 @@ export async function runWithActiveDeadline(
   manifest: Manifest,
   operatorMessages: readonly OperatorMessage[] = [],
 ): Promise<SessionRunResult> {
+  const exhausted = store.snapshot().activeMilliseconds >= manifest.timeoutSeconds * 1000;
+  if (exhausted) {
+    return reuseExhaustedInvocation(host, prompt, operatorMessages);
+  }
   const remaining = Math.max(
     1,
     manifest.timeoutSeconds * 1000 - store.snapshot().activeMilliseconds,
   );
   const started = Date.now();
+  updateRuntimeSnapshot(store, { activeStartedAt: started });
   let timer: NodeJS.Timeout | undefined;
   try {
     const timeout = new Promise<never>((_, reject) => {
@@ -100,11 +123,28 @@ export async function runWithActiveDeadline(
     if (timer !== undefined) {
       clearTimeout(timer);
     }
-    const snapshot = store.snapshot();
-    updateRuntimeSnapshot(store, {
-      activeMilliseconds: snapshot.activeMilliseconds + Math.max(0, Date.now() - started),
-    });
+    settleActiveDeadline(store, started);
   }
+}
+
+function reuseExhaustedInvocation(
+  host: SessionHost,
+  prompt: string,
+  messages: readonly OperatorMessage[],
+): Promise<SessionRunResult> {
+  if (host.recoveryInvocation === undefined) {
+    throw new RuntimeLimitError("timeout", "Active execution timeout reached");
+  }
+  // Native dispatch checks the same durable budget; already-settled answers require no dispatch.
+  return host.run(prompt, messages, validateNativeResponse);
+}
+
+function settleActiveDeadline(store: RunStore, started: number): void {
+  const snapshot = store.snapshot();
+  updateRuntimeSnapshot(store, {
+    activeMilliseconds: snapshot.activeMilliseconds + Math.max(0, Date.now() - started),
+    activeStartedAt: undefined,
+  });
 }
 
 function validateNativeResponse(

@@ -2,7 +2,13 @@
 
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { watchEvents, type AgentEvent, type AgentEventStream } from "@earendil-works/pi-durable";
+import { cleanupSessionResources } from "@earendil-works/pi-ai";
+import {
+  ProviderDoc,
+  watchEvents,
+  type AgentEvent,
+  type AgentEventStream,
+} from "@earendil-works/pi-durable";
 import { SeptError, type Manifest, type OperatorMessage, type RunStore } from "../durable/index.js";
 import { NOOP_TELEMETRY, type Observability } from "../observability/index.js";
 import type {
@@ -22,6 +28,7 @@ import { writeDurableLocator } from "./durable-session-files.js";
 export class PiSessionHost implements SessionHost {
   private events: AgentEventStream | undefined;
   private closed = false;
+  private providerSessionId: string | undefined;
 
   private constructor(
     private readonly manifest: Manifest,
@@ -77,6 +84,16 @@ export class PiSessionHost implements SessionHost {
   }
 
   private async bindEvents(): Promise<void> {
+    this.providerSessionId = (
+      await this.native.harness.snapshot(
+        ProviderDoc,
+        this.native.conversation.id,
+        BACKGROUND_CONTEXT,
+      )
+    )?.sessionId;
+    if (this.providerSessionId === undefined) {
+      throw new SeptError("Pi Durable provider session identity is missing");
+    }
     this.events = await watchEvents(
       this.native.harness,
       this.native.conversation.id,
@@ -132,6 +149,9 @@ export class PiSessionHost implements SessionHost {
     const predecessorFile = this.sessionFile;
     await this.native.refreshResources();
     await this.events?.stop();
+    if (this.providerSessionId !== undefined) {
+      cleanupSessionResources(this.providerSessionId);
+    }
     const conversation = await createDurableConversation(this.native.harness, this.manifest);
     const successorFile = writeDurableLocator(
       join(this.store.runDir, "pi-sessions"),
@@ -159,7 +179,18 @@ export class PiSessionHost implements SessionHost {
     try {
       await this.events?.stop();
     } finally {
+      await this.closeNative();
+    }
+  }
+
+  private async closeNative(): Promise<void> {
+    try {
       await this.native.harness.close(BACKGROUND_CONTEXT);
+    } finally {
+      // Native close joins dispatch; retain identity before a critical guard can close storage.
+      if (this.providerSessionId !== undefined) {
+        cleanupSessionResources(this.providerSessionId);
+      }
     }
   }
 }

@@ -229,6 +229,7 @@ function validateSnapshot(value: unknown): RunSnapshot {
     ["activeMilliseconds", "epoch", "invocations", "phase", "startedAt", "status", "updatedAt"],
     [
       "activeSessionFile",
+      "activeStartedAt",
       "activeSessionId",
       "handoverEpoch",
       "predecessorSessionFile",
@@ -239,6 +240,14 @@ function validateSnapshot(value: unknown): RunSnapshot {
     "snapshot",
   );
   const snapshot = snapshotBase(input);
+  if (input.activeStartedAt !== undefined) {
+    snapshot.activeStartedAt = boundedInteger(
+      input.activeStartedAt,
+      0,
+      Number.MAX_SAFE_INTEGER,
+      "snapshot activeStartedAt",
+    );
+  }
   addOptionalSnapshotFields(input, snapshot);
   if (input.handoverEpoch !== undefined) {
     snapshot.handoverEpoch = boundedInteger(input.handoverEpoch, 1, 1000, "snapshot handoverEpoch");

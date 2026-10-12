@@ -6,6 +6,7 @@
 
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { isIP } from "node:net";
 import { SeptError } from "../durable/index.js";
 import type { CustomConfigurationStatus } from "./contracts.js";
 import { isUnknownRecord } from "./input.js";
@@ -48,14 +49,22 @@ function integer(value: unknown, name: string, minimum: number, maximum: number)
 }
 
 function isPrivateHttpHost(hostname: string): boolean {
+  if (["localhost", "host.docker.internal", "::1"].includes(hostname)) {
+    return true;
+  }
+  return isPrivateIpv4(hostname);
+}
+
+function isPrivateIpv4(hostname: string): boolean {
+  if (isIP(hostname) !== 4) {
+    return false;
+  }
+  const [first, second] = hostname.split(".").map(Number);
   return (
-    hostname === "localhost" ||
-    hostname === "host.docker.internal" ||
-    hostname === "::1" ||
-    hostname.startsWith("127.") ||
-    hostname.startsWith("10.") ||
-    hostname.startsWith("192.168.") ||
-    /^172\.(1[6-9]|2\d|3[01])\./.test(hostname)
+    first === 127 ||
+    first === 10 ||
+    (first === 192 && second === 168) ||
+    (first === 172 && second !== undefined && second >= 16 && second <= 31)
   );
 }
 

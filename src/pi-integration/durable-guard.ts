@@ -2,7 +2,7 @@
 
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Harness } from "@earendil-works/pi-durable";
-import { SeptError } from "../durable/index.js";
+import { ExecutionTimeoutError, SeptError, type RunStore } from "../durable/index.js";
 
 /** A Harness failure owner; close joins are awaited outside native hooks to avoid self-await deadlock. */
 export class DurableGuard {
@@ -41,6 +41,19 @@ export class DurableGuard {
     if (this.failure !== undefined) {
       throw new SeptError("Pi Durable reported an invocation failure", { cause: this.failure });
     }
+  }
+
+  /** Gate model/tool dispatch on durable active time while leaving settled answer reuse available. */
+  public assertDispatchBudget(store: RunStore, timeoutMilliseconds: number): void {
+    const snapshot = store.snapshot();
+    const elapsed =
+      snapshot.activeStartedAt === undefined
+        ? 0
+        : Math.max(0, Date.now() - snapshot.activeStartedAt);
+    if (snapshot.activeMilliseconds + elapsed >= timeoutMilliseconds) {
+      this.report(new ExecutionTimeoutError("Active execution timeout reached"));
+    }
+    this.assertHealthy();
   }
 
   /** Join task shutdown after the failing hook has returned, then surface the classified failure. */

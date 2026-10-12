@@ -24,6 +24,10 @@ import { readDurableLocator, writeDurableLocator } from "./durable-session-files
 import { createDurableCodingTools } from "./durable-tools.js";
 import { loadNativeSqliteDriver } from "./sqlite-driver.js";
 import { assertNativeRun } from "./durable-preflight.js";
+import {
+  prepareDurableInitialization,
+  readDurableInitialization,
+} from "./durable-initialization.js";
 
 /** SEPT rollover disables compaction; native retries remain bounded. */
 const HARNESS_SETTINGS = {
@@ -79,14 +83,19 @@ async function openConversation(
   harness: Harness,
   manifest: Manifest,
   existingSessionFile: string | undefined,
+  initialConversationId: Conversation["id"] | undefined,
 ): Promise<Conversation> {
-  if (existingSessionFile === undefined) {
+  if (existingSessionFile === undefined && initialConversationId === undefined) {
     return createDurableConversation(harness, manifest);
   }
-  const conversation = await harness.conversation(
-    readDurableLocator(existingSessionFile).conversationId,
-    BACKGROUND_CONTEXT,
-  );
+  const conversationId =
+    existingSessionFile === undefined
+      ? initialConversationId
+      : readDurableLocator(existingSessionFile).conversationId;
+  if (conversationId === undefined) {
+    throw new SeptError("Pi Durable initial conversation identity is missing");
+  }
+  const conversation = await harness.conversation(conversationId, BACKGROUND_CONTEXT);
   if (conversation === undefined) {
     throw new SeptError("Pi Durable session locator names a missing conversation");
   }
@@ -193,6 +202,20 @@ async function authenticatedModels(
   return { models, model };
 }
 
+function prepareRuntime(
+  store: RunStore,
+  existingSessionFile: string | undefined,
+  telemetry: Observability,
+): Conversation["id"] | undefined {
+  assertNativeRun(store, telemetry);
+  if (existingSessionFile !== undefined) {
+    readDurableLocator(existingSessionFile);
+  }
+  const initial = readDurableInitialization(store, telemetry);
+  prepareDurableInitialization(store);
+  return initial?.conversationId;
+}
+
 /** Open explicitly versioned native state before admitting any work; historical JSONL is untouched. */
 export async function openDurableRuntime(
   manifest: Manifest,
@@ -202,10 +225,7 @@ export async function openDurableRuntime(
   telemetry: Observability = NOOP_TELEMETRY,
   dependencies: PiSessionHostDependencies = {},
 ): Promise<OpenedDurableRuntime> {
-  assertNativeRun(store, telemetry);
-  if (existingSessionFile !== undefined) {
-    readDurableLocator(existingSessionFile);
-  }
+  const initialConversationId = prepareRuntime(store, existingSessionFile, telemetry);
   const { harness, invocation, refreshResources } = await openHarness(
     manifest,
     store,
@@ -214,7 +234,12 @@ export async function openDurableRuntime(
     dependencies,
   );
   try {
-    const conversation = await openConversation(harness, manifest, existingSessionFile);
+    const conversation = await openConversation(
+      harness,
+      manifest,
+      existingSessionFile,
+      initialConversationId,
+    );
     invocation.bind(conversation);
     const sessionFile =
       existingSessionFile ??

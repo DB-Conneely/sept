@@ -17,6 +17,8 @@ import {
   MAX_CONVERSATION_BYTES,
   MAX_CONVERSATION_EVENTS,
   MAX_JSONL_RECORD_BYTES,
+  MAX_PENDING_MESSAGES,
+  MAX_PENDING_MESSAGE_BYTES,
 } from "./limits.js";
 
 interface ConversationPage {
@@ -120,13 +122,27 @@ function terminalStatus(snapshot: RunSnapshot): TerminalConversationStatus | und
   return undefined;
 }
 
-function hasTerminalMarker(eventsPath: string, status: string): boolean {
+function hasTerminalMarker(eventsPath: string, status: string, terminalId: string): boolean {
   let recorded = false;
   scanJsonLines(eventsPath, (value) => {
     const event = validateRunEvent(value);
-    if (event.type === "conversation_terminal_recorded" && event.status === status) {
+    if (
+      event.type === "pi_invocation_started" ||
+      event.type === "run_reopened" ||
+      event.type === "run_woken"
+    ) {
+      recorded = false;
+    }
+    if (event.type === "conversation_terminal_recorded" && event.terminalId === terminalId) {
       recorded = true;
       return false;
+    }
+    if (
+      event.type === "conversation_terminal_recorded" &&
+      event.terminalId === undefined &&
+      event.status === status
+    ) {
+      recorded = true;
     }
     return undefined;
   });
@@ -169,32 +185,67 @@ class ConversationStore {
 
   /** Reconcile accepted operator evidence across the queue-to-conversation crash seam. */
   public reconcileOperators(messagesPath: string): void {
-    const messages = this.recoverOperatorMessages(messagesPath);
-    const recorded = this.recordedOperatorIds();
-    for (const message of messages.values()) {
-      if (!recorded.has(message.id)) {
-        this.recordOperator(message);
-        recorded.add(message.id);
+    const batch = new Map<string, OperatorMessage>();
+    let bytes = 0;
+    const collect = (message: OperatorMessage): void => {
+      if (batch.has(message.id)) {
+        return;
       }
-    }
+      const size = Buffer.byteLength(message.text);
+      if (batch.size >= MAX_PENDING_MESSAGES || bytes + size > MAX_PENDING_MESSAGE_BYTES) {
+        this.reconcileBatch(batch);
+        bytes = 0;
+      }
+      batch.set(message.id, message);
+      bytes += size;
+    };
+    scanJsonLines(messagesPath, (value) => {
+      collect(validateOperatorMessage(value));
+      return undefined;
+    });
+    scanJsonLines(this.eventsPath, (value) => {
+      const embedded = validateRunEvent(value).operatorMessages;
+      if (Array.isArray(embedded)) {
+        for (const message of embedded) {
+          collect(validateOperatorMessage(message));
+        }
+      }
+      return undefined;
+    });
+    this.reconcileBatch(batch);
   }
 
   /** Ensure one terminal conversation event exists for an authoritative terminal snapshot. */
   public ensureTerminal(snapshot: RunSnapshot): void {
     const status = terminalStatus(snapshot);
-    if (status === undefined || hasTerminalMarker(this.eventsPath, status)) {
+    const terminalId = `terminal-${String(status)}-${String(snapshot.epoch)}-${String(snapshot.invocations)}`;
+    if (status === undefined || hasTerminalMarker(this.eventsPath, status, terminalId)) {
       return;
     }
-    this.append({ formatVersion: 1, id: `terminal-${status}`, type: "terminal", status });
-    this.recordRunEvent("conversation_terminal_recorded", { status });
+    this.append({ formatVersion: 1, id: terminalId, type: "terminal", status });
+    this.recordRunEvent("conversation_terminal_recorded", { status, terminalId });
   }
 
   /** Record exact accepted operator input and its durable projection marker. */
   public recordOperator(message: OperatorMessage): void {
-    this.message(`operator-${message.id}`, "user", message.text);
-    if (!this.recordedOperatorIds().has(message.id)) {
+    const batch = new Map([[message.id, message]]);
+    this.reconcileBatch(batch);
+  }
+
+  private reconcileBatch(batch: Map<string, OperatorMessage>): void {
+    // Only the bounded workset is retained; old markers keep expired text from being resurrected.
+    scanJsonLines(this.eventsPath, (value) => {
+      const event = validateRunEvent(value);
+      if (event.type === "operator_conversation_recorded" && typeof event.messageId === "string") {
+        batch.delete(event.messageId);
+      }
+      return batch.size === 0 ? false : undefined;
+    });
+    for (const message of batch.values()) {
+      this.message(`operator-${message.id}`, "user", message.text);
       this.recordRunEvent("operator_conversation_recorded", { messageId: message.id });
     }
+    batch.clear();
   }
 
   private append(input: ConversationEventInput): ConversationEvent {
@@ -217,45 +268,6 @@ class ConversationStore {
     appendSynced(this.conversationPath, event);
     normalizeConversation(this.conversationPath, [...retained, event]);
     return event;
-  }
-
-  private recoverOperatorMessages(messagesPath: string): Map<string, OperatorMessage> {
-    const messages = new Map<string, OperatorMessage>();
-    scanJsonLines(messagesPath, (value) => {
-      const message = validateOperatorMessage(value);
-      messages.set(message.id, message);
-      return undefined;
-    });
-    scanJsonLines(this.eventsPath, (value) => {
-      const event = validateRunEvent(value);
-      this.addEmbeddedMessages(messages, event.operatorMessages);
-      return undefined;
-    });
-    return messages;
-  }
-
-  private addEmbeddedMessages(messages: Map<string, OperatorMessage>, embedded: unknown): void {
-    if (!Array.isArray(embedded)) {
-      return;
-    }
-    for (const value of embedded) {
-      const message = validateOperatorMessage(value);
-      if (!messages.has(message.id)) {
-        messages.set(message.id, message);
-      }
-    }
-  }
-
-  private recordedOperatorIds(): Set<string> {
-    const recorded = new Set<string>();
-    scanJsonLines(this.eventsPath, (value) => {
-      const event = validateRunEvent(value);
-      if (event.type === "operator_conversation_recorded" && typeof event.messageId === "string") {
-        recorded.add(event.messageId);
-      }
-      return undefined;
-    });
-    return recorded;
   }
 }
 

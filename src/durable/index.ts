@@ -11,7 +11,12 @@ export { RunStore } from "./run-store.js";
 export { WorkerLifecycleStore } from "./worker-lifecycle-store.js";
 
 /** Classified errors exposed across SEPT mechanism boundaries. */
-export { ConversationCursorExpiredError, QueueCapacityError, SeptError } from "./errors.js";
+export {
+  ConversationCursorExpiredError,
+  ExecutionTimeoutError,
+  QueueCapacityError,
+  SeptError,
+} from "./errors.js";
 
 /** Public durability and bounded-resource limits. */
 export {
