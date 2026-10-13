@@ -68,6 +68,14 @@ src/
     durable-extensions.ts        bounded trusted native module loading
     durable-tools.ts             existing Pi tools registered as native durable tasks
     message-text.ts              text-only native response projection
+  execution/
+    index.ts                     supplied backend public boundary
+    contracts.ts                 one bounded effect/resource port and profile identity
+    profile.ts                   actual Linux isolation and mount provenance validation
+    protocol.ts                  bounded hostile request/result codecs
+    docker-backend.ts            exclusive namespace lease, transport and joined cancellation
+    hands-entry.ts               existing Pi body/resource operations inside hands
+    native-env.ts                minimum native environment with typed unsupported operations
   runtime/
     index.ts                     runtime public surface
     controller.ts               durable cycling and Pi-native cancellation state machine
@@ -89,8 +97,10 @@ cli -> ingress -> runtime -> pi-integration -> model-access
 
 `pi-integration` receives the selected Pi model from the manifest, verifies context/output metadata again, and opens the run's native Durable Harness with SQLite FULL and compaction disabled. Native conversation IDs are numeric; SEPT exposes their string form and bounded versioned locators. `rollover.json` remains scoped to provider, model, conversation identity and context window. Native finalized-response hooks supply usage; a stable steering submission is reused after restart or resumed with a distinct interrupted-handover recovery input. Handover JSON, Markdown, event and state commit before a fresh native conversation and provider UUID are created. Exact captured operator IDs accompany admission, so later queue arrivals cannot be marked in an earlier prompt.
 
-Trusted agent-directory modules register native declarative extensions, including supported tools, sections, hooks, wrappers and tasks. Project trust remains false; repository instructions do not execute plugins. The existing Pi tools are adapted into native Durable tasks with explicit replay safety and cancellation. Their local filesystem/shell operations remain an inherited confinement gap; a supplied Harness environment does not mediate those adapters. New runs have one engine, with no coding-agent production host or historical transcript converter.
+Trusted agent-directory modules register native declarative extensions, including supported tools, sections, hooks, wrappers and tasks. Project trust remains false; repository instructions do not execute plugins. The existing Pi tools are adapted into native Durable tasks with explicit replay safety and cancellation. Both their complete existing bodies and the minimum native environment operations use the consumer-supplied `execution` backend. The backend enforces effects separately from brain; Pi remains the scheduler, replay and provider owner. New runs have one engine, with no coding-agent production host or historical transcript converter.
 
 `runtime` retains execution, cancellation, wait/wake, shutdown, limits, restart adoption, and slot ownership without knowing HTTP. `ingress` translates the authenticated API and webhook contract onto runtime and model-access services. `observability` imports no business mechanisms and receives only bounded classifications/numbers; model identifiers, credentials, auth interactions, prompts, and provider errors are not telemetry fields.
 
 The architecture suite enforces index-only cross-mechanism imports. `npm run build` cleans `dist`, so deleted or moved modules cannot survive as stale executable output. SEPT does not add ACP, a second agent loop, provider client, tokenizer, compactor, dashboard, cloud service, or model server.
+
+`cli` composes the trusted supplied Docker Linux profile into both installed callers. Brain retains credentials, Models/Harness and SEPT control state; hands gets namespace aliases, a clean environment and exact bounded read-only resource projections. Missing/unsupported enforcement refuses without a local fallback. Default files use a private persistent writable workspace without Bash; granted arbitrary Bash requires a bounded ephemeral workspace and read-only selected mounts. Completed Bash calls join namespace descendants; normal close retains the consumer-owned idle namespace. Cancellation/loss stops and verifies it before settlement, and unverified cleanup durably blocks instead of publishing cancellation. Projection refresh relies on private bounded ownership receipts; consumer markers grant no deletion authority. See [the profile contract](pi-contract.md#supplied-hands-reference-profile).

@@ -27,7 +27,8 @@ import { writeDurableLocator } from "./durable-session-files.js";
 /** The sole production Pi host, backed by native Durable tasks and SQLite conversations. */
 export class PiSessionHost implements SessionHost {
   private events: AgentEventStream | undefined;
-  private closed = false;
+  private closing: Promise<void> | undefined;
+  private aborting: Promise<void> | undefined;
   private providerSessionId: string | undefined;
 
   private constructor(
@@ -45,20 +46,30 @@ export class PiSessionHost implements SessionHost {
     telemetry: Observability = NOOP_TELEMETRY,
     dependencies: PiSessionHostDependencies = {},
   ): Promise<PiSessionHost> {
-    const native = await openDurableRuntime(
-      manifest,
-      store,
-      agentDir,
-      existingSessionFile,
-      telemetry,
-      dependencies,
-    );
+    let native: OpenedDurableRuntime;
+    try {
+      native = await openDurableRuntime(
+        manifest,
+        store,
+        agentDir,
+        existingSessionFile,
+        telemetry,
+        dependencies,
+      );
+    } catch (error: unknown) {
+      await dependencies.executionBackend?.close();
+      throw error;
+    }
     const host = new PiSessionHost(manifest, store, native);
     try {
       await host.bindEvents();
       return host;
     } catch (error: unknown) {
-      await native.harness.close(BACKGROUND_CONTEXT);
+      try {
+        await native.harness.close(BACKGROUND_CONTEXT);
+      } finally {
+        await native.backend.close();
+      }
       throw error;
     }
   }
@@ -152,7 +163,11 @@ export class PiSessionHost implements SessionHost {
     if (this.providerSessionId !== undefined) {
       cleanupSessionResources(this.providerSessionId);
     }
-    const conversation = await createDurableConversation(this.native.harness, this.manifest);
+    const conversation = await createDurableConversation(
+      this.native.harness,
+      this.manifest,
+      this.native.backend.cwd,
+    );
     const successorFile = writeDurableLocator(
       join(this.store.runDir, "pi-sessions"),
       conversation.id,
@@ -167,15 +182,18 @@ export class PiSessionHost implements SessionHost {
 
   /** Durably abort and join native model/tool work before SEPT publishes cancellation settlement. */
   public abort(): Promise<void> {
-    return this.native.conversation.abort(BACKGROUND_CONTEXT, { background: true });
+    this.aborting ??= this.native.conversation.abort(BACKGROUND_CONTEXT, { background: true });
+    return this.aborting;
   }
 
   /** Idempotently close event and Harness ownership, even if an independent observer fails. */
-  public async close(): Promise<void> {
-    if (this.closed) {
-      return;
-    }
-    this.closed = true;
+  public close(): Promise<void> {
+    // Retain a failed join; a later close must not turn uncertainty into success.
+    this.closing ??= this.closeOwned();
+    return this.closing;
+  }
+
+  private async closeOwned(): Promise<void> {
     try {
       await this.events?.stop();
     } finally {
@@ -185,11 +203,21 @@ export class PiSessionHost implements SessionHost {
 
   private async closeNative(): Promise<void> {
     try {
-      await this.native.harness.close(BACKGROUND_CONTEXT);
+      try {
+        // The controller may settle while native abort still commits its joined task state.
+        // Keep Harness storage open until that supported abort operation has fully joined.
+        await this.aborting;
+      } finally {
+        await this.native.harness.close(BACKGROUND_CONTEXT);
+      }
     } finally {
       // Native close joins dispatch; retain identity before a critical guard can close storage.
-      if (this.providerSessionId !== undefined) {
-        cleanupSessionResources(this.providerSessionId);
+      try {
+        if (this.providerSessionId !== undefined) {
+          cleanupSessionResources(this.providerSessionId);
+        }
+      } finally {
+        await this.native.backend.close();
       }
     }
   }

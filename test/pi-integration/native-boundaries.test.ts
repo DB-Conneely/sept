@@ -1,3 +1,4 @@
+import { FixtureExecutionBackend, fixtureBackend } from "./backend-support.js";
 /** Proves native loading, identity and admission bounds alongside installed resource acceptance. */
 
 import assert from "node:assert/strict";
@@ -74,9 +75,9 @@ await test("native extension discovery accepts 64 entries and rejects entry 65 b
 });
 
 await test("native edit preparation preserves caller input and produces the same normalized arguments twice", () => {
-  const edit = createDurableCodingTools("/unused-workspace").tools?.find(
-    (tool) => tool.name === "edit",
-  );
+  const edit = createDurableCodingTools(
+    new FixtureExecutionBackend("/unused-workspace", "/tmp/sept-edit-fixture"),
+  ).tools?.find((tool) => tool.name === "edit");
   assert.ok(edit);
   const input = { path: "artifact.txt", edits: { oldText: "before", newText: "after" } };
   const original = structuredClone(input);
@@ -104,7 +105,11 @@ async function nativeIdentityBoundary(): Promise<void> {
     directories.agentDir,
     undefined,
     NOOP_TELEMETRY,
-    { modelRuntime: models, extensions: [createDurableCodingTools(directories.workspace)] },
+    {
+      modelRuntime: models,
+      executionBackend: fixtureBackend(models),
+      extensions: [createDurableCodingTools(fixtureBackend(models))],
+    },
   );
   try {
     assert.ok(native.invocation instanceof DurableInvocation);
@@ -127,7 +132,7 @@ async function assertNativeIdentity(
   const agent = await native.conversation.agent(BACKGROUND_CONTEXT);
   assert.equal(agent.tools.find((tool) => tool.name === "read")?.replay, "safe");
   assert.equal(agent.tools.find((tool) => tool.name === "bash")?.replay, "unsafe");
-  const sections = await loadDurableSections(store.manifest(), agentDir);
+  const sections = await loadDurableSections(store.manifest(), agentDir, native.backend);
   const rendered: (string | undefined)[] = [];
   for (const section of sections) {
     rendered.push(
@@ -151,7 +156,11 @@ async function assertFreshProviderIdentity(
   native: OpenedDurableRuntime,
   store: ReturnType<typeof fixtureStore>,
 ): Promise<void> {
-  const successor = await createDurableConversation(native.harness, store.manifest());
+  const successor = await createDurableConversation(
+    native.harness,
+    store.manifest(),
+    native.backend.cwd,
+  );
   assert.notEqual(successor.id, native.conversation.id);
   const predecessorIdentity = await native.harness.snapshot(
     ProviderDoc,
@@ -261,6 +270,7 @@ function raceController(
     async (manifest, runStore, agentDir, existing, telemetry) => {
       const host = await PiSessionHost.create(manifest, runStore, agentDir, existing, telemetry, {
         modelRuntime: models,
+        executionBackend: fixtureBackend(models),
       });
       const run = host.run.bind(host);
       host.run = (prompt, messages, validate) => {

@@ -10,6 +10,7 @@ import test from "node:test";
 
 const mechanisms = new Set([
   "durable",
+  "execution",
   "ingress",
   "model-access",
   "observability",

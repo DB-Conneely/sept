@@ -1,3 +1,4 @@
+import { fixtureBackend } from "./backend-support.js";
 /**
  * Verifies that the production PiSessionHost delegates cancellation to native Pi for both active
  * model requests and in-flight tools. Each fixture owns and closes its host, while assertions cover
@@ -42,7 +43,7 @@ async function exerciseModelCancellation(): Promise<void> {
     directories.agentDir,
     undefined,
     NOOP_TELEMETRY,
-    { modelRuntime: runtime },
+    { modelRuntime: runtime, executionBackend: fixtureBackend(runtime) },
   );
   try {
     const running = assert.rejects(
@@ -128,6 +129,7 @@ async function exerciseToolCancellation(): Promise<void> {
     NOOP_TELEMETRY,
     {
       modelRuntime: runtime,
+      executionBackend: fixtureBackend(runtime),
       extensions: [defineExtension({ name: "blocking-fixture", tools: [tool] })],
     },
   );

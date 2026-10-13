@@ -4,6 +4,7 @@
  * exact operator evidence, and the structured control/handover contracts across invocations.
  */
 
+import { basename } from "node:path";
 import type { DurableHandover, Manifest, OperatorMessage, WorkControl } from "../durable/index.js";
 
 /** Shared output protocol that keeps public conversation separate from internal lifecycle control. */
@@ -57,6 +58,12 @@ export function successorPrompt(
   value: DurableHandover,
   messages: OperatorMessage[],
 ): string {
+  const projected = {
+    ...value,
+    ...(value.predecessorSessionFile === undefined
+      ? {}
+      : { predecessorSessionFile: `<pi-session>/${basename(value.predecessorSessionFile)}` }),
+  };
   return `You are the fresh successor SEPT Pi session. Continue immediately; do not rediscover the predecessor's work.
 
 Standing task:
@@ -66,7 +73,7 @@ Independent role:
 ${manifest.role || "No additional role was supplied."}
 
 Full durable predecessor handover:
-${JSON.stringify(value, null, 2)}
+${JSON.stringify(projected, null, 2)}
 ${operatorBlock(messages)}
 Execute the exact next action using Pi's native tools.
 

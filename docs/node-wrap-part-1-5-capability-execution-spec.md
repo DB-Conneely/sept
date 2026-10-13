@@ -1,3 +1,17 @@
+# Capability confinement — current authoritative contract
+
+The approved [confinement plan](</Users/sk3_neels/Documents/ChatGPT/Sept 3/SEPT-capability-confinement-plan.md>) supersedes the historical proposal retained below. Delivery status and exact evidence live in [the phase record](as-built/capability-confinement.md); current installed contracts live in [the Pi contract](pi-contract.md#supplied-hands-reference-profile). A specification is not a completion claim.
+
+Brain retains native Pi Harness/Models, credentials and SEPT domain/control authority. A consumer supplies separately enforced hands and owns provisioning and orchestration. Ship one proved Linux reference profile and a small supplied-backend contract; other native/OS profiles remain unsupported until proved. No Pod grant editor, host-wide registry or universal backend-equivalence promise is required.
+
+Default authority is private workspace read/write, shell absent and general hands network denied. Read and write grants remain independent; edit needs both. Operator-owned `full_access`, `scoped` and `request_approval` may change over time. Full access is bounded by the supplied hands domain and never reaches brain credentials, state, environment or control endpoints. Unsupported enforcement fails closed while authenticated health/history stays available.
+
+Effects and resource reads use the same backend boundary on initial dispatch, native replay, successor and recovery. Live narrowing persists denial before incompatible effects are joined; expansion or environment replacement requires validated quiescence and fresh namespace identity. Interrupted mutations stay honestly uncertain. Native scheduling, replay, model access and application trust guarantees remain intact.
+
+Permission requests do not grant authority. Durable operator decisions are followed by explicit retry through existing accepted-message/wake paths; original denied calls remain denied. Custom hands run outside brain without native Models/task/policy/control APIs. Trusted operator-installed native brain extensions remain application code. Mandatory supervision, agent loops, schedulers and extra durability infrastructure are outside this phase.
+
+## Historical proposal — superseded
+
 # Node Wrap Part 1.5: Capability, Filesystem, and Execution Boundary Specification
 
 ## Status and dependency

@@ -61,6 +61,31 @@ function processStartedAt(path: string): number {
   return parsed.processStartedAt;
 }
 
+await test("recovery model context aliases generated locators while preserving private handover", () => {
+  const { store } = fixture();
+  const locator = "/private/brain/state/pi-sessions/2.durable.json";
+  const operator = store.enqueueMessage("  exact operator input\n  ", "captured-id");
+  const handover = {
+    handover_summary: "bounded",
+    entry_state_and_done: "done",
+    completed: [],
+    in_flight: [],
+    not_started: [],
+    decisions: [],
+    rejected_approaches: [],
+    verification: [],
+    uncertainties: [],
+    references: [],
+    lessons: [],
+    next_action: "continue",
+  };
+  store.persistHandover(1, "2", locator, handover, [operator]);
+  assert.match(store.recoveryContext(), /<pi-session>\/2\.durable\.json/);
+  assert.doesNotMatch(store.recoveryContext(), /\/private\/brain/);
+  assert.equal(store.latestHandover()?.predecessorSessionFile, locator);
+  assert.deepEqual(store.latestHandover()?.operatorMessages, [operator]);
+});
+
 await test("atomic durable files create once and replace completely", () => {
   const root = mkdtempSync(join(tmpdir(), "sept-atomic-"));
   const path = join(root, "nested", "state.json");

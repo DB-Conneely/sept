@@ -12,11 +12,17 @@ import {
   SeptError,
   WorkerLifecycleStore,
 } from "../durable/index.js";
-import { SeptService, validateRequest } from "../ingress/index.js";
+import { SeptService, validateRequest, publicTaskProjection } from "../ingress/index.js";
 import { ModelAccessService, type AuthenticationMethod } from "../model-access/index.js";
 import { classifyError, type Observability } from "../observability/index.js";
-import { assertCompatibleStateRoot, getAgentDir, inspectPi } from "../pi-integration/index.js";
-import { CycleController } from "../runtime/index.js";
+import {
+  assertCompatibleStateRoot,
+  getAgentDir,
+  inspectPi,
+  PiSessionHost,
+} from "../pi-integration/index.js";
+import { DockerExecutionBackend, loadHandsConfiguration } from "../execution/index.js";
+import { CycleController, type HostFactory } from "../runtime/index.js";
 import { createTerminalAuthInteraction } from "./auth-interaction.js";
 import { CliError } from "./errors.js";
 import type { CliInvocation } from "./options.js";
@@ -145,6 +151,20 @@ function registerWorkerStop(service: SeptService, telemetry: Observability): voi
   process.on("SIGTERM", stop);
 }
 
+function configuredHostFactory(context: CommandContext): HostFactory {
+  const configurationPath = context.options.hands ?? process.env.SEPT_HANDS_CONFIGURATION;
+  return async (manifest, store, agentDir, existing, telemetry) => {
+    const configuration = loadHandsConfiguration(configurationPath);
+    const backend = await DockerExecutionBackend.create(configuration, store, [
+      agentDir,
+      stateRoot(context.options),
+    ]);
+    return PiSessionHost.create(manifest, store, agentDir, existing, telemetry, {
+      executionBackend: backend,
+    });
+  };
+}
+
 async function runWorker(context: CommandContext): Promise<void> {
   const workspaceRoot = resolve(
     context.options["workspace-root"] ?? process.env.SEPT_WORKSPACE_ROOT ?? process.cwd(),
@@ -156,6 +176,7 @@ async function runWorker(context: CommandContext): Promise<void> {
     agentDir: context.agentDir,
     workspaceRoot,
     token: process.env.SEPT_TOKEN ?? "",
+    hostFactory: configuredHostFactory(context),
     piVersion: context.piVersion,
     telemetry: context.telemetry,
     ...(host === undefined ? {} : { host }),
@@ -228,8 +249,13 @@ async function executeDirectRun(context: CommandContext, store: RunStore): Promi
     "sept.outcome": "accepted",
   });
   process.stdout.write(`${store.runId}\n`);
-  await new CycleController(store, context.agentDir, undefined, context.telemetry).run();
-  process.stdout.write(`${JSON.stringify(store.snapshot())}\n`);
+  await new CycleController(
+    store,
+    context.agentDir,
+    configuredHostFactory(context),
+    context.telemetry,
+  ).run();
+  process.stdout.write(`${JSON.stringify(publicTaskProjection(store).state)}\n`);
 }
 
 async function runDirect(context: CommandContext): Promise<void> {

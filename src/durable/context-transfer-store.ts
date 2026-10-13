@@ -4,7 +4,7 @@
  * advances; handover JSON, Markdown, event, and snapshot must be durable before replacement.
  */
 
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import type {
   DurableHandover,
   Handover,
@@ -106,9 +106,21 @@ class ContextTransferStore {
       }
       return undefined;
     });
+    const handover = this.latestHandover();
+    const projected =
+      handover === undefined
+        ? null
+        : {
+            ...handover,
+            ...(handover.predecessorSessionFile === undefined
+              ? {}
+              : {
+                  predecessorSessionFile: `<pi-session>/${basename(handover.predecessorSessionFile)}`,
+                }),
+          };
     return JSON.stringify(
       {
-        handover: this.latestHandover() ?? null,
+        handover: projected,
         latestWorkControl: latestControl,
         note: "The controller restarted. Trust this durable state and the workspace; do not assume an interrupted, uncheckpointed action completed.",
       },

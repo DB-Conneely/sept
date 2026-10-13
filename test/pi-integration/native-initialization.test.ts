@@ -1,3 +1,4 @@
+import { fixtureBackend } from "./backend-support.js";
 /** Interrupted first-open evidence resumes only before any native work or published identity. */
 
 import assert from "node:assert/strict";
@@ -58,7 +59,7 @@ await test("native initialization resumes absent, empty and atomically initializ
       directories.agentDir,
       undefined,
       NOOP_TELEMETRY,
-      { modelRuntime: models },
+      { modelRuntime: models, executionBackend: fixtureBackend(models) },
     );
     try {
       assert.equal(
@@ -79,7 +80,7 @@ async function recoverStage(stage: string): Promise<void> {
     directories.agentDir,
     undefined,
     NOOP_TELEMETRY,
-    { modelRuntime: models },
+    { modelRuntime: models, executionBackend: fixtureBackend(models) },
   );
   const id = native.conversation.id;
   await native.harness.close(BACKGROUND_CONTEXT);
@@ -97,7 +98,7 @@ async function recoverStage(stage: string): Promise<void> {
     directories.agentDir,
     undefined,
     NOOP_TELEMETRY,
-    { modelRuntime: models },
+    { modelRuntime: models, executionBackend: fixtureBackend(models) },
   );
   try {
     assert.equal(recovered.conversation.id, id);
@@ -138,7 +139,7 @@ await test("initialization rejects native work without published authority", asy
     directories.agentDir,
     undefined,
     NOOP_TELEMETRY,
-    { modelRuntime: models },
+    { modelRuntime: models, executionBackend: fixtureBackend(models) },
   );
   try {
     const submitted = await native.conversation.submit(
@@ -162,10 +163,10 @@ await test("initialization rejects ambiguous conversations", async () => {
     second.directories.agentDir,
     undefined,
     NOOP_TELEMETRY,
-    { modelRuntime: second.models },
+    { modelRuntime: second.models, executionBackend: fixtureBackend(second.models) },
   );
   try {
-    await createDurableConversation(opened.harness, second.store.manifest());
+    await createDurableConversation(opened.harness, second.store.manifest(), opened.backend.cwd);
     assert.throws(() => {
       assertNativeRun(second.store);
     }, /initial conversation identity is ambiguous/);

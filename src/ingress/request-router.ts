@@ -19,7 +19,12 @@ import {
   selectionBody,
   textResponse,
 } from "./http.js";
-import { resolveTaskManifest, validateMessageBody } from "./validation.js";
+import {
+  publicTaskProjection,
+  publicRunEvent,
+  resolveTaskManifest,
+  validateMessageBody,
+} from "./validation.js";
 import { WebhookRouter } from "./webhook-router.js";
 
 interface RequestRouterOptions {
@@ -227,13 +232,13 @@ export class RequestRouter {
     resource: string | undefined,
   ): boolean {
     if (resource === undefined) {
-      jsonResponse(response, 200, { manifest: store.manifest(), state: store.snapshot() });
+      jsonResponse(response, 200, publicTaskProjection(store));
       return true;
     }
     if (resource === "events") {
       const after = queryInteger(url.searchParams, "after", 0, 0, Number.MAX_SAFE_INTEGER);
       const limit = queryInteger(url.searchParams, "limit", 250, 1, 1000);
-      const events = store.events(after, limit);
+      const events = store.events(after, limit).map(publicRunEvent);
       jsonResponse(response, 200, { events, nextCursor: events.at(-1)?.seq ?? after });
       return true;
     }

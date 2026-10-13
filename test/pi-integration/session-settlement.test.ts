@@ -1,3 +1,4 @@
+import { fixtureBackend, fixtureHostFactory } from "./backend-support.js";
 /** Replays real native settlement across domain checkpoints without duplicating accepted input/work. */
 
 import assert from "node:assert/strict";
@@ -42,20 +43,14 @@ async function settledFixture(startingInvocation = 1) {
     contexts.push(contextText(context));
     return streamOf(assistant([{ type: "text", text: complete }], 10, "stop"));
   });
-  const factory: ConstructorParameters<typeof CycleController>[2] = (
-    manifest,
-    store,
-    agent,
-    existing,
-    telemetry,
-  ) => PiSessionHost.create(manifest, store, agent, existing, telemetry, { modelRuntime: models });
+  const factory = fixtureHostFactory(models);
   const host = await PiSessionHost.create(
     store.manifest(),
     store,
     directories.agentDir,
     undefined,
     undefined,
-    { modelRuntime: models },
+    { modelRuntime: models, executionBackend: fixtureBackend(models) },
   );
   store.update({
     phase: "running",
@@ -122,20 +117,14 @@ async function unansweredFixture() {
     calls += 1;
     return fixtureStream(new AbortProviderStream(options?.signal, markStarted));
   });
-  const factory: ConstructorParameters<typeof CycleController>[2] = (
-    manifest,
-    store,
-    agent,
-    existing,
-    telemetry,
-  ) => PiSessionHost.create(manifest, store, agent, existing, telemetry, { modelRuntime: models });
+  const factory = fixtureHostFactory(models);
   const host = await PiSessionHost.create(
     store.manifest(),
     store,
     directories.agentDir,
     undefined,
     undefined,
-    { modelRuntime: models },
+    { modelRuntime: models, executionBackend: fixtureBackend(models) },
   );
   store.update({
     phase: "running",

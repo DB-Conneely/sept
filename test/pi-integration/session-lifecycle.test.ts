@@ -1,3 +1,4 @@
+import { fixtureBackend } from "./backend-support.js";
 /**
  * Exercises the installed native Pi lifecycle through the production host: untrusted project
  * loading, finalized-usage rotation after atomic tools, native fresh-session replacement, and
@@ -101,6 +102,7 @@ async function createLifecycleHost(
     NOOP_TELEMETRY,
     {
       modelRuntime: runtime,
+      executionBackend: fixtureBackend(runtime),
       extensions: [defineExtension({ name: "atomic-fixture", tools: [tool] })],
     },
   );
@@ -238,6 +240,7 @@ async function exerciseUnusableUsage(): Promise<void> {
     NOOP_TELEMETRY,
     {
       modelRuntime: runtime,
+      executionBackend: fixtureBackend(runtime),
       extensions: [defineExtension({ name: "step-fixture", tools: [step] })],
     },
   );
@@ -278,7 +281,7 @@ await test("native replacement and close release only the owned provider session
     directories.agentDir,
     undefined,
     NOOP_TELEMETRY,
-    { modelRuntime: runtime },
+    { modelRuntime: runtime, executionBackend: fixtureBackend(runtime) },
   );
   try {
     store.update({ invocations: 1 });

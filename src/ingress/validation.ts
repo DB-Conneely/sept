@@ -4,9 +4,16 @@
  * canonical paths and bounded domain values.
  */
 
-import { realpathSync, statSync } from "node:fs";
-import { isAbsolute, relative, resolve, sep } from "node:path";
-import { DEFAULTS, SeptError, type Manifest } from "../durable/index.js";
+import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { basename, isAbsolute, join, relative, resolve, sep, posix } from "node:path";
+import {
+  DEFAULTS,
+  SeptError,
+  type Manifest,
+  type RunStore,
+  type RunEvent,
+  type RunSnapshot,
+} from "../durable/index.js";
 import { ModelAccessService } from "../model-access/index.js";
 
 /** Exact fields accepted by direct and webhook task admission. */
@@ -269,4 +276,64 @@ export async function resolveTaskManifest(
     provider: preflight.selected.provider,
     model: preflight.selected.model,
   };
+}
+
+function publicWorkspace(store: RunStore): string {
+  const path = join(store.runDir, "hands-binding.json");
+  if (!existsSync(path)) {
+    return "/workspace";
+  }
+  if (statSync(path).size > 16 * 1024) {
+    throw new SeptError("Hands namespace metadata exceeds its bound");
+  }
+  const value: unknown = JSON.parse(readFileSync(path, "utf8"));
+  const input = requestRecord(value, "hands namespace");
+  if (
+    typeof input.cwd !== "string" ||
+    (input.cwd !== "/workspace" && !input.cwd.startsWith("/workspace/")) ||
+    posix.normalize(input.cwd) !== input.cwd ||
+    input.cwd.length > 4096 ||
+    UNSAFE_CONTROLS.test(input.cwd)
+  ) {
+    throw new SeptError("Hands namespace metadata is invalid");
+  }
+  return input.cwd;
+}
+
+function publicSnapshot(snapshot: RunSnapshot): RunSnapshot {
+  return {
+    ...snapshot,
+    ...(snapshot.activeSessionFile === undefined
+      ? {}
+      : { activeSessionFile: `<pi-session>/${basename(snapshot.activeSessionFile)}` }),
+    ...(snapshot.predecessorSessionFile === undefined
+      ? {}
+      : { predecessorSessionFile: `<pi-session>/${basename(snapshot.predecessorSessionFile)}` }),
+  };
+}
+
+/** Authenticated metadata exposes work aliases; private admission/history files retain their original paths. */
+export function publicTaskProjection(store: RunStore): { manifest: Manifest; state: RunSnapshot } {
+  return {
+    manifest: { ...store.manifest(), workspace: publicWorkspace(store) },
+    state: publicSnapshot(store.snapshot()),
+  };
+}
+
+/** Project known internal locator fields without modifying exact operator text or persisted recovery facts. */
+export function publicRunEvent(event: RunEvent): RunEvent {
+  const result = { ...event };
+  for (const key of [
+    "sessionFile",
+    "predecessorFile",
+    "successorFile",
+    "predecessorSessionFile",
+    "successorSessionFile",
+  ]) {
+    const path = event[key];
+    if (typeof path === "string") {
+      result[key] = `<pi-session>/${basename(path)}`;
+    }
+  }
+  return result;
 }

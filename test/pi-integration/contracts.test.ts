@@ -15,6 +15,7 @@ import {
   inspectPi,
   successorPrompt,
 } from "../../src/pi-integration/index.js";
+import type { DurableHandover, OperatorMessage } from "../../src/durable/index.js";
 import { operatorBlock } from "../../src/pi-integration/prompts.js";
 import { sessionMessageText } from "../../src/pi-integration/message-text.js";
 import {
@@ -32,23 +33,13 @@ await test("inspectPi returns credential-blind status from an isolated installed
   assert.equal(JSON.stringify(result).includes("credential"), false);
 });
 
-await test("prompt renderers preserve standing task, control, handover, and exact operator evidence", () => {
-  const directories = fixtureDirectories("sept-pi-prompts-");
-  const manifest = fixtureStore(directories, "provider", "standing task").manifest();
-  const messages = [
-    { id: "message-1", text: "exact operator text", createdAt: new Date().toISOString() },
-  ];
-  const control = {
-    status: "continue" as const,
-    summary: "continue safely",
-    verification: ["checked"],
-    next_action: "next seam",
-  };
-  const handover = {
+function promptHandover(runId: string, messages: OperatorMessage[]): DurableHandover {
+  return {
     formatVersion: 1 as const,
-    runId: manifest.runId,
+    runId,
     epoch: 1,
     predecessorSessionId: "predecessor",
+    predecessorSessionFile: "/private/brain/state/pi-sessions/2.durable.json",
     operatorMessages: messages,
     handover: {
       handover_summary: "summary",
@@ -66,9 +57,27 @@ await test("prompt renderers preserve standing task, control, handover, and exac
     },
     writtenAt: new Date().toISOString(),
   };
+}
+
+await test("prompt renderers preserve standing task, control, handover, and exact operator evidence", () => {
+  const directories = fixtureDirectories("sept-pi-prompts-");
+  const manifest = fixtureStore(directories, "provider", "standing task").manifest();
+  const messages = [
+    { id: "message-1", text: "exact operator text", createdAt: new Date().toISOString() },
+  ];
+  const control = {
+    status: "continue" as const,
+    summary: "continue safely",
+    verification: ["checked"],
+    next_action: "next seam",
+  };
+  const handover = promptHandover(manifest.runId, messages);
   assert.match(initialPrompt(manifest, "recovered context"), /standing task/);
   assert.match(continuationPrompt(control, messages), /exact operator text/);
   assert.match(successorPrompt(manifest, handover, messages), /Full durable predecessor handover/);
+  assert.match(successorPrompt(manifest, handover, messages), /<pi-session>\/2\.durable\.json/);
+  assert.doesNotMatch(successorPrompt(manifest, handover, messages), /\/private\/brain/);
+  assert.equal(handover.predecessorSessionFile, "/private/brain/state/pi-sessions/2.durable.json");
   assert.equal(operatorBlock([]), "");
   assert.match(operatorBlock(messages), /message-1/);
 });

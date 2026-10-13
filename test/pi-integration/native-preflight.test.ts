@@ -1,3 +1,4 @@
+import { fixtureBackend } from "./backend-support.js";
 /** Present malformed native evidence fails before leases, repairs, task scheduling or schema writes. */
 
 import assert from "node:assert/strict";
@@ -36,7 +37,7 @@ async function nativeFixture() {
     directories.agentDir,
     undefined,
     undefined,
-    { modelRuntime: models },
+    { modelRuntime: models, executionBackend: fixtureBackend(models) },
   );
   store.update({
     phase: "running",

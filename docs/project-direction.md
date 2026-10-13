@@ -1,3 +1,11 @@
+# SEPT current delivery direction
+
+The approved order is verified native Pi Durable migration → capability confinement → separately authorised SDK/open-source packaging. Confinement preserves native Pi Harness/Models, credentials and SEPT domain control in brain, routes effects through consumer-supplied enforced hands, and delivers operator-owned full/scoped/request permission cycles with explicit retry. One proved Linux reference profile is sufficient; unsupported profiles refuse execution.
+
+Consumer orchestration stays separate. Mandatory local supervision, topology, brokers, grant-editor workflow, chat/review products, schedulers and new durability infrastructure are superseded directions, not prerequisites. Packaging, publication, extra features and deployment remain outside this task. Only independent QA may establish confinement completion after required gates and actual installed worker/direct/container effects. See [system facts](as-built/system.md) and [the current phase record](as-built/capability-confinement.md).
+
+## Historical direction — retained for context
+
 # SEPT Project Direction
 
 ## Purpose

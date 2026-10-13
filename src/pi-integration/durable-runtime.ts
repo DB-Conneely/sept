@@ -1,18 +1,11 @@
-/** Constructs one native Harness with Pi Models and private SQLite FULL storage per durable run. */
+/** Constructs one native NativePi.Harness with Pi Models and private SQLite FULL storage per durable run. */
 
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { ModelImageResizeOptions } from "@earendil-works/pi-ai";
-import {
-  createRegistry,
-  defineExtension,
-  Harness,
-  type Conversation,
-  type Registry,
-  type HarnessSettings,
-} from "@earendil-works/pi-durable";
+import * as NativePi from "@earendil-works/pi-durable";
 import { SqliteStorage } from "@earendil-works/pi-durable/storage/sqlite";
-import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
+import { BackendExecutionEnv, type ExecutionBackend } from "../execution/index.js";
 import { atomicWrite, SeptError, type Manifest, type RunStore } from "../durable/index.js";
 import { assertModelMetadata, createPodModelRuntime } from "../model-access/index.js";
 import { NOOP_TELEMETRY, type Observability } from "../observability/index.js";
@@ -33,12 +26,13 @@ import {
 const HARNESS_SETTINGS = {
   compaction: { enabled: false },
   retry: { enabled: true, maxRetries: 3, baseDelayMs: 1000 },
-} satisfies HarnessSettings;
+} satisfies NativePi.HarnessSettings;
 
 /** Native owners travel together so partial host construction can close every acquired resource. */
 export interface OpenedDurableRuntime {
-  harness: Harness;
-  conversation: Conversation;
+  harness: NativePi.Harness;
+  backend: ExecutionBackend;
+  conversation: NativePi.Conversation;
   invocation: DurableInvocation;
   sessionFile: string;
   refreshResources: () => Promise<void>;
@@ -46,16 +40,17 @@ export interface OpenedDurableRuntime {
 
 /** Create a genuinely fresh conversation and provider identity from immutable run model choices. */
 export function createDurableConversation(
-  harness: Harness,
+  harness: NativePi.Harness,
   manifest: Manifest,
-): Promise<Conversation> {
+  cwd: string,
+): Promise<NativePi.Conversation> {
   return harness.createConversation(
     {
       ownership: { kind: "ownerless" },
       agent: {
         model: { provider: manifest.provider, modelId: manifest.model },
         thinkingLevel: manifest.thinking,
-        cwd: manifest.workspace,
+        cwd,
       },
     },
     BACKGROUND_CONTEXT,
@@ -80,13 +75,14 @@ async function openStorage(store: RunStore, telemetry: Observability): Promise<S
 }
 
 async function openConversation(
-  harness: Harness,
+  harness: NativePi.Harness,
   manifest: Manifest,
   existingSessionFile: string | undefined,
-  initialConversationId: Conversation["id"] | undefined,
-): Promise<Conversation> {
+  initialConversationId: NativePi.Conversation["id"] | undefined,
+  backend: ExecutionBackend,
+): Promise<NativePi.Conversation> {
   if (existingSessionFile === undefined && initialConversationId === undefined) {
-    return createDurableConversation(harness, manifest);
+    return createDurableConversation(harness, manifest, backend.cwd);
   }
   const conversationId =
     existingSessionFile === undefined
@@ -99,17 +95,24 @@ async function openConversation(
   if (conversation === undefined) {
     throw new SeptError("Pi Durable session locator names a missing conversation");
   }
+  // NativePi.Harness is still paused: configure namespace before any recovered task can resume.
+  await conversation.configure({ cwd: backend.cwd }, BACKGROUND_CONTEXT);
   return conversation;
 }
 
 async function nativeRegistry(
-  manifest: Manifest,
   agentDir: string,
   dependencies: PiSessionHostDependencies,
   resizeOptions: ModelImageResizeOptions | undefined,
-): Promise<Registry> {
-  const registry = createRegistry();
-  registry.install(createDurableCodingTools(manifest.workspace, resizeOptions));
+  backend: ExecutionBackend,
+  invocation: DurableInvocation,
+): Promise<NativePi.Registry> {
+  const registry = NativePi.createRegistry();
+  registry.install(
+    createDurableCodingTools(backend, resizeOptions, (error) => {
+      invocation.report(error);
+    }),
+  );
   for (const extension of [
     ...(await loadTrustedExtensions(agentDir)),
     ...(dependencies.extensions ?? []),
@@ -120,15 +123,16 @@ async function nativeRegistry(
 }
 
 async function refreshSections(
-  registry: Registry,
+  registry: NativePi.Registry,
   manifest: Manifest,
   agentDir: string,
   invocation: DurableInvocation,
+  backend: ExecutionBackend,
 ): Promise<void> {
   registry.install(
-    defineExtension({
+    NativePi.defineExtension({
       name: "sept",
-      sections: await loadDurableSections(manifest, agentDir),
+      sections: await loadDurableSections(manifest, agentDir, backend),
       hooks: invocation.hooks(),
     }),
   );
@@ -140,28 +144,55 @@ async function openHarness(
   agentDir: string,
   telemetry: Observability,
   dependencies: PiSessionHostDependencies,
-): Promise<Pick<OpenedDurableRuntime, "harness" | "invocation" | "refreshResources">> {
+): Promise<Pick<OpenedDurableRuntime, "harness" | "invocation" | "refreshResources" | "backend">> {
+  const backend = dependencies.executionBackend;
+  if (backend === undefined) {
+    throw new SeptError("A supported supplied hands backend is required");
+  }
   const { models, model } = await authenticatedModels(manifest, agentDir, dependencies);
   const invocation = new DurableInvocation(manifest, store, model.contextWindow, telemetry);
   const registry = await nativeRegistry(
-    manifest,
     agentDir,
     dependencies,
     model.inputLimits?.images?.resize,
+    backend,
+    invocation,
   );
   const refreshResources = (): Promise<void> =>
-    refreshSections(registry, manifest, agentDir, invocation);
+    refreshSections(registry, manifest, agentDir, invocation, backend);
   await refreshResources();
+  const harness = await openConfiguredHarness(
+    store,
+    telemetry,
+    models,
+    registry,
+    backend,
+    invocation,
+  );
+  return { harness, invocation, refreshResources, backend };
+}
+
+async function openConfiguredHarness(
+  store: RunStore,
+  telemetry: Observability,
+  models: NonNullable<PiSessionHostDependencies["modelRuntime"]>,
+  registry: NativePi.Registry,
+  backend: ExecutionBackend,
+  invocation: DurableInvocation,
+): Promise<NativePi.Harness> {
   const storage = await openStorage(store, telemetry);
   try {
-    const harness = await Harness.open(
+    const harness = await NativePi.Harness.open(
       storage,
       {
         models,
         registry,
         settings: HARNESS_SETTINGS,
-        // Native extensions may use this environment; the parity tools still use Pi's local operations.
-        env: ({ cwd }) => new NodeExecutionEnv({ cwd: cwd ?? manifest.workspace, shellEnv: {} }),
+        // Initial dispatch and replay share this supplied effect owner, never a local fallback.
+        env: () =>
+          new BackendExecutionEnv(backend, (error) => {
+            invocation.report(error);
+          }),
         onReport: (error) => {
           invocation.report(error);
         },
@@ -169,7 +200,7 @@ async function openHarness(
       BACKGROUND_CONTEXT,
     );
     invocation.bindHarness(harness);
-    return { harness, invocation, refreshResources };
+    return harness;
   } catch (error: unknown) {
     await storage.close(BACKGROUND_CONTEXT);
     throw error;
@@ -206,7 +237,7 @@ function prepareRuntime(
   store: RunStore,
   existingSessionFile: string | undefined,
   telemetry: Observability,
-): Conversation["id"] | undefined {
+): NativePi.Conversation["id"] | undefined {
   assertNativeRun(store, telemetry);
   if (existingSessionFile !== undefined) {
     readDurableLocator(existingSessionFile);
@@ -214,6 +245,34 @@ function prepareRuntime(
   const initial = readDurableInitialization(store, telemetry);
   prepareDurableInitialization(store);
   return initial?.conversationId;
+}
+
+async function bindNativeConversation(
+  harness: NativePi.Harness,
+  invocation: DurableInvocation,
+  manifest: Manifest,
+  store: RunStore,
+  backend: ExecutionBackend,
+  existingSessionFile: string | undefined,
+  initialConversationId: NativePi.Conversation["id"] | undefined,
+): Promise<Pick<OpenedDurableRuntime, "conversation" | "sessionFile">> {
+  const conversation = await openConversation(
+    harness,
+    manifest,
+    existingSessionFile,
+    initialConversationId,
+    backend,
+  );
+  invocation.bind(conversation);
+  const sessionFile =
+    existingSessionFile ?? writeDurableLocator(join(store.runDir, "pi-sessions"), conversation.id);
+  atomicWrite(join(store.runDir, "pi-durable-engine.json"), {
+    engine: "pi-durable",
+    version: "1.1.0",
+    synchronous: "FULL",
+  });
+  store.event("pi_durable_runtime_opened", { conversationId: conversation.id });
+  return { conversation, sessionFile };
 }
 
 /** Open explicitly versioned native state before admitting any work; historical JSONL is untouched. */
@@ -226,7 +285,7 @@ export async function openDurableRuntime(
   dependencies: PiSessionHostDependencies = {},
 ): Promise<OpenedDurableRuntime> {
   const initialConversationId = prepareRuntime(store, existingSessionFile, telemetry);
-  const { harness, invocation, refreshResources } = await openHarness(
+  const { harness, invocation, refreshResources, backend } = await openHarness(
     manifest,
     store,
     agentDir,
@@ -234,23 +293,23 @@ export async function openDurableRuntime(
     dependencies,
   );
   try {
-    const conversation = await openConversation(
+    const { conversation, sessionFile } = await bindNativeConversation(
       harness,
+      invocation,
       manifest,
+      store,
+      backend,
       existingSessionFile,
       initialConversationId,
     );
-    invocation.bind(conversation);
-    const sessionFile =
-      existingSessionFile ??
-      writeDurableLocator(join(store.runDir, "pi-sessions"), conversation.id);
-    atomicWrite(join(store.runDir, "pi-durable-engine.json"), {
-      engine: "pi-durable",
-      version: "1.1.0",
-      synchronous: "FULL",
-    });
-    store.event("pi_durable_runtime_opened", { conversationId: conversation.id });
-    return { harness, conversation, invocation, sessionFile, refreshResources };
+    return {
+      harness,
+      conversation,
+      invocation,
+      sessionFile,
+      refreshResources,
+      backend,
+    };
   } catch (error: unknown) {
     await harness.close(BACKGROUND_CONTEXT);
     throw error;

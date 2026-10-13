@@ -1,6 +1,8 @@
 /** Synthetic installed native resource fixtures; production owns HTTP, tools, persistence and output. */
 
 import assert from "node:assert/strict";
+import { supplyHands } from "./hands-support.js";
+import { assertNativePiToolResults } from "./pi-durable-assertions.js";
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { createServer, type Server, type ServerResponse } from "node:http";
@@ -206,7 +208,8 @@ function directArguments(fixture: NativeResourceFixture): string[] {
 
 /** Await the actual installed direct-run exit before interpreting stdout or durable artifacts. */
 export async function nativeDirectRun(fixture: NativeResourceFixture): Promise<string> {
-  const child = spawn(resolve("sept"), directArguments(fixture), {
+  const hands = supplyHands(fixture.workspace, true);
+  const child = spawn(resolve("sept"), [...directArguments(fixture), "--hands", hands.path], {
     stdio: ["ignore", "pipe", "pipe"],
     env: {
       PATH: process.env.PATH,
@@ -224,6 +227,7 @@ export async function nativeDirectRun(fixture: NativeResourceFixture): Promise<s
     stderr += chunk.toString();
   });
   const exit = await waitForExit(child);
+  hands.close();
   assert.deepEqual(exit, { code: 0, signal: null }, stderr);
   const runId = stdout.trim().split("\n")[0];
   assert.ok(runId);
@@ -263,6 +267,7 @@ function assertNativeSqlite(runDir: string): void {
   const database = new DatabaseSync(join(runDir, "pi-durable.sqlite"), { readOnly: true });
   try {
     assertNativeTaskCounts(database);
+    assertNativePiToolResults(database);
     assert.equal(
       database
         .prepare(

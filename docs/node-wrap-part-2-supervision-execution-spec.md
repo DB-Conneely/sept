@@ -1,3 +1,11 @@
+# Consumer orchestration — current scope
+
+The local supervision proposal below is retired as a mandatory prerequisite and retained for historical context. SEPT remains a thin native Pi single-slot runtime. Consumers independently supply and orchestrate hands; no mandatory supervisor, topology, broker, peer-agent loop, review framework, chat UI or scheduling infrastructure is delivered or required. Optional later products need separate approval.
+
+The current sequence is verified native migration → capability confinement → separately authorised SDK/open-source packaging. Packaging and additional features are outside confinement. See [current system facts](as-built/system.md), [confinement delivery/evidence](as-built/capability-confinement.md) and the [installed Pi/backend contract](pi-contract.md). Existing cancellation, wait/wake, exact operator queues, budgets, restart and native replay remain required guarantees.
+
+## Historical proposal — retired as required work
+
 # Node Wrap Part 2: Local Communication and Supervision Execution Specification
 
 ## Status and dependency

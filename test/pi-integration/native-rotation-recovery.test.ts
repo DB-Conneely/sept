@@ -1,3 +1,4 @@
+import { fixtureBackend } from "./backend-support.js";
 /** Rotation replay preserves native capture and classifies actual request placement, not intent. */
 
 import assert from "node:assert/strict";
@@ -72,6 +73,7 @@ async function fixture() {
     undefined,
     {
       modelRuntime: models,
+      executionBackend: fixtureBackend(models),
       extensions: [
         {
           name: "observe-placement",
@@ -122,7 +124,7 @@ await test("settled rotation recovery keeps captured IDs and leaves later arriva
     state.directories.agentDir,
     state.native.sessionFile,
     undefined,
-    { modelRuntime: state.models },
+    { modelRuntime: state.models, executionBackend: fixtureBackend(state.models) },
   );
   try {
     const result = await recovered.invocation.run(

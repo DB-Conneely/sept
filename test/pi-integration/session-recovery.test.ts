@@ -1,3 +1,4 @@
+import { fixtureBackend } from "./backend-support.js";
 /**
  * Verifies restart recovery at both sides of the native rotation boundary. Completed handovers are
  * reused without provider work; interrupted handovers resume without duplicate steer, become
@@ -60,7 +61,7 @@ async function completedPredecessor(
     directories.agentDir,
     undefined,
     NOOP_TELEMETRY,
-    { modelRuntime: runtime },
+    { modelRuntime: runtime, executionBackend: fixtureBackend(runtime) },
   );
   store.update({
     phase: "running",
@@ -95,7 +96,7 @@ async function exerciseCompletedRecovery(): Promise<void> {
     directories.agentDir,
     sessionFile,
     NOOP_TELEMETRY,
-    { modelRuntime: runtime },
+    { modelRuntime: runtime, executionBackend: fixtureBackend(runtime) },
   );
   try {
     const recovered = await resumed.run("must not become another provider call");
@@ -174,7 +175,7 @@ async function interruptPredecessor(
     directories.agentDir,
     undefined,
     NOOP_TELEMETRY,
-    { modelRuntime: runtime },
+    { modelRuntime: runtime, executionBackend: fixtureBackend(runtime) },
   );
   store.update({
     phase: "running",
@@ -213,6 +214,7 @@ async function recoverWithController(
     (manifest, runStore, directory, existing, telemetry) =>
       PiSessionHost.create(manifest, runStore, directory, existing, telemetry, {
         modelRuntime: runtime,
+        executionBackend: fixtureBackend(runtime),
       }),
   );
   await controller.run();

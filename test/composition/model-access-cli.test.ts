@@ -5,14 +5,7 @@
 
 import assert from "node:assert/strict";
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
-import {
-  mkdtempSync,
-  mkdirSync,
-  readFileSync,
-  readdirSync,
-  statSync,
-  writeFileSync,
-} from "node:fs";
+import * as fs from "node:fs";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -41,9 +34,9 @@ function run(arguments_: string[], input?: string): SpawnSyncReturns<string> {
 }
 
 function prepareModelCli(): string {
-  const root = mkdtempSync(join(tmpdir(), "sept-model-cli-"));
+  const root = fs.mkdtempSync(join(tmpdir(), "sept-model-cli-"));
   const agent = join(root, "agent");
-  mkdirSync(agent);
+  fs.mkdirSync(agent);
   writeProvider(agent, 9, "cli-local");
   return agent;
 }
@@ -70,7 +63,7 @@ function loginAndSelect(agent: string, entered: string): Record<string, unknown>
   assert.equal(login.status, 0, login.stderr);
   assert.equal(parseRecord(login.stdout).state, "authenticated");
   assert.doesNotMatch(login.stdout + login.stderr, new RegExp(entered));
-  assert.equal(statSync(join(agent, "auth.json")).mode & 0o777, 0o600);
+  assert.equal(fs.statSync(join(agent, "auth.json")).mode & 0o777, 0o600);
   const selected = run([
     "models",
     "select",
@@ -100,7 +93,7 @@ function verifySelectionAndLogout(
   const current = run(["models", "current", "--agent-dir", agent]);
   assert.equal(current.status, 0, current.stderr);
   assert.deepEqual(parseRecord(current.stdout).selected, selection.selected);
-  assert.equal(readFileSync(join(agent, "sept-model.json"), "utf8").includes(entered), false);
+  assert.equal(fs.readFileSync(join(agent, "sept-model.json"), "utf8").includes(entered), false);
   const logout = run(["auth", "logout", "--agent-dir", agent, "--provider", "cli-local"]);
   assert.equal(logout.status, 0, logout.stderr);
   assert.equal(parseRecord(logout.stdout).state, "authentication_required");
@@ -139,12 +132,12 @@ function modelDefinition(id: string): Record<string, unknown> {
 }
 
 async function admissionFixture(): Promise<AdmissionFixture> {
-  const root = mkdtempSync(join(tmpdir(), "sept-model-worker-"));
+  const root = fs.mkdtempSync(join(tmpdir(), "sept-model-worker-"));
   const agent = join(root, "agent");
   const state = join(root, "runs");
   const workspace = join(root, "workspace");
-  mkdirSync(agent);
-  mkdirSync(workspace);
+  fs.mkdirSync(agent);
+  fs.mkdirSync(workspace);
   let calls = 0;
   const provider = createServer((request, response) => {
     request.resume();
@@ -178,7 +171,7 @@ async function admissionFixture(): Promise<AdmissionFixture> {
 
 function writeModelDefinitions(agent: string, port: number): void {
   const endpoint = `http://127.0.0.1:${String(port)}/v1`;
-  writeFileSync(
+  fs.writeFileSync(
     join(agent, "models.json"),
     JSON.stringify({
       providers: {
@@ -284,10 +277,14 @@ async function exerciseWebhookAndRejection(fixture: AdmissionFixture, base: stri
 }
 
 function verifyManifests(fixture: AdmissionFixture): void {
-  const manifests = readdirSync(fixture.state, { withFileTypes: true })
-    .filter((entry) => entry.isDirectory() && entry.name !== "webhook-receipts")
+  const manifests = fs
+    .readdirSync(fixture.state, { withFileTypes: true })
+    .filter(
+      (entry) =>
+        entry.isDirectory() && !entry.name.startsWith(".") && entry.name !== "webhook-receipts",
+    )
     .map((entry) =>
-      parseRecord(readFileSync(join(fixture.state, entry.name, "manifest.json"), "utf8")),
+      parseRecord(fs.readFileSync(join(fixture.state, entry.name, "manifest.json"), "utf8")),
     );
   assert.deepEqual(
     Object.fromEntries(

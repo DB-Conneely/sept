@@ -273,7 +273,11 @@ export class WorkerRuntime {
 
   private finishController(store: RunStore, outcome: "success" | "failure"): void {
     if (store.snapshot().status === "cancelling") {
-      store.finishCancellation();
+      if (outcome === "failure") {
+        store.blockUnverifiedCleanup();
+      } else {
+        store.finishCancellation();
+      }
     }
     const status = store.snapshot().status;
     if (status === "active" && !this.stopping && outcome === "success") {

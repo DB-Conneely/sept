@@ -4,6 +4,7 @@
  */
 
 import assert from "node:assert/strict";
+import { workerHands, ownHands, closeChildHands } from "./hands-support.js";
 import { spawn, type ChildProcessByStdio } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { type Server, type ServerResponse } from "node:http";
@@ -116,6 +117,7 @@ export function installedWorker(
   token: string,
   environment: NodeJS.ProcessEnv = {},
 ): InstalledWorker {
+  const hands = workerHands(agent, environment);
   const child = spawn(resolve("sept"), workerArguments(state, agent, workspaceRoot), {
     cwd: process.cwd(),
     env: {
@@ -124,9 +126,11 @@ export function installedWorker(
       OTEL_SDK_DISABLED: "true",
       SEPT_LOG_LEVEL: "silent",
       ...environment,
+      ...(hands === undefined ? {} : { SEPT_HANDS_CONFIGURATION: hands.path }),
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
+  ownHands(child, hands);
   let stdout = "";
   let stderr = "";
   child.stdout.setEncoding("utf8").on("data", (value: string) => {
@@ -186,11 +190,13 @@ export function waitForExit(
 /** Stop an installed worker through its graceful SIGTERM contract. */
 export async function stopInstalled(child: InstalledChild): Promise<void> {
   await stopProcess(child, "SIGTERM");
+  closeChildHands(child);
 }
 
 /** Interrupt an installed worker to exercise restart adoption. */
 export async function killInstalled(child: InstalledChild): Promise<void> {
   await stopProcess(child, "SIGKILL");
+  closeChildHands(child);
 }
 
 /** Poll the authenticated task projection until its durable state reaches the expected status. */

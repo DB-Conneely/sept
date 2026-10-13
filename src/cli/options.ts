@@ -6,8 +6,9 @@
 import { CliError } from "./errors.js";
 
 const OPTION_KEYS = {
-  worker: ["agent-dir", "host", "port", "state-dir", "workspace-root"],
+  worker: ["hands", "agent-dir", "host", "port", "state-dir", "workspace-root"],
   run: [
+    "hands",
     "agent-dir",
     "max-epochs",
     "max-invocations",

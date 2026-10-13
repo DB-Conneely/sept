@@ -4,6 +4,8 @@
  * on a waiting run into a durable wake before any controller is launched.
  */
 
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { listRuns, SeptError, type RunStore } from "../durable/index.js";
 import type { Observability } from "../observability/index.js";
 import { assertCompatibleStateRoot, isLegacyRun } from "../pi-integration/index.js";
@@ -20,7 +22,13 @@ function reconcileStore(store: RunStore): void {
   store.ensureInitialConversation();
   store.reconcileOperatorConversation();
   if (store.snapshot().status === "cancelling") {
-    store.finishCancellation();
+    // A crash cannot prove that a supplied namespace joined. Preserve uncertainty rather
+    // than publishing cancellation from only the old intent; no native work is resumed.
+    if (existsSync(join(store.runDir, "hands-binding.json"))) {
+      store.blockUnverifiedCleanup();
+    } else {
+      store.finishCancellation();
+    }
   }
   store.ensureTerminalConversation();
 }

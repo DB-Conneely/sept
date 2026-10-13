@@ -26,6 +26,7 @@ await test("installed worker and direct run execute native trusted extensions, s
   const token = "NATIVE-RESOURCE-BEARER-CANARY";
   const worker = installedWorker(fixture.state, fixture.agent, root, token, {
     SEPT_LOG_LEVEL: "info",
+    SEPT_HANDS_FIXTURE_SHELL: "true",
   });
   try {
     await nativeWorkerScenario(fixture, worker, token);

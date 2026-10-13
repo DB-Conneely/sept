@@ -250,6 +250,28 @@ export class RunStore {
     return cancelled;
   }
 
+  /** Record join failure as a durable block; cancellation intent remains in its original event. */
+  public blockUnverifiedCleanup(): RunSnapshot {
+    const current = this.snapshot();
+    if (current.status === "cancelled") {
+      throw new SeptError("Verified cancellation cannot be replaced by a cleanup failure");
+    }
+    const next = validateSnapshot({
+      ...current,
+      status: "blocked",
+      phase: "terminal",
+      updatedAt: now(),
+      reason: "Execution cleanup is unverified; operator reconciliation is required.",
+      terminalCause: "controller_failure",
+    });
+    // This explicit failure transition does not revoke intent or use ordinary update to
+    // bypass cancellation. Fsync before publication; persistence failure remains unsettled.
+    atomicWrite(this.snapshotPath, next);
+    this.event("run_blocked", { reason: "execution_cleanup_unverified" });
+    this.ensureTerminalConversation(next);
+    return next;
+  }
+
   /** Find exact accepted operator input by stable identifier. */
   public operatorMessage(id: string): OperatorMessage | undefined {
     return this.operatorQueue.message(id);

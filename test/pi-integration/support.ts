@@ -4,6 +4,7 @@
  * sentinel authentication, bounds each stream, and centralizes the one SDK protocol fixture cast.
  */
 
+import { registerFixtureBackend } from "./backend-support.js";
 import { randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -221,11 +222,13 @@ export function fixtureDirectories(prefix: string): PiFixtureDirectories {
 
 /** Construct an installed Pi model runtime with filesystem credentials isolated to the fixture. */
 export async function fixtureModelRuntime(agentDir: string): Promise<ModelRuntime> {
-  return ModelRuntime.create({
+  const models = await ModelRuntime.create({
     authPath: join(agentDir, "auth.json"),
     modelsPath: null,
     refreshOnCreate: false,
   });
+  registerFixtureBackend(models, agentDir);
+  return models;
 }
 
 /** Register one local-sentinel provider using the installed Pi provider composition path. */

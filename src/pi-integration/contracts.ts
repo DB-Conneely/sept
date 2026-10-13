@@ -4,6 +4,7 @@
  * dependency injection is limited to model and tool wiring used by production composition/tests.
  */
 
+import type { ExecutionBackend } from "../execution/index.js";
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import type { Extension } from "@earendil-works/pi-durable";
 import type { Handover, OperatorMessage, WorkResponse } from "../durable/index.js";
@@ -39,6 +40,7 @@ export interface SessionRunResult {
 /** Optional native Pi construction dependencies; callers retain ownership of injected runtimes. */
 export interface PiSessionHostDependencies {
   modelRuntime?: ModelRuntime;
+  executionBackend?: ExecutionBackend;
   extensions?: readonly Extension[];
 }
 

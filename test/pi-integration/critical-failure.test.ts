@@ -1,3 +1,4 @@
+import { fixtureBackend } from "./backend-support.js";
 /** Critical failures seal actual native dispatch before/after a tool effect, without hook self-await. */
 
 import assert from "node:assert/strict";
@@ -67,6 +68,7 @@ await test("critical usage persistence failure prevents the native tool effect a
     (manifest, store, agent, existing, telemetry) =>
       PiSessionHost.create(manifest, store, agent, existing, telemetry, {
         modelRuntime: fixture.models,
+        executionBackend: fixtureBackend(fixture.models),
       }),
   );
   await assert.rejects(controller.run(), /critical usage persistence failure/);
@@ -94,6 +96,7 @@ await test("ordinary native afterTool failure stops subsequent generation after 
     (manifest, store, agent, existing, telemetry) =>
       PiSessionHost.create(manifest, store, agent, existing, telemetry, {
         modelRuntime: fixture.models,
+        executionBackend: fixtureBackend(fixture.models),
         extensions: [extension],
       }),
   );
@@ -112,7 +115,7 @@ await test("DurableGuard seals and signals the real Harness synchronously then j
     fixture.directories.agentDir,
     undefined,
     undefined,
-    { modelRuntime: fixture.models },
+    { modelRuntime: fixture.models, executionBackend: fixtureBackend(fixture.models) },
   );
   const guard = new DurableGuard();
   guard.bind(native.harness);
@@ -149,7 +152,10 @@ async function publicationFixture() {
     store,
     directories.agentDir,
     (manifest, store, agent, existing, telemetry) =>
-      PiSessionHost.create(manifest, store, agent, existing, telemetry, { modelRuntime: models }),
+      PiSessionHost.create(manifest, store, agent, existing, telemetry, {
+        modelRuntime: models,
+        executionBackend: fixtureBackend(models),
+      }),
   );
   return { store, controller, calls: () => calls };
 }

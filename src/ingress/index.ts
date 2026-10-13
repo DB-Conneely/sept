@@ -7,4 +7,4 @@
 export { SeptService, type ServiceOptions } from "./service.js";
 
 /** Strict task-admission validation shared with installed composition tests. */
-export { validateRequest } from "./validation.js";
+export { validateRequest, publicTaskProjection, publicRunEvent } from "./validation.js";

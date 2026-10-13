@@ -221,7 +221,15 @@ export class CycleController {
         },
         "warn",
       );
+      throw error;
     }
+  }
+
+  private recordCleanupFailure(error: unknown): void {
+    // Failed joining is not successful cancellation. Preserve a durable operator-visible block
+    // before releasing leases; recovery must not report that uncertain effects were cancelled.
+    this.store.blockUnverifiedCleanup();
+    this.recordFailureTelemetry(error, "blocked");
   }
 
   private finishCancellation(): void {
@@ -257,12 +265,19 @@ export class CycleController {
   }
 
   private async finalize(release: () => void): Promise<void> {
+    let joined = false;
     try {
       await this.closeHost();
+      joined = true;
+    } catch (error: unknown) {
+      this.recordCleanupFailure(error);
+      throw error;
     } finally {
       this.host = undefined;
       try {
-        this.finishCancellation();
+        if (joined) {
+          this.finishCancellation();
+        }
       } finally {
         this.releaseLease(release);
       }

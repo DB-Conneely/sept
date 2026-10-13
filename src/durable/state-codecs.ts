@@ -180,7 +180,7 @@ function terminalCauseAllowed(status: RunStatus, cause: TerminalCause): boolean 
     return cause === "operator_cancelled";
   }
   if (status === "blocked") {
-    return cause !== "controller_failure" && cause !== "operator_cancelled";
+    return cause !== "operator_cancelled";
   }
   return false;
 }
