@@ -10,7 +10,7 @@ import {
   realpathSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 
 /** A generated reference namespace belongs exclusively to its fixture owner. */
@@ -208,4 +208,37 @@ export function workerHands(
   return existsSync(workspace) && environment.SEPT_HANDS_CONFIGURATION === undefined
     ? supplyHands(workspace, environment.SEPT_HANDS_FIXTURE_SHELL === "true")
     : undefined;
+}
+
+/** Explicit fixture operator adoption uses installed commands, including legacy/missing-policy restart. */
+export function activateHandsPolicy(hands: SuppliedHands, state: string, agent: string): void {
+  const common = ["--state-dir", state, "--agent-dir", agent];
+  const show = spawnSync(resolve("sept"), ["permissions", "show", ...common], {
+    encoding: "utf8",
+    env: { ...process.env, OTEL_SDK_DISABLED: "true" },
+  });
+  assert.equal(show.status, 0, show.stderr);
+  const value: unknown = JSON.parse(show.stdout);
+  assert.ok(
+    typeof value === "object" &&
+      value !== null &&
+      "revision" in value &&
+      typeof value.revision === "number",
+  );
+  const set = spawnSync(
+    resolve("sept"),
+    [
+      "permissions",
+      "set",
+      ...common,
+      "--hands",
+      hands.path,
+      "--mode",
+      "full_access",
+      "--revision",
+      String(value.revision),
+    ],
+    { encoding: "utf8", env: { ...process.env, OTEL_SDK_DISABLED: "true" } },
+  );
+  assert.equal(set.status, 0, set.stderr);
 }

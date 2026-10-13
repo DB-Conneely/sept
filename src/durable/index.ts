@@ -59,3 +59,15 @@ export {
   type WorkControl,
   type WorkResponse,
 } from "./contracts.js";
+
+/** Bounded local operator capability authority and exact codecs. */
+export {
+  CapabilityPolicyStore,
+  CapabilityPolicyDeniedError,
+  parseCapabilityConfiguration,
+  type CapabilityRights,
+  type CapabilityGrant,
+  type CapabilityBinding,
+  type CapabilityPolicy,
+  type CapabilityConfiguration,
+} from "./capability-policy.js";

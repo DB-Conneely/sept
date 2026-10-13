@@ -29,6 +29,8 @@ export interface ServiceOptions {
   piVersion: string;
   workspaceRoot?: string;
   telemetry?: Observability;
+  /** Installed composition checks operator policy without exposing its writer over TCP. */
+  capabilityAdmission?: () => void;
   modelAccessService?: ModelAccessService;
 }
 
@@ -304,6 +306,9 @@ function workerOptions(
     agentDir: options.agentDir,
     workspaceRoot,
     observability,
+    ...(options.capabilityAdmission === undefined
+      ? {}
+      : { capabilityAdmission: options.capabilityAdmission }),
     ...(options.hostFactory === undefined ? {} : { hostFactory: options.hostFactory }),
   };
 }

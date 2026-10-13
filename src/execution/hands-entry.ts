@@ -21,6 +21,7 @@ import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { copyJson } from "@earendil-works/chord";
 import { SeptError } from "../durable/index.js";
 import type { HandsRequest, HandsResources, HandsToolResult } from "./contracts.js";
+import { HandsFiles } from "./hands-files.js";
 import { HANDS_REQUEST_BYTES, HANDS_RESPONSE_BYTES, parseHandsRequest } from "./protocol.js";
 
 async function resources(cwd: string): Promise<HandsResources> {
@@ -137,20 +138,52 @@ async function joinCommandDescendants(main: { id: number; start: string }): Prom
   throw new SeptError("Hands descendant join exceeded its bound");
 }
 
+function readOptions(
+  request: Extract<HandsRequest, { kind: "tool" }>,
+  files: HandsFiles | undefined,
+) {
+  return {
+    ...files?.readOptions(),
+    ...(request.resize === undefined ? {} : { resizeOptions: request.resize }),
+  };
+}
+async function nativeFile(
+  request: Extract<HandsRequest, { kind: "file" }>,
+  cwd: string,
+  files: HandsFiles | undefined,
+): Promise<unknown> {
+  if (files === undefined) {
+    const env = new NodeExecutionEnv({ cwd, shellEnv: {} });
+    return request.method === "readTextFile"
+      ? env.readTextFile(request.path, BACKGROUND_CONTEXT)
+      : env.writeFile(request.path, requiredContent(request), BACKGROUND_CONTEXT);
+  }
+  const path = resolve(cwd, request.path);
+  if (request.method === "readTextFile") {
+    return { ok: true, value: (await files.read(path)).toString("utf8") };
+  }
+  await files.write(path, requiredContent(request));
+  return { ok: true };
+}
+function requiredContent(request: Extract<HandsRequest, { kind: "file" }>): string {
+  if (request.content === undefined) {
+    throw new SeptError("Hands write requires text");
+  }
+  return request.content;
+}
+
 async function tool(
   request: Extract<HandsRequest, { kind: "tool" }>,
   cwd: string,
+  files?: HandsFiles,
 ): Promise<HandsToolResult> {
   switch (request.name) {
     case "read":
-      return callBody(
-        createReadTool(cwd, request.resize === undefined ? {} : { resizeOptions: request.resize }),
-        request,
-      );
+      return callBody(createReadTool(cwd, readOptions(request, files)), request);
     case "write":
-      return callBody(createWriteTool(cwd), request);
+      return callBody(createWriteTool(cwd, files?.writeOptions()), request);
     case "edit":
-      return callBody(createEditTool(cwd), request);
+      return callBody(createEditTool(cwd, files?.editOptions()), request);
     case "bash": {
       const main = await idleProcess();
       const result = await callBody(createBashTool(cwd), request);
@@ -169,22 +202,26 @@ async function tool(
 /** Dispatch the bounded operation in the already-enforced Linux namespace. */
 export async function executeHandsRequest(request: HandsRequest, cwd: string): Promise<unknown> {
   if (request.kind === "resources") {
-    return resources(cwd);
+    return resources(request.workspaceRead === false ? "/tmp" : cwd);
   }
-  if (request.kind === "tool") {
-    return tool(request, cwd);
+  const files = request.grants === undefined ? undefined : new HandsFiles(request.grants);
+  try {
+    if (request.kind === "tool") {
+      return await tool(request, cwd, files);
+    }
+    return await nativeFile(request, cwd, files);
+  } finally {
+    files?.close();
   }
-  const env = new NodeExecutionEnv({ cwd, shellEnv: {} });
-  if (request.method === "readTextFile") {
-    return env.readTextFile(request.path, BACKGROUND_CONTEXT);
-  }
-  if (request.content === undefined) {
-    throw new SeptError("Hands write requires text");
-  }
-  return env.writeFile(request.path, request.content, BACKGROUND_CONTEXT);
 }
 
 async function entry(): Promise<void> {
+  // Reject silent loader failure before request consumption. Children inherit no loader/marker authority.
+  if (process.env.SEPT_HANDS_PROCESS_GUARD !== "1") {
+    throw new SeptError("Hands process control guard is unavailable");
+  }
+  delete process.env.SEPT_HANDS_PROCESS_GUARD;
+  delete process.env.LD_PRELOAD;
   let input = "";
   for await (const chunk of process.stdin) {
     input += String(chunk);

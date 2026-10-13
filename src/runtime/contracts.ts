@@ -15,6 +15,8 @@ export interface WorkerRuntimeOptions {
   hostFactory?: HostFactory;
   workspaceRoot?: string;
   observability?: Observability;
+  /** Missing/denied policy leaves history readable and scheduling dormant. */
+  capabilityAdmission?: () => void;
 }
 
 /** Restart outcome after durable resident-run reconciliation. */

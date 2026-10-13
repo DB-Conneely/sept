@@ -94,6 +94,7 @@ async function telemetryScenario(): Promise<void> {
   const state = join(root, "runs");
   const agent = join(root, "agent");
   mkdirSync(agent);
+  mkdirSync(join(root, "workspace"));
   const token = "CLI-SECRET-TOKEN";
   const worker = installedWorker(state, agent, process.cwd(), token, {
     SEPT_LOG_LEVEL: "info",

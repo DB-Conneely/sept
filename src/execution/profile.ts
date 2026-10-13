@@ -1,80 +1,12 @@
 /** Validates actual consumer-started Linux containment, not command spelling or promises. */
 
-import { realpathSync, readFileSync, statSync, lstatSync, opendirSync } from "node:fs";
+import { realpathSync, lstatSync, opendirSync } from "node:fs";
 import { isAbsolute, join, relative, sep } from "node:path";
 import { SeptError } from "../durable/index.js";
 import type { DockerHandsConfiguration } from "./contracts.js";
+import { configuredText } from "./profile-configuration.js";
+export { loadHandsConfiguration } from "./profile-configuration.js";
 import { handsRecord } from "./protocol.js";
-
-function configuredText(value: unknown): string {
-  if (
-    typeof value !== "string" ||
-    value.length === 0 ||
-    value.length > 4096 ||
-    value.includes("\0")
-  ) {
-    throw new SeptError("Hands configuration text is invalid");
-  }
-  return value;
-}
-
-function directory(value: unknown): string {
-  const path = realpathSync(configuredText(value));
-  if (!statSync(path).isDirectory()) {
-    throw new SeptError("Hands configuration requires a directory");
-  }
-  return path;
-}
-
-function parseMount(value: unknown): DockerHandsConfiguration["readOnlyMounts"][number] {
-  const mount = handsRecord(value);
-  const destination = configuredText(mount.destination);
-  if (!destination.startsWith("/selected/") || destination.includes("..")) {
-    throw new SeptError("Selected mount alias must be below /selected");
-  }
-  return { source: directory(mount.source), destination };
-}
-
-function selectedMounts(value: unknown): DockerHandsConfiguration["readOnlyMounts"] {
-  const mounts = value ?? [];
-  if (!Array.isArray(mounts) || mounts.length > 8) {
-    throw new SeptError("Hands selected mounts exceed their bound");
-  }
-  return mounts.map((mount: unknown) => parseMount(mount));
-}
-
-/** Read only trusted local operator configuration; task text cannot choose a backend. */
-export function loadHandsConfiguration(path: string | undefined): DockerHandsConfiguration {
-  try {
-    if (path === undefined || statSync(path).size > 16 * 1024) {
-      throw new SeptError("A supported supplied hands configuration is required");
-    }
-    const value: unknown = JSON.parse(readFileSync(path, "utf8"));
-    const input = handsRecord(value);
-    if (input.profile !== "docker-linux-v1" || typeof input.shell !== "boolean") {
-      throw new SeptError("Hands profile is unsupported");
-    }
-    const containerId = configuredText(input.containerId);
-    if (!/^[a-f0-9]{64}$/.test(containerId)) {
-      throw new SeptError("Hands container identity must be immutable");
-    }
-    const mounts = selectedMounts(input.readOnlyMounts);
-    return {
-      profile: input.profile,
-      containerId,
-      generation: configuredText(input.generation),
-      workspace: directory(input.workspace),
-      resources: directory(input.resources),
-      shell: input.shell,
-      readOnlyMounts: mounts,
-    };
-  } catch (error: unknown) {
-    if (error instanceof SeptError) {
-      throw error;
-    }
-    throw new SeptError("Supplied hands configuration is unavailable", { cause: error });
-  }
-}
 
 function beneath(path: string, root: string): boolean {
   const child = relative(root, path);
@@ -89,6 +21,7 @@ function assertPrivateMounts(
     configuration.workspace,
     configuration.resources,
     ...configuration.readOnlyMounts.map((mount) => mount.source),
+    ...(configuration.readWriteMounts ?? []).map((mount) => mount.source),
   ];
   for (const source of sources) {
     if (brainRoots.some((root) => beneath(source, root) || beneath(root, source))) {
@@ -249,6 +182,7 @@ function assertMounts(configuration: DockerHandsConfiguration, value: unknown): 
       : [{ source: configuration.workspace, destination: "/workspace", writable: true }]),
     { source: configuration.resources, destination: "/resources", writable: false },
     ...configuration.readOnlyMounts.map((mount) => ({ ...mount, writable: false })),
+    ...(configuration.readWriteMounts ?? []).map((mount) => ({ ...mount, writable: true })),
   ];
   if (value.length !== expected.length) {
     throw new SeptError("Hands backend has unexpected mounts");

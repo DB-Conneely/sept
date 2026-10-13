@@ -1,7 +1,7 @@
 /** Synthetic installed native resource fixtures; production owns HTTP, tools, persistence and output. */
 
 import assert from "node:assert/strict";
-import { supplyHands } from "./hands-support.js";
+import { supplyHands, activateHandsPolicy } from "./hands-support.js";
 import { assertNativePiToolResults } from "./pi-durable-assertions.js";
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
@@ -209,6 +209,7 @@ function directArguments(fixture: NativeResourceFixture): string[] {
 /** Await the actual installed direct-run exit before interpreting stdout or durable artifacts. */
 export async function nativeDirectRun(fixture: NativeResourceFixture): Promise<string> {
   const hands = supplyHands(fixture.workspace, true);
+  activateHandsPolicy(hands, join(fixture.state, "direct"), fixture.agent);
   const child = spawn(resolve("sept"), [...directArguments(fixture), "--hands", hands.path], {
     stdio: ["ignore", "pipe", "pipe"],
     env: {

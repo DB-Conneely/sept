@@ -17,13 +17,19 @@ RUN case "$(uname -m)" in \
 
 FROM node:22-bookworm-slim AS build
 
+# Build only the narrow Linux process-control guard; compiler never enters the runtime image.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends gcc libc6-dev \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 COPY package.json package-lock.json tsconfig.json ./
 RUN npm ci
 COPY src ./src
 COPY test ./test
 COPY scripts ./scripts
-RUN npm run build && npm prune --omit=dev
+RUN cc -shared -fPIC -O2 -Wall -Wextra -Werror -o /app/hands-guard.so src/execution/hands-guard.c \
+    && npm run build && npm prune --omit=dev
 
 FROM node:22-bookworm-slim
 
@@ -42,6 +48,7 @@ COPY --chown=10001:10001 sept ./sept
 COPY --from=build --chown=10001:10001 /app/package.json /app/package-lock.json ./
 COPY --from=build --chown=10001:10001 /app/node_modules ./node_modules
 COPY --from=build --chown=10001:10001 /app/dist ./dist
+COPY --from=build /app/hands-guard.so /app/hands-guard.so
 
 ENV NODE_ENV=production \
     HOME=/home/sept \

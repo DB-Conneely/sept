@@ -4,7 +4,7 @@
  */
 
 import assert from "node:assert/strict";
-import { workerHands, ownHands, closeChildHands } from "./hands-support.js";
+import { workerHands, ownHands, closeChildHands, activateHandsPolicy } from "./hands-support.js";
 import { spawn, type ChildProcessByStdio } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { type Server, type ServerResponse } from "node:http";
@@ -118,6 +118,9 @@ export function installedWorker(
   environment: NodeJS.ProcessEnv = {},
 ): InstalledWorker {
   const hands = workerHands(agent, environment);
+  if (hands !== undefined) {
+    activateHandsPolicy(hands, state, agent);
+  }
   const child = spawn(resolve("sept"), workerArguments(state, agent, workspaceRoot), {
     cwd: process.cwd(),
     env: {

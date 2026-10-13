@@ -60,11 +60,45 @@ function resize(value: unknown): ModelImageResizeOptions {
   return result;
 }
 
+function grants(value: unknown) {
+  if (!Array.isArray(value) || value.length > 11) {
+    throw new SeptError("Hands grants exceed their bound");
+  }
+  return value.map((raw: unknown) => {
+    const entry = handsRecord(raw);
+    if (
+      typeof entry.root !== "string" ||
+      !/^\/(workspace|resources|tmp|selected\/[A-Za-z0-9_-]+)$/.test(entry.root) ||
+      typeof entry.read !== "boolean" ||
+      typeof entry.write !== "boolean"
+    ) {
+      throw new SeptError("Hands grant is malformed");
+    }
+    return { root: entry.root, read: entry.read, write: entry.write };
+  });
+}
+
+function fileRequest(input: Record<string, unknown>): HandsRequest {
+  if (input.method !== "readTextFile" && input.method !== "writeFile") {
+    throw new SeptError("Hands file operation is unsupported");
+  }
+  return {
+    kind: "file",
+    method: input.method,
+    path: text(input.path, 4096),
+    ...(input.content === undefined ? {} : { content: text(input.content) }),
+    ...(input.grants === undefined ? {} : { grants: grants(input.grants) }),
+  };
+}
+
 /** Decode only the operations installed tools and the minimum native environment require. */
 export function parseHandsRequest(value: unknown): HandsRequest {
   const input = handsRecord(value);
   if (input.kind === "resources") {
-    return { kind: "resources" };
+    return {
+      kind: "resources",
+      ...(input.workspaceRead === undefined ? {} : { workspaceRead: input.workspaceRead === true }),
+    };
   }
   if (input.kind === "tool") {
     return {
@@ -73,15 +107,11 @@ export function parseHandsRequest(value: unknown): HandsRequest {
       callId: text(input.callId, 256),
       arguments: handsRecord(input.arguments),
       ...(input.resize === undefined ? {} : { resize: resize(input.resize) }),
+      ...(input.grants === undefined ? {} : { grants: grants(input.grants) }),
     };
   }
-  if (input.kind === "file" && (input.method === "readTextFile" || input.method === "writeFile")) {
-    return {
-      kind: "file",
-      method: input.method,
-      path: text(input.path, 4096),
-      ...(input.content === undefined ? {} : { content: text(input.content) }),
-    };
+  if (input.kind === "file") {
+    return fileRequest(input);
   }
   throw new SeptError("Hands operation is unsupported");
 }

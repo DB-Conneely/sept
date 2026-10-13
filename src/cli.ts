@@ -43,7 +43,9 @@ let telemetry = NOOP_TELEMETRY;
 async function main(): Promise<void> {
   const invocation = parseCliInvocation(process.argv);
   if (invocation === undefined) {
-    process.stderr.write("Usage: sept worker|run|doctor|health|models|auth [action] [options]\n");
+    process.stderr.write(
+      "Usage: sept worker|run|doctor|health|models|auth|permissions [action] [options]\n",
+    );
     process.exitCode = 2;
     return;
   }

@@ -137,6 +137,8 @@ export function createDurableCodingTools(
       durableTool(createGrepTool(workspace), "safe", backend, undefined, onFailure),
       durableTool(createFindTool(workspace), "safe", backend, undefined, onFailure),
       durableTool(createLsTool(workspace), "safe", backend, undefined, onFailure),
-    ],
+    ].filter(
+      (tool) => backend.tools === undefined || backend.tools.some((name) => name === tool.name),
+    ),
   });
 }

@@ -155,3 +155,27 @@ Operators start the dedicated hands namespace separately; SEPT does not provisio
 Pass the trusted JSON profile using `./sept worker --hands /trusted/hands.json` or `./sept run ... --hands /trusted/hands.json`. The immutable container ID and generation, exact flags, mount layout, limits and recovery behavior are documented in [the profile contract](docs/pi-contract.md#supplied-hands-reference-profile). The profile uses `--init` and fixed `sleep infinity`; completed Bash calls join all descendants before returning. Normal close preserves an idle consumer namespace; cancellation/loss stops and verifies all descendants and requires a fresh supplied generation. Failed verification durably blocks the run instead of claiming cancellation. Missing/unsupported enforcement keeps health/history available and refuses native execution.
 
 Installed composition tests own generated consumer containers, seed/export command workspace contents and verify their stopped state. They require the freshly built image identified by `SEPT_HANDS_TEST_IMAGE` (default `sept:c1-confinement`); no alternate production fixture backend is selectable.
+
+### Local hands permissions
+
+`./sept permissions show --state-dir <root> --agent-dir <agent>` reports the current revision. Only local operator commands activate authority; task, webhook and model text cannot grant it. A genuinely empty state root started with `--hands` receives private workspace read/write with Bash absent, selected mounts denied and network none. Existing nonempty state with no valid policy remains readable and dormant until explicit operator configuration. Malformed present policy is never replaced automatically.
+
+Use `./sept permissions set --hands <hands.json> --mode full_access --revision <current> --state-dir <root> --agent-dir <agent>` for the complete supplied hands domain. Full access preserves brain exclusions and the supplied kernel mount protections. This reference profile supports **network none only**; an explicit network request is refused. Persistent selected RW mounts use `readWriteMounts` in the trusted hands configuration and require file-only execution.
+
+For independent file rights, use `permissions set --policy <private-policy.json>` with this bounded schema (at most eight selected aliases):
+
+```json
+{
+  "mode": "scoped",
+  "workspace": { "read": true, "write": true },
+  "selected": [{ "root": "/selected/reference", "read": true, "write": false }],
+  "execute": false,
+  "network": false
+}
+```
+
+Read and write are independent; edit needs both. File-only operations refuse symlink components, hardlinks and special files and open each directory through a retained descriptor before touching the final inode. Files are bounded to 16 MiB. Search/list tools and workspace instruction/skill discovery require every supplied data mount to be readable; under a partial-read policy those tools are absent and only trusted global resources load. The complete native search/resource bodies remain available for uniform read. Arbitrary Bash requires read/write in the bounded private tmpfs workspace and readable kernel RO selected mounts; write-only execution or persistent RW plus Bash is unsupported.
+
+`./sept permissions revoke --revision <current> --state-dir <root> --agent-dir <agent>` fsyncs denial before stopping and verifying the exact old namespace. Narrowing also stops the dedicated namespace; tmpfs contents may be lost and interrupted writes/commands remain uncertain. Expansion or changed roots/backend requires verified old-owner quiescence and an actual fresh namespace identity/generation, then an explicit worker restart/retry. Changed configuration bytes or root fingerprints alone cannot create a fresh generation. Restart with missing, denied or malformed policy retains history without native scheduling or budget reset; an interrupted active run may remain recorded as active while dormant. Messages refused under known denial are not queued; accepted messages raced by denial retain their exact durable identity without starting effects. No automatic provisioning, permission grants or unsafe replay is performed.
+
+The fixed hands invocation clears ambient environment, disables Node SIGUSR1 inspection and requires a native `PR_SET_DUMPABLE=0` startup acknowledgement before loading any entry or consuming a request. Same-UID commands cannot open the trusted entry's memory or control descriptors. Missing/older images without this guard refuse before effects. The invocation removes its preload and acknowledgement variables before executing commands. Local dead-owner lease reconciliation uses the existing verified owner identity and grace rules; live, foreign or unverifiable owners remain a refusal.

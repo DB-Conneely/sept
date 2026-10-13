@@ -8,6 +8,7 @@ import { realpathSync, statSync } from "node:fs";
 import { isAbsolute, relative, sep } from "node:path";
 import {
   SeptError,
+  CapabilityPolicyDeniedError,
   type RunSnapshot,
   type RunStore,
   type WorkerReadiness,
@@ -130,4 +131,53 @@ export function assertMessageAdmission(
   }
   assertRunCapacity(store, snapshot);
   return snapshot;
+}
+
+/** Live policy refusal makes scheduling dormant while health/history remain available. */
+export function capabilitiesAvailable(admission: (() => void) | undefined): boolean {
+  try {
+    admission?.();
+    return true;
+  } catch (error: unknown) {
+    if (error instanceof CapabilityPolicyDeniedError) {
+      return false;
+    }
+    throw error;
+  }
+}
+/** Project resident occupancy without treating a denied live policy as scheduling authority. */
+export function workerStatus(
+  active: boolean,
+  resident: RunStore | undefined,
+): "busy" | "waiting" | "idle" {
+  if (active || resident?.snapshot().status === "active") {
+    return "busy";
+  }
+  return resident?.snapshot().status === "waiting" ? "waiting" : "idle";
+}
+
+/** Drain settles only after the active slot and durable resident are at a safe boundary. */
+export function settleWorkerDrain(
+  lifecycle: import("../durable/index.js").WorkerLifecycleStore,
+  active: boolean,
+  status: ReturnType<RunStore["snapshot"]>["status"] | undefined,
+): void {
+  if (
+    lifecycle.read().readiness === "draining" &&
+    !active &&
+    status !== "active" &&
+    status !== "cancelling"
+  ) {
+    lifecycle.finishDrain();
+  }
+}
+
+/** Known live denial refuses new input before enqueue; consumed duplicate receipts remain inert. */
+export function assertCapabilityMessageAdmission(
+  admission: (() => void) | undefined,
+  consumed: boolean,
+): void {
+  if (!consumed) {
+    admission?.();
+  }
 }

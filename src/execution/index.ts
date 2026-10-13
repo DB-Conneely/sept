@@ -12,3 +12,19 @@ export { DockerExecutionBackend } from "./docker-backend.js";
 export { BackendExecutionEnv } from "./native-env.js";
 export { loadHandsConfiguration, validateDockerProfile } from "./profile.js";
 export { parseHandsResources, parseHandsToolResult } from "./protocol.js";
+
+export {
+  capabilityBinding,
+  defaultCapabilities,
+  validateCapabilities,
+  capabilityTools,
+  capabilityGrants,
+  admitCapabilityRequest,
+} from "./capability-admission.js";
+
+/** Local operator composition uses the same bounded transport and exact-generation cleanup owner. */
+export {
+  validateDockerConfiguration,
+  revokeDockerBinding,
+  reconcileDockerBinding,
+} from "./docker-control.js";

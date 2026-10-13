@@ -10,7 +10,6 @@ import { SeptError, RunStore } from "../../src/durable/index.js";
 import {
   HandsBackendUnavailableError,
   BackendExecutionEnv,
-  DockerExecutionBackend,
   loadHandsConfiguration,
   validateDockerProfile,
   parseHandsToolResult,
@@ -283,16 +282,6 @@ await test("hands entry uses the existing Pi write body and supplied native file
       directory,
     ),
     { ok: true, value: "native body" },
-  );
-});
-
-await test("unavailable Docker backend refuses before native scheduling or namespace authority", async () => {
-  const { configuration, brain } = profileFixture();
-  const directories = fixtureDirectories("sept-hands-unavailable-");
-  const store = fixtureStore(directories, "fixture", "no effect");
-  await assert.rejects(
-    DockerExecutionBackend.create(configuration, store, [brain, join(directories.root, "runs")]),
-    SeptError,
   );
 });
 

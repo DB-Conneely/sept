@@ -15,24 +15,19 @@ import {
 import type { Observability } from "../observability/index.js";
 import { NOOP_TELEMETRY } from "../observability/index.js";
 import { assertCompatibleStateRoot, assertNativeRun } from "../pi-integration/index.js";
-import type {
-  WorkerAdoption,
-  WorkerRuntimeOptions,
-  WorkerStatus,
-  WorkerStatusResult,
-} from "./contracts.js";
+import type { WorkerAdoption, WorkerRuntimeOptions, WorkerStatusResult } from "./contracts.js";
 import { RunNotFoundError, WorkerConflictError } from "./errors.js";
 import { WorkerExecutionSlot } from "./worker-execution.js";
-import { assertMessageAdmission, assertWorkspaceConfined } from "./worker-policy.js";
+import {
+  assertMessageAdmission,
+  assertWorkspaceConfined,
+  capabilitiesAvailable,
+  workerStatus,
+  settleWorkerDrain,
+  assertCapabilityMessageAdmission,
+} from "./worker-policy.js";
 import { WorkerMessages } from "./worker-messages.js";
 import { recoverWorkerResident } from "./worker-recovery.js";
-
-function workerStatus(active: boolean, resident: RunStore | undefined): WorkerStatus {
-  if (active || resident?.snapshot().status === "active") {
-    return "busy";
-  }
-  return resident?.snapshot().status === "waiting" ? "waiting" : "idle";
-}
 
 /** Owns restart reconciliation and all mutations of the worker's single resident slot. */
 export class WorkerRuntime {
@@ -83,12 +78,16 @@ export class WorkerRuntime {
         this.options.stateRoot,
         this.observability,
         (store) => {
-          this.assertAssignedWorkspace(store);
+          assertWorkspaceConfined(store.manifest().workspace, this.options.workspaceRoot);
         },
+        capabilitiesAvailable(this.options.capabilityAdmission),
       );
       this.resident = recovered.resident;
       this.initialized = true;
-      if (this.resident?.snapshot().status === "active") {
+      if (
+        this.resident?.snapshot().status === "active" &&
+        capabilitiesAvailable(this.options.capabilityAdmission)
+      ) {
         this.launch(this.resident);
       } else {
         this.settleDrain();
@@ -122,7 +121,11 @@ export class WorkerRuntime {
     return {
       worker: workerStatus(this.execution.isActive(), this.resident),
       readiness,
-      acceptingWork: readiness === "accepting" && !this.stopping && this.initialized,
+      acceptingWork:
+        readiness === "accepting" &&
+        !this.stopping &&
+        this.initialized &&
+        capabilitiesAvailable(this.options.capabilityAdmission),
       activeRunId: this.resident?.runId ?? null,
     };
   }
@@ -190,12 +193,13 @@ export class WorkerRuntime {
     if (store === undefined) {
       throw new RunNotFoundError("unknown run");
     }
-    this.assertAssignedWorkspace(store);
+    assertWorkspaceConfined(store.manifest().workspace, this.options.workspaceRoot);
     return store;
   }
 
   /** Fail unless live worker readiness and single-slot authority permit a new task. */
   public assertTaskAvailable(): void {
+    this.options.capabilityAdmission?.();
     if (this.lifecycle.read().readiness !== "accepting") {
       throw new WorkerConflictError("worker is draining and not accepting new work");
     }
@@ -236,7 +240,7 @@ export class WorkerRuntime {
   /** Adopt an already-durable webhook task into the slot without re-creating its evidence. */
   public adoptWebhookTask(store: RunStore): { kind: "task"; runId: string; status: "active" } {
     assertNativeRun(store);
-    this.assertAssignedWorkspace(store);
+    assertWorkspaceConfined(store.manifest().workspace, this.options.workspaceRoot);
     if (store.snapshot().status === "active" && !this.execution.isActive()) {
       this.launch(store);
     }
@@ -264,6 +268,10 @@ export class WorkerRuntime {
   }
 
   private launch(store: RunStore): void {
+    // Accepted inputs remain durable if operator denial wins before launch. No native work starts.
+    if (!capabilitiesAvailable(this.options.capabilityAdmission)) {
+      return;
+    }
     if (this.resident !== undefined && this.resident.runId !== store.runId) {
       throw new WorkerConflictError("single worker slot already has a resident");
     }
@@ -311,21 +319,12 @@ export class WorkerRuntime {
     this.observability.setWorkerState("idle");
   }
 
-  private assertAssignedWorkspace(store: RunStore): void {
-    assertWorkspaceConfined(store.manifest().workspace, this.options.workspaceRoot);
-  }
-
   private settleDrain(): void {
-    if (this.lifecycle.read().readiness !== "draining") {
-      return;
-    }
-    const status = this.resident?.snapshot().status;
-    if (!this.execution.isActive() && status !== "active" && status !== "cancelling") {
-      this.lifecycle.finishDrain();
-    }
+    settleWorkerDrain(this.lifecycle, this.execution.isActive(), this.resident?.snapshot().status);
   }
 
   private messageAdmission(store: RunStore, existing: boolean): ReturnType<RunStore["snapshot"]> {
+    assertCapabilityMessageAdmission(this.options.capabilityAdmission, existing);
     return assertMessageAdmission(store, existing, {
       readiness: this.lifecycle.read().readiness,
       stopping: this.stopping,

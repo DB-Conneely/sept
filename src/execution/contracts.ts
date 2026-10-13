@@ -1,6 +1,6 @@
 /** Defines the trusted supplied hands port. Native Pi still owns tool scheduling and replay. */
 
-import { SeptError } from "../durable/index.js";
+import { SeptError, type CapabilityGrant } from "../durable/index.js";
 import type { Context } from "@earendil-works/chord";
 import type { ModelImageResizeOptions, ToolResultMessage } from "@earendil-works/pi-ai";
 
@@ -17,15 +17,22 @@ export interface HandsResources {
 
 /** One effect or resource request. Principal, cwd and generation are supplied by trusted composition. */
 export type HandsRequest =
-  | { kind: "resources" }
+  | { kind: "resources"; workspaceRead?: boolean }
   | {
       kind: "tool";
       name: CodingToolName;
       callId: string;
       arguments: Record<string, unknown>;
       resize?: ModelImageResizeOptions;
+      grants?: CapabilityGrant[];
     }
-  | { kind: "file"; method: "readTextFile" | "writeFile"; path: string; content?: string };
+  | {
+      kind: "file";
+      method: "readTextFile" | "writeFile";
+      path: string;
+      content?: string;
+      grants?: CapabilityGrant[];
+    };
 
 /** A separately enforced namespace owned by a consumer, never a local Node fallback. */
 export interface ExecutionBackend {
@@ -33,6 +40,8 @@ export interface ExecutionBackend {
   readonly generation: string;
   readonly cwd: string;
   readonly shell: boolean;
+  /** Effective registrations are a snapshot; actual effects still check live policy. */
+  readonly tools?: readonly CodingToolName[] | undefined;
   /** Private brain-owned text/image projection, mounted read-only in hands. */
   readonly resourceProjectionDirectory: string;
   /** Private durable receipt proves ownership before derived resources may be refreshed. */
@@ -56,6 +65,8 @@ export interface DockerHandsConfiguration {
   resources: string;
   shell: boolean;
   readOnlyMounts: { source: string; destination: string }[];
+  /** Persistent RW selected mounts are supported only without arbitrary execution. */
+  readWriteMounts?: { source: string; destination: string }[];
 }
 
 /** Lost transport/identity authority seals native work; unsafe effects remain explicitly uncertain. */

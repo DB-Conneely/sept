@@ -24,6 +24,7 @@ const OPTION_KEYS = {
   doctor: ["agent-dir", "provider"],
   health: ["url"],
   models: ["agent-dir", "model", "provider"],
+  permissions: ["agent-dir", "state-dir", "hands", "policy", "mode", "revision"],
   auth: ["agent-dir", "method", "provider"],
 } as const;
 
@@ -70,7 +71,7 @@ export function parseCliInvocation(argv: string[]): CliInvocation | undefined {
   if (!isCommand(command)) {
     return undefined;
   }
-  const hasAction = command === "models" || command === "auth";
+  const hasAction = command === "models" || command === "auth" || command === "permissions";
   const action = hasAction ? argv[3] : undefined;
   const options = parseOptions(argv.slice(hasAction ? 4 : 3), OPTION_KEYS[command]);
   return action === undefined ? { command, options } : { command, action, options };

@@ -1,92 +1,63 @@
 /** Bridges one supplied Docker Linux namespace to native Pi; Docker provisioning remains consumer-owned. */
 
 import { createHash } from "node:crypto";
-import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, watch, type FSWatcher } from "node:fs";
 import { join } from "node:path";
 import type { Context } from "@earendil-works/chord";
-import { atomicWrite, acquireStateRootLease, SeptError, type RunStore } from "../durable/index.js";
+import {
+  atomicWrite,
+  acquireStateRootLease,
+  SeptError,
+  type RunStore,
+  CapabilityPolicyStore,
+  type CapabilityPolicy,
+} from "../durable/index.js";
 import { HandsBackendUnavailableError } from "./contracts.js";
 import type { DockerHandsConfiguration, ExecutionBackend, HandsRequest } from "./contracts.js";
-import { HANDS_REQUEST_BYTES, HANDS_RESPONSE_BYTES, handsRecord } from "./protocol.js";
+import { HANDS_REQUEST_BYTES, handsRecord } from "./protocol.js";
+import {
+  capabilityBinding,
+  admitCapabilityRequest,
+  capabilityTools,
+} from "./capability-admission.js";
+import {
+  dockerArguments,
+  runDocker,
+  inspect,
+  revokeDockerBinding,
+  reconcileDockerBinding,
+  validateDockerConfiguration,
+} from "./docker-control.js";
 import { validateDockerProfile } from "./profile.js";
 
-function dockerArguments(configuration: DockerHandsConfiguration, cwd: string): string[] {
-  return [
-    "exec",
-    "-i",
-    "--workdir",
-    cwd,
-    configuration.containerId,
-    "/usr/bin/env",
-    "-i",
-    "PATH=/usr/local/bin:/usr/bin:/bin",
-    "HOME=/tmp",
-    "TMPDIR=/tmp",
-    "PI_OFFLINE=1",
-    "node",
-    "/app/dist/src/execution/hands-entry.js",
-  ];
-}
-
-function runDocker(
-  arguments_: string[],
-  input = "",
-  maximum = HANDS_RESPONSE_BYTES,
-): Promise<string> {
-  return new Promise((resolvePromise, reject) => {
-    const child = spawn("docker", arguments_, {
-      stdio: ["pipe", "pipe", "pipe"],
-      // This is the trusted control client. Executed hands receive env -i, never this environment.
-      env: { PATH: process.env.PATH, HOME: process.env.HOME },
-    });
-    let output = "";
-    let overflow = false;
-    const timer = setTimeout(() => {
-      child.kill("SIGKILL");
-    }, 30_000);
-    child.stdout.setEncoding("utf8").on("data", (chunk: string) => {
-      if (Buffer.byteLength(output) + Buffer.byteLength(chunk) > maximum) {
-        overflow = true;
-        child.kill("SIGKILL");
-      } else {
-        output += chunk;
-      }
-    });
-    // Diagnostics are intentionally drained, never buffered or exposed as hostile error text.
-    child.stderr.resume();
-    child.stdin.on("error", () => undefined);
-    child.once("error", (error: unknown) => {
-      clearTimeout(timer);
-      reject(new SeptError("Hands control client is unavailable", { cause: error }));
-    });
-    child.once("close", (code) => {
-      clearTimeout(timer);
-      if (code !== 0 || overflow) {
-        reject(new SeptError("Hands operation failed or exceeded its transport bound"));
-      } else {
-        resolvePromise(output);
-      }
-    });
-    child.stdin.end(input);
-  });
-}
-
-async function inspect(configuration: DockerHandsConfiguration): Promise<unknown> {
-  const raw = await runDocker(
-    ["inspect", "--format", "{{json .}}", configuration.containerId],
-    "",
-    256 * 1024,
+function projectionReceipt(resources: string, root: string): string {
+  return join(
+    root,
+    ".hands-projections",
+    createHash("sha256").update(resources).digest("hex"),
+    "receipt.json",
   );
-  const value: unknown = JSON.parse(raw);
-  return value;
+}
+function openingPolicy(
+  configuration: DockerHandsConfiguration,
+  store: CapabilityPolicyStore,
+): CapabilityPolicy {
+  const policy = store.read();
+  if (
+    policy === undefined ||
+    policy.denied ||
+    JSON.stringify(policy.binding) !== JSON.stringify(capabilityBinding(configuration))
+  ) {
+    throw new SeptError("Capability policy is absent, denied or bound to another namespace");
+  }
+  return policy;
 }
 
-function recordBinding(
+async function recordBinding(
   store: RunStore,
   configuration: DockerHandsConfiguration,
   cwd: string,
-): void {
+): Promise<void> {
   const path = join(store.runDir, "hands-binding.json");
   if (existsSync(path)) {
     if (statSync(path).size > 16 * 1024) {
@@ -101,6 +72,14 @@ function recordBinding(
     ) {
       throw new SeptError("Hands restart requires a fresh consumer-started backend generation");
     }
+    if (typeof binding.containerId !== "string" || typeof binding.generation !== "string") {
+      throw new SeptError("Previous hands binding is malformed");
+    }
+    // Unknown surviving writes/commands must join before native scheduling with fresh authority.
+    await reconcileDockerBinding(
+      { containerId: binding.containerId, generation: binding.generation },
+      configuration,
+    );
   }
   atomicWrite(path, {
     profile: configuration.profile,
@@ -116,6 +95,8 @@ export class DockerExecutionBackend implements ExecutionBackend {
   public readonly id: string;
   public readonly generation: string;
   public readonly shell: boolean;
+  public readonly tools: readonly import("./contracts.js").CodingToolName[] | undefined;
+  private readonly watcher: FSWatcher | undefined;
   public readonly resourceProjectionDirectory: string;
   public readonly resourceProjectionReceipt: string;
   private readonly joins = new Set<Promise<void>>();
@@ -130,10 +111,20 @@ export class DockerExecutionBackend implements ExecutionBackend {
     private readonly brainRoots: readonly string[],
     private readonly release: () => void,
     projectionReceipt: string,
+    private readonly policyStore: CapabilityPolicyStore,
+    private readonly policy: CapabilityPolicy,
   ) {
     this.id = `docker:${configuration.containerId}`;
     this.generation = configuration.generation;
-    this.shell = configuration.shell;
+    this.shell = policy.execute;
+    this.tools = capabilityTools(policy, configuration);
+    this.watcher = watch(join(policyStore.path, ".."), () => {
+      try {
+        this.assertPolicy();
+      } catch {
+        void this.stopNamespace().catch(() => undefined);
+      }
+    });
     this.resourceProjectionDirectory = configuration.resources;
     this.resourceProjectionReceipt = projectionReceipt;
   }
@@ -143,14 +134,11 @@ export class DockerExecutionBackend implements ExecutionBackend {
     configuration: DockerHandsConfiguration,
     store: RunStore,
     brainRoots: readonly string[],
+    policyStore: CapabilityPolicyStore,
   ): Promise<DockerExecutionBackend> {
+    const policy = openingPolicy(configuration, policyStore);
     const workspace = store.manifest().workspace;
-    const cwd = validateDockerProfile(
-      configuration,
-      await inspect(configuration),
-      workspace,
-      brainRoots,
-    );
+    const cwd = await validateDockerConfiguration(configuration, brainRoots, workspace);
     const leaseRoot = join(
       brainRoots[1] ?? store.runDir,
       ".hands-leases",
@@ -159,19 +147,16 @@ export class DockerExecutionBackend implements ExecutionBackend {
     mkdirSync(leaseRoot, { recursive: true });
     const release = acquireStateRootLease(leaseRoot);
     try {
-      recordBinding(store, configuration, cwd);
+      await recordBinding(store, configuration, cwd);
       return new DockerExecutionBackend(
         configuration,
         cwd,
         workspace,
         brainRoots,
         release,
-        join(
-          brainRoots[1] ?? store.runDir,
-          ".hands-projections",
-          createHash("sha256").update(configuration.resources).digest("hex"),
-          "receipt.json",
-        ),
+        projectionReceipt(configuration.resources, brainRoots[1] ?? store.runDir),
+        policyStore,
+        policy,
       );
     } catch (error: unknown) {
       release();
@@ -197,12 +182,7 @@ export class DockerExecutionBackend implements ExecutionBackend {
     context.abortSignal?.addEventListener("abort", abort, { once: true });
     try {
       await preceding;
-      this.assertAvailable(context);
-      await this.validateLive(context);
-      const raw = await runDocker(dockerArguments(this.configuration, this.cwd), input);
-      this.assertAvailable(context);
-      const value: unknown = JSON.parse(raw);
-      return value;
+      return await this.dispatch(context, input);
     } catch (error: unknown) {
       // A lost client cannot prove that its command stopped. Join the kernel namespace before settlement.
       try {
@@ -224,19 +204,55 @@ export class DockerExecutionBackend implements ExecutionBackend {
     }
   }
 
+  private async dispatch(context: Context, input: string): Promise<unknown> {
+    this.assertAvailable(context);
+    await this.validateLive(context);
+    this.assertPolicy();
+    const raw = await runDocker(dockerArguments(this.configuration, this.cwd), input);
+    this.assertAvailable(context);
+    this.assertPolicy();
+    const value: unknown = JSON.parse(raw);
+    return value;
+  }
+
   private admit(request: HandsRequest, context: Context): string {
     this.assertAvailable(context);
+    const policy = this.assertPolicy();
+    const admitted = admitCapabilityRequest(policy, request, this.cwd, this.configuration);
     if (this.joins.size >= 8) {
       throw new SeptError("Hands backend is at capacity");
     }
     if (request.kind === "tool" && request.name === "bash" && !this.shell) {
       throw new SeptError("Shell capability is absent");
     }
-    const input = JSON.stringify(request);
+    const input = JSON.stringify(admitted);
     if (Buffer.byteLength(input) > HANDS_REQUEST_BYTES) {
       throw new SeptError("Hands request exceeds its bound");
     }
     return input;
+  }
+
+  private assertPolicy(): CapabilityPolicy {
+    try {
+      const current = this.policyStore.read();
+      if (
+        current === undefined ||
+        current.denied ||
+        // Equal revision cannot legitimize edited authority; captured arguments/rights stay immutable.
+        JSON.stringify(current) !== JSON.stringify(this.policy) ||
+        JSON.stringify(current.binding) !== JSON.stringify(capabilityBinding(this.configuration))
+      ) {
+        throw new HandsBackendUnavailableError(
+          "Live capability authority is unavailable; explicit fresh configuration is required",
+        );
+      }
+      return current;
+    } catch (error: unknown) {
+      throw new HandsBackendUnavailableError(
+        "Live capability authority is unavailable; explicit fresh configuration is required",
+        { cause: error },
+      );
+    }
   }
 
   private assertAvailable(context: Context): void {
@@ -267,27 +283,16 @@ export class DockerExecutionBackend implements ExecutionBackend {
   }
 
   private async stopAndVerify(): Promise<void> {
-    const before = handsRecord(await inspect(this.configuration));
-    const stateBefore = handsRecord(before.State);
-    // A consumer restart can reuse the container ID. Stale authority cannot kill that generation.
-    if (stateBefore.Running === true && stateBefore.StartedAt !== this.generation) {
-      throw new SeptError("Hands shutdown authority belongs to another generation");
-    }
-    try {
-      await runDocker(["kill", this.configuration.containerId], "", 1024);
-    } catch {
-      /* Already-stopped backend still needs a trustworthy stopped-state receipt. */
-    }
-    const inspected = handsRecord(await inspect(this.configuration));
-    const state = handsRecord(inspected.State);
-    if (state.Running !== false || state.Pid !== 0) {
-      throw new SeptError("Hands descendant shutdown could not be verified");
-    }
+    await revokeDockerBinding({
+      containerId: this.configuration.containerId,
+      generation: this.generation,
+    });
   }
 
   /** Close every owned transport before releasing authority; the consumer owns restart/removal. */
   public async close(): Promise<void> {
     this.unavailable = true;
+    this.watcher?.close();
     try {
       try {
         if (this.joins.size > 0) {

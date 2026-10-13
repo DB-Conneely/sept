@@ -15,15 +15,15 @@ import {
 import { SeptService, validateRequest, publicTaskProjection } from "../ingress/index.js";
 import { ModelAccessService, type AuthenticationMethod } from "../model-access/index.js";
 import { classifyError, type Observability } from "../observability/index.js";
-import {
-  assertCompatibleStateRoot,
-  getAgentDir,
-  inspectPi,
-  PiSessionHost,
-} from "../pi-integration/index.js";
-import { DockerExecutionBackend, loadHandsConfiguration } from "../execution/index.js";
-import { CycleController, type HostFactory } from "../runtime/index.js";
+import { assertCompatibleStateRoot, getAgentDir, inspectPi } from "../pi-integration/index.js";
+import { CycleController } from "../runtime/index.js";
 import { createTerminalAuthInteraction } from "./auth-interaction.js";
+import {
+  runPermissions,
+  initializeCapabilities,
+  assertCapabilityAdmission,
+  capabilityHostFactory,
+} from "./permissions.js";
 import { CliError } from "./errors.js";
 import type { CliInvocation } from "./options.js";
 
@@ -151,21 +151,8 @@ function registerWorkerStop(service: SeptService, telemetry: Observability): voi
   process.on("SIGTERM", stop);
 }
 
-function configuredHostFactory(context: CommandContext): HostFactory {
-  const configurationPath = context.options.hands ?? process.env.SEPT_HANDS_CONFIGURATION;
-  return async (manifest, store, agentDir, existing, telemetry) => {
-    const configuration = loadHandsConfiguration(configurationPath);
-    const backend = await DockerExecutionBackend.create(configuration, store, [
-      agentDir,
-      stateRoot(context.options),
-    ]);
-    return PiSessionHost.create(manifest, store, agentDir, existing, telemetry, {
-      executionBackend: backend,
-    });
-  };
-}
-
 async function runWorker(context: CommandContext): Promise<void> {
+  const policy = initializeCapabilities(context.options, stateRoot(context.options));
   const workspaceRoot = resolve(
     context.options["workspace-root"] ?? process.env.SEPT_WORKSPACE_ROOT ?? process.cwd(),
   );
@@ -176,7 +163,13 @@ async function runWorker(context: CommandContext): Promise<void> {
     agentDir: context.agentDir,
     workspaceRoot,
     token: process.env.SEPT_TOKEN ?? "",
-    hostFactory: configuredHostFactory(context),
+    hostFactory: capabilityHostFactory(
+      stateRoot(context.options),
+      context.options.hands ?? process.env.SEPT_HANDS_CONFIGURATION,
+    ),
+    capabilityAdmission: () => {
+      assertCapabilityAdmission(policy);
+    },
     piVersion: context.piVersion,
     telemetry: context.telemetry,
     ...(host === undefined ? {} : { host }),
@@ -252,7 +245,10 @@ async function executeDirectRun(context: CommandContext, store: RunStore): Promi
   await new CycleController(
     store,
     context.agentDir,
-    configuredHostFactory(context),
+    capabilityHostFactory(
+      stateRoot(context.options),
+      context.options.hands ?? process.env.SEPT_HANDS_CONFIGURATION,
+    ),
     context.telemetry,
   ).run();
   process.stdout.write(`${JSON.stringify(publicTaskProjection(store).state)}\n`);
@@ -261,6 +257,7 @@ async function executeDirectRun(context: CommandContext, store: RunStore): Promi
 async function runDirect(context: CommandContext): Promise<void> {
   const root = stateRoot(context.options);
   assertCompatibleStateRoot(root, context.telemetry);
+  assertCapabilityAdmission(initializeCapabilities(context.options, stateRoot(context.options)));
   const releaseRoot = acquireStateRootLease(root);
   try {
     assertRunSlotAvailable(root);
@@ -298,6 +295,9 @@ async function runHealth(context: CommandContext): Promise<void> {
 /** Execute one parsed command through public mechanism boundaries without retaining credentials. */
 export async function executeCommand(context: CommandContext): Promise<void> {
   switch (context.command) {
+    case "permissions":
+      writeJson(await runPermissions(context, stateRoot(context.options), context.agentDir));
+      return;
     case "models":
       return runModels(context);
     case "auth":

@@ -55,6 +55,7 @@ export function recoverWorkerResident(
   stateRoot: string,
   telemetry: Observability,
   assertWorkspace: (store: RunStore) => void,
+  canSchedule = true,
 ): WorkerRecoveryResult {
   assertCompatibleStateRoot(stateRoot, telemetry);
   const stores = listRuns(stateRoot);
@@ -81,7 +82,7 @@ export function recoverWorkerResident(
     return { resident: undefined, adoption: "none" };
   }
   const status = resident.snapshot().status;
-  if (status === "waiting" && resident.pendingMessages().length > 0) {
+  if (canSchedule && status === "waiting" && resident.pendingMessages().length > 0) {
     wakeWaitingRun(resident, telemetry);
     return { resident, adoption: "wake_recovered" };
   }
