@@ -4,12 +4,24 @@
  * its own lease, and makes release idempotent so cleanup cannot revoke another owner.
  */
 
-import { readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  constants,
+  fsyncSync,
+  lstatSync,
+  openSync,
+  readFileSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
+import { NOOP_TELEMETRY } from "../observability/index.js";
 import { SeptError } from "./errors.js";
 import { ensureDirectory, errorCode, now, syncDirectory } from "./filesystem.js";
+import { loadNativeSqliteReader } from "./sqlite-builtin.js";
 import {
   boundedInteger,
   boundedString,
@@ -34,6 +46,57 @@ const PROCESS_IDENTITY = Object.freeze({
 });
 const STALE_LEASE_MILLISECONDS = 5_000;
 const HEARTBEAT_MILLISECONDS = 1_000;
+
+function openLeaseMutex(path: string): import("node:sqlite").DatabaseSync {
+  const lockPath = `${path}.lock`;
+  try {
+    const descriptor = openSync(
+      lockPath,
+      constants.O_CREAT | constants.O_EXCL | constants.O_RDWR | constants.O_NOFOLLOW,
+      0o600,
+    );
+    try {
+      fsyncSync(descriptor);
+    } finally {
+      closeSync(descriptor);
+    }
+  } catch (error: unknown) {
+    if (errorCode(error) !== "EEXIST") {
+      throw error;
+    }
+  }
+  // Closing any extra descriptor for an existing inode can drop this process's SQLite locks.
+  const file = lstatSync(lockPath);
+  if (
+    !file.isFile() ||
+    file.nlink !== 1 ||
+    (file.mode & 0o077) !== 0 ||
+    file.size !== 0 ||
+    file.uid !== process.getuid?.()
+  ) {
+    throw new SeptError("Lease acquisition lock must be a private owned regular file");
+  }
+  const { DatabaseSync } = loadNativeSqliteReader(NOOP_TELEMETRY);
+  return new DatabaseSync(lockPath);
+}
+
+function lockLeaseAcquisition(path: string, scope: LeaseScope): import("node:sqlite").DatabaseSync {
+  let mutex: import("node:sqlite").DatabaseSync;
+  try {
+    mutex = openLeaseMutex(path);
+  } catch (error: unknown) {
+    throw new SeptError("Lease acquisition lock is unreadable or invalid", { cause: error });
+  }
+  try {
+    // Kernel locks serialize observation/reclaim/claim and disappear on close or process death.
+    // Keep this empty mutex inode permanently: replacing it would split competing owners' locks.
+    mutex.exec("BEGIN EXCLUSIVE");
+    return mutex;
+  } catch (error: unknown) {
+    mutex.close();
+    throw new SeptError(scopeMessage(scope, "recent"), { cause: error });
+  }
+}
 
 function newOwner(): LeaseOwner {
   return { ownerId: randomUUID(), ...PROCESS_IDENTITY, heartbeatAt: now() };
@@ -144,14 +207,21 @@ function removeStaleLease(path: string, scope: LeaseScope): void {
 }
 
 function tryClaim(path: string, owner: LeaseOwner): boolean {
+  let descriptor: number;
   try {
-    writeFileSync(path, `${JSON.stringify(owner)}\n`, { flag: "wx", mode: 0o600 });
-    return true;
+    descriptor = openSync(path, "wx", 0o600);
   } catch (error: unknown) {
     if (errorCode(error) === "EEXIST") {
       return false;
     }
     throw error;
+  }
+  try {
+    writeFileSync(descriptor, `${JSON.stringify(owner)}\n`);
+    fsyncSync(descriptor);
+    return true;
+  } finally {
+    closeSync(descriptor);
   }
 }
 
@@ -161,6 +231,13 @@ function refreshOwnedLease(path: string, owner: LeaseOwner): void {
     writeFileSync(path, `${JSON.stringify({ ...owner, heartbeatAt: now() })}\n`, {
       mode: 0o600,
     });
+  }
+}
+
+function removeOwnedLease(path: string, directory: string, owner: LeaseOwner): void {
+  if (readOwner(path)?.ownerId === owner.ownerId) {
+    unlinkSync(path);
+    syncDirectory(directory);
   }
 }
 
@@ -176,24 +253,45 @@ function leaseRelease(path: string, directory: string, owner: LeaseOwner): () =>
   return () => {
     clearInterval(heartbeat);
     try {
-      if (readOwner(path)?.ownerId === owner.ownerId) {
-        unlinkSync(path);
-        syncDirectory(directory);
-      }
+      removeOwnedLease(path, directory, owner);
     } catch {
       // Cleanup is idempotent and must not mask controller settlement.
     }
   };
 }
 
+function claimUnderMutex(path: string, owner: LeaseOwner, scope: LeaseScope): void {
+  if (tryClaim(path, owner)) {
+    return;
+  }
+  removeStaleLease(path, scope);
+  if (!tryClaim(path, owner)) {
+    throw new SeptError(scopeMessage(scope, "recent"));
+  }
+}
+
 function acquireLease(path: string, directory: string, scope: LeaseScope): () => void {
   ensureDirectory(directory);
   const owner = newOwner();
-  while (!tryClaim(path, owner)) {
-    // Recheck the current owner immediately before stale takeover to close ownership races.
-    removeStaleLease(path, scope);
+  const mutex = lockLeaseAcquisition(path, scope);
+  try {
+    try {
+      claimUnderMutex(path, owner, scope);
+      syncDirectory(directory);
+    } finally {
+      mutex.close();
+    }
+  } catch (error: unknown) {
+    // No authority or heartbeat escapes a failed acquisition, including a failed mutex close.
+    try {
+      removeOwnedLease(path, directory, owner);
+    } catch (cleanup: unknown) {
+      throw new SeptError("Lease acquisition failed; ownership cleanup is unverified", {
+        cause: new AggregateError([error, cleanup]),
+      });
+    }
+    throw error;
   }
-  syncDirectory(directory);
   return leaseRelease(path, directory, owner);
 }
 

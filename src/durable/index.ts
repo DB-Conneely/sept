@@ -29,6 +29,7 @@ export {
 
 /** State-root lease and atomic persistence primitives used by composition. */
 export { acquireStateRootLease } from "./lease.js";
+export { adaptSqliteNotice, loadNativeSqliteReader } from "./sqlite-builtin.js";
 export { atomicCreate, atomicWrite, now } from "./filesystem.js";
 
 /** Validated run discovery and agent control codecs. */
