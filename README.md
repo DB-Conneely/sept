@@ -179,3 +179,30 @@ Read and write are independent; edit needs both. File-only operations refuse sym
 `./sept permissions revoke --revision <current> --state-dir <root> --agent-dir <agent>` fsyncs denial before stopping and verifying the exact old namespace. Narrowing also stops the dedicated namespace; tmpfs contents may be lost and interrupted writes/commands remain uncertain. Expansion or changed roots/backend requires verified old-owner quiescence and an actual fresh namespace identity/generation, then an explicit worker restart/retry. Changed configuration bytes or root fingerprints alone cannot create a fresh generation. Restart with missing, denied or malformed policy retains history without native scheduling or budget reset; an interrupted active run may remain recorded as active while dormant. Messages refused under known denial are not queued; accepted messages raced by denial retain their exact durable identity without starting effects. No automatic provisioning, permission grants or unsafe replay is performed.
 
 The fixed hands invocation clears ambient environment, disables Node SIGUSR1 inspection and requires a native `PR_SET_DUMPABLE=0` startup acknowledgement before loading any entry or consuming a request. Same-UID commands cannot open the trusted entry's memory or control descriptors. Missing/older images without this guard refuse before effects. The invocation removes its preload and acknowledgement variables before executing commands. Local dead-owner lease reconciliation uses the existing verified owner identity and grace rules; live, foreign or unverifiable owners remain a refusal.
+
+### Exact permission requests and local retry
+
+Set `mode: "request_approval"` in the same private policy schema to keep its baseline independent rights and let supported native tool calls request missing authority. Missing permission fsyncs an exact bounded request and blocks the original call before effects. The active native invocation and effect handles close before SEPT publishes `waiting`; no provider work or active budget is parked while the operator decides. Pending restart stays dormant, including previously accepted queue entries. An uncertain crashed active interval keeps the existing conservative budget debit.
+
+Use the installed local commands:
+
+```sh
+./sept permissions requests --state-dir <root> --agent-dir <agent>
+./sept permissions inspect --request <id> --state-dir <root> --agent-dir <agent>
+./sept permissions approve --request <id> --digest <inspected-digest> --revision <current> --hands <fresh-hands.json> --expires 300 --state-dir <root> --agent-dir <agent>
+./sept permissions deny --request <id> --digest <inspected-digest> --revision <current> --state-dir <root> --agent-dir <agent>
+```
+
+Approval matches the original operation/content digest and source revision/namespace, validates quiescence and an explicitly selected genuinely fresh target, then binds the exception to that target revision/generation. Policy activation precedes the exact decision, so interruption between writes grants nothing. Duplicate decisions are inert; conflicting decisions, changed content, cancellation, revoke and expiry cannot resurrect the original call. One later matching native task can claim the exception. Safe replay still checks live authority; unsafe replay keeps native uncertainty rather than repeating effects. Approval expiry stops and joins an executing namespace.
+
+Approval itself never dispatches. Send a new accepted operator message to the existing worker run, or use the local direct path after a direct run has returned waiting:
+
+```sh
+./sept run --resume <run-id> --message "Retry the exact approved operation" --hands <fresh-hands.json> --state-dir <root> --agent-dir <agent>
+```
+
+The existing slot, accepted-message capacity, invocation/epoch limits and active-time budget apply. Resume cannot change the original task, model or limits. A state root retains at most 32 exact requests with at most 64 KiB canonical argument content each; overflow refuses without dropping prior denial evidence. Existing policy-permitted calls retain the separate 512 KiB transport bound.
+
+The supplied hands configuration may register one `customHand` with `{ "path": "/selected/hand/hand.mjs", "sha256": "<64 hex>", "replay": "unsafe" }`. Its code must live below a selected kernel-RO mount and uses the same bounded tmpfs/uniform-readable arbitrary-execution profile. `custom_hand` has one bounded `{ "text": "..." }` input and a 4 KiB result. The protected entry reads anchored regular code once, checks its hash and runs those exact bytes as a clean Node child; it passes no native Models/task/policy/control object or credentials. The operator owns the truthful safe/unsafe replay declaration. Cancellation, timeout and descendant joining use the same live namespace owner. Repository instructions and model arguments cannot register code or choose executable paths.
+
+The single custom tool pins its operator path/hash/replay in native task memo evidence before execution intent. Recovery requires that original pin to be present and unchanged before effects; replacement code needs a new native task. This memo grants no permission and never resumes a denied original call.

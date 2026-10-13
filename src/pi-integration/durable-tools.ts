@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+import { createCustomHandTools, customPermissionGate } from "./custom-tool.js";
 /** Reuses Pi's bounded coding tools inside native Durable tasks, preserving image and edit behavior. */
 
 import {
@@ -12,14 +14,16 @@ import {
   DEFAULT_MAX_LINES,
 } from "@earendil-works/pi-coding-agent";
 import {
+  BackendExecutionEnv,
   HandsBackendUnavailableError,
   type CodingToolName,
   type ExecutionBackend,
   parseHandsToolResult,
 } from "../execution/index.js";
 import type { Context } from "@earendil-works/chord";
-import { SeptError } from "../durable/index.js";
+import { CapabilityRequestWaitingError, SeptError } from "../durable/index.js";
 import type {
+  ToolCall,
   ModelImageResizeOptions,
   Static,
   TSchema,
@@ -30,6 +34,7 @@ import {
   defineTool,
   type Extension,
   type ToolRegistration,
+  type HookApi,
 } from "@earendil-works/pi-durable";
 
 interface PiCodingTool<T extends TSchema> {
@@ -52,6 +57,7 @@ async function executeCodingBody(
   name: string,
   args: unknown,
   callId: string,
+  taskKey: string,
   backend: ExecutionBackend,
   context: Context,
   resizeOptions: ModelImageResizeOptions | undefined,
@@ -69,6 +75,7 @@ async function executeCodingBody(
           kind: "tool",
           name: codingName,
           callId,
+          taskKey,
           // CAST: Native schemas are JSON objects and the guard above excludes null/arrays.
           arguments: args as Record<string, unknown>,
           ...(resizeOptions === undefined ? {} : { resize: resizeOptions }),
@@ -77,11 +84,27 @@ async function executeCodingBody(
       ),
     );
   } catch (error: unknown) {
-    if (error instanceof HandsBackendUnavailableError && !context.abortSignal?.aborted) {
-      onFailure(error);
-    }
-    throw error;
+    return codingFailure(error, context, onFailure);
   }
+}
+
+function codingFailure(error: unknown, context: Context, onFailure: (error: unknown) => void) {
+  if (error instanceof CapabilityRequestWaitingError) {
+    // Admission denied before effects; settle the original safe-replay task before sealing generation.
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text: "Exact permission requested; original operation denied before effects.",
+        },
+      ],
+      isError: true,
+    };
+  }
+  if (error instanceof HandsBackendUnavailableError && !context.abortSignal?.aborted) {
+    onFailure(error);
+  }
+  throw error;
 }
 
 function durableTool<T extends TSchema>(
@@ -108,7 +131,16 @@ function durableTool<T extends TSchema>(
       : { prepareArguments: (args: unknown) => prepareArguments(structuredClone(args)) }),
     ...(tool.executionMode === undefined ? {} : { executionMode: tool.executionMode }),
     execute: (args, api, context) =>
-      executeCodingBody(tool.name, args, api.callId, backend, context, resizeOptions, onFailure),
+      executeCodingBody(
+        tool.name,
+        args,
+        api.callId,
+        nativeCallIdentity(api),
+        backend,
+        context,
+        resizeOptions,
+        onFailure,
+      ),
   });
 }
 
@@ -122,6 +154,7 @@ export function createDurableCodingTools(
   return defineExtension({
     name: "sept-tools",
     tools: [
+      ...createCustomHandTools(backend, onFailure),
       durableTool(
         createReadTool(workspace, resizeOptions === undefined ? {} : { resizeOptions }),
         "safe",
@@ -138,7 +171,85 @@ export function createDurableCodingTools(
       durableTool(createFindTool(workspace), "safe", backend, undefined, onFailure),
       durableTool(createLsTool(workspace), "safe", backend, undefined, onFailure),
     ].filter(
-      (tool) => backend.tools === undefined || backend.tools.some((name) => name === tool.name),
+      (tool) =>
+        backend.tools === undefined ||
+        backend.tools.some((name) => name === tool.name) ||
+        tool.name === "custom_hand",
     ),
   });
+}
+
+/** Native pre-intent gate delegates authority to the same effect owner used by replay. */
+export async function permissionToolGate(
+  backend: ExecutionBackend | undefined,
+  call: ToolCall,
+  api?: HookApi,
+  context?: Context,
+  onFailure?: (error: unknown) => void,
+): Promise<{ block: string } | undefined> {
+  try {
+    return await evaluatePermissionToolGate(backend, call, api, context);
+  } catch (error: unknown) {
+    onFailure?.(error);
+    throw error;
+  }
+}
+async function evaluatePermissionToolGate(
+  backend: ExecutionBackend | undefined,
+  call: ToolCall,
+  api?: HookApi,
+  context?: Context,
+): Promise<{ block: string } | undefined> {
+  if (call.name === "custom_hand" && backend?.customHand !== undefined) {
+    return customPermissionGate(backend, call, api, context);
+  }
+  const names = ["read", "write", "edit", "bash", "grep", "find", "ls"] as const;
+  const name = names.find((candidate) => candidate === call.name);
+  if (name === undefined) {
+    return undefined;
+  }
+  const block = backend?.beforeTool?.({
+    kind: "tool",
+    name,
+    callId: call.id,
+    ...(api === undefined ? {} : { taskKey: nativeCallIdentity(api) }),
+    arguments: call.arguments,
+  });
+  return block === undefined ? undefined : { block };
+}
+/** Trusted tools keep the native ABI and receive exact task-bound environment effect identities. */
+export function bindNativeToolEnvironment(
+  extension: Extension,
+  backend: ExecutionBackend,
+  onFailure: (error: unknown) => void,
+): Extension {
+  return {
+    ...extension,
+    ...(extension.tools === undefined
+      ? {}
+      : {
+          tools: extension.tools.map((tool) => ({
+            ...tool,
+            execute: (args, api, context) =>
+              tool.execute(
+                args,
+                {
+                  ...api,
+                  env: new BackendExecutionEnv(
+                    backend,
+                    onFailure,
+                    `native-${String(api.conversationId)}-${String(api.taskId)}-${api.callId}`,
+                  ),
+                },
+                context,
+              ),
+          })),
+        }),
+  };
+}
+
+function nativeCallIdentity(api: Pick<HookApi, "taskId" | "conversationId">): string {
+  return createHash("sha256")
+    .update(JSON.stringify([api.conversationId, api.taskId]))
+    .digest("hex");
 }

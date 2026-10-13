@@ -22,6 +22,7 @@ import {
   openDurableRuntime,
   type OpenedDurableRuntime,
 } from "./durable-runtime.js";
+import { checkpointPermissionWait } from "./durable-admission.js";
 import { writeDurableLocator } from "./durable-session-files.js";
 
 /** The sole production Pi host, backed by native Durable tasks and SQLite conversations. */
@@ -178,6 +179,11 @@ export class PiSessionHost implements SessionHost {
     this.native.invocation.bind(conversation);
     await this.bindEvents();
     return { predecessorId, predecessorFile, successorId: String(conversation.id), successorFile };
+  }
+
+  /** Capture the sealed native input before the controller publishes dormant waiting. */
+  public checkpointPermissionWait(): void {
+    checkpointPermissionWait(this.store);
   }
 
   /** Durably abort and join native model/tool work before SEPT publishes cancellation settlement. */

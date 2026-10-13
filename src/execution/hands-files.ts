@@ -20,10 +20,10 @@ import { SeptError, type CapabilityGrant } from "../durable/index.js";
 
 // One file body may allocate at most 16 MiB, including when a mutable inode grows after fstat.
 const HANDS_FILE_BYTES = 16 * 1024 * 1024;
-function boundedRead(descriptor: number): Buffer {
-  const buffer = Buffer.allocUnsafe(HANDS_FILE_BYTES + 1);
+function boundedRead(descriptor: number, maximum: number): Buffer {
+  const buffer = Buffer.allocUnsafe(maximum + 1);
   let count = 0;
-  while (count <= HANDS_FILE_BYTES) {
+  while (count <= maximum) {
     const read = readSync(descriptor, buffer, count, buffer.length - count, null);
     if (read === 0) {
       return buffer.subarray(0, count);
@@ -165,10 +165,10 @@ export class HandsFiles {
     }
   }
   /** Read only from a validated retained inode, never a realpath followed by an ambient open. */
-  public read(path: string): Promise<Buffer> {
+  public read(path: string, maximum = HANDS_FILE_BYTES): Promise<Buffer> {
     const descriptor = this.file(path, "read");
     try {
-      return Promise.resolve(boundedRead(descriptor));
+      return Promise.resolve(boundedRead(descriptor, maximum));
     } finally {
       closeSync(descriptor);
     }

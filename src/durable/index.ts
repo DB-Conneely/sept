@@ -65,9 +65,22 @@ export {
   CapabilityPolicyStore,
   CapabilityPolicyDeniedError,
   parseCapabilityConfiguration,
+  parseCapabilityBinding,
   type CapabilityRights,
   type CapabilityGrant,
   type CapabilityBinding,
   type CapabilityPolicy,
   type CapabilityConfiguration,
 } from "./capability-policy.js";
+
+/** Exact bounded operator permission facts; no task scheduler or automatic retry authority. */
+export {
+  CapabilityRequestStore,
+  CapabilityRequestWaitingError,
+  capabilityArguments,
+  MAX_CAPABILITY_REQUESTS,
+  MAX_CAPABILITY_REQUEST_BYTES,
+  type CapabilityRequest,
+  type CapabilityRequestFacts,
+  type CapabilityDecision,
+} from "./capability-requests.js";

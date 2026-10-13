@@ -129,7 +129,7 @@ export function capabilityGrants(policy: CapabilityConfiguration): CapabilityGra
   ];
 }
 /** Construct the advertised tools from independent rights; live effect checks remain authoritative. */
-export function capabilityTools(
+function scopedCapabilityTools(
   policy: CapabilityConfiguration,
   configuration?: DockerHandsConfiguration,
 ): CodingToolName[] {
@@ -148,6 +148,25 @@ export function capabilityTools(
     ...(policy.execute ? (["bash"] as const) : []),
   ];
 }
+/** Requests advertise supported bodies so native Pi can request missing rights explicitly. */
+export function capabilityTools(
+  policy: CapabilityConfiguration,
+  configuration?: DockerHandsConfiguration,
+): CodingToolName[] {
+  if (policy.mode !== "request_approval") {
+    return scopedCapabilityTools(policy, configuration);
+  }
+  return [
+    "read",
+    "write",
+    "edit",
+    "grep",
+    "find",
+    "ls",
+    ...(configuration?.shell ? (["bash"] as const) : []),
+  ];
+}
+
 /** Initial, queued and replayed requests all recheck the same live revision immediately before effects. */
 export function admitCapabilityRequest(
   policy: CapabilityPolicy,
@@ -165,7 +184,7 @@ export function admitCapabilityRequest(
       workspaceRead: namespaceReadable(policy, configuration),
     };
   }
-  if (request.kind === "tool" && request.name === "bash") {
+  if ((request.kind === "tool" && request.name === "bash") || request.kind === "custom") {
     if (!policy.execute) {
       throw new SeptError("Shell capability is absent");
     }
@@ -187,6 +206,9 @@ function assertPathRights(
   cwd: string,
   grants: CapabilityGrant[],
 ): void {
+  if (request.kind === "custom") {
+    return;
+  }
   const path = request.kind === "file" ? request.path : (request.arguments.path ?? ".");
   if (typeof path !== "string") {
     throw new SeptError("Capability path must be text");
@@ -205,8 +227,34 @@ function requiredRights(request: Exclude<HandsRequest, { kind: "resources" }>): 
   writing: boolean;
   reading: boolean;
 } {
+  if (request.kind === "custom") {
+    return { writing: true, reading: true };
+  }
   if (request.kind === "file") {
     return { writing: request.method === "writeFile", reading: request.method === "readTextFile" };
   }
   return { writing: ["write", "edit"].includes(request.name), reading: request.name !== "write" };
+}
+
+/** Translate an exact approved call only; no ambient policy or later call gains these rights. */
+export function admitApprovedCapabilityRequest(
+  policy: CapabilityPolicy,
+  request: HandsRequest,
+  cwd: string,
+  configuration: DockerHandsConfiguration,
+): HandsRequest {
+  const effective = validateCapabilities(
+    {
+      ...policy,
+      mode: "full_access",
+      execute: (request.kind === "tool" && request.name === "bash") || request.kind === "custom",
+    },
+    configuration,
+  );
+  return admitCapabilityRequest(
+    { ...policy, ...effective, mode: "request_approval" },
+    request,
+    cwd,
+    configuration,
+  );
 }

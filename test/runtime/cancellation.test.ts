@@ -6,7 +6,8 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import test from "node:test";
-import { RunStore } from "../../src/durable/index.js";
+import { CapabilityRequestWaitingError, RunStore } from "../../src/durable/index.js";
+import { CycleController } from "../../src/runtime/index.js";
 import { validateRequest } from "../../src/ingress/index.js";
 import {
   auth,
@@ -167,3 +168,39 @@ void test("restart completes an interrupted cancellation without opening Pi", as
     await started.service.stop();
   }
 });
+
+void test("cancellation during permission close wins over the later WAITING publication", async () => {
+  const { workspace, stateRoot } = serviceEnvironment();
+  const store = RunStore.create(
+    stateRoot,
+    validateRequest({ task: "permission closure", workspace }, "0.85.1"),
+  );
+  const host = new GateHost();
+  const closing = testGate();
+  const entered = testGate();
+  host.run = () => Promise.reject(new CapabilityRequestWaitingError("a".repeat(64)));
+  host.close = () => {
+    entered.release();
+    return closing.promise;
+  };
+  const controller = new CycleController(store, workspace, () => Promise.resolve(host));
+  const running = controller.run();
+  await entered.promise;
+  store.requestCancellation();
+  await controller.abort();
+  closing.release();
+  await running;
+  assert.equal(store.snapshot().status, "cancelled");
+  assert.equal(store.snapshot().permissionRequestId, undefined);
+  assert.equal(
+    store.events(0, 1000).some((event) => event.type === "capability_request_waiting"),
+    false,
+  );
+});
+function testGate(): { promise: Promise<void>; release(): void } {
+  let release = (): void => undefined;
+  const promise = new Promise<void>((resolvePromise) => {
+    release = resolvePromise;
+  });
+  return { promise, release };
+}

@@ -15,13 +15,30 @@ export interface HandsResources {
   skills: string;
 }
 
+/** One operator-registered program, read from a selected kernel-RO root and hash-bound before execution. */
+export interface CustomHand {
+  path: string;
+  sha256: string;
+  replay: "safe" | "unsafe";
+}
 /** One effect or resource request. Principal, cwd and generation are supplied by trusted composition. */
 export type HandsRequest =
   | { kind: "resources"; workspaceRead?: boolean }
   | {
+      kind: "custom";
+      callId: string;
+      /** Trusted native task identity makes original denied calls inert across later invocations. */
+      taskKey?: string;
+      arguments: { text: string };
+      hand?: CustomHand;
+      grants?: CapabilityGrant[];
+    }
+  | {
       kind: "tool";
       name: CodingToolName;
       callId: string;
+      /** Trusted native task identity makes original denied calls inert across later invocations. */
+      taskKey?: string;
       arguments: Record<string, unknown>;
       resize?: ModelImageResizeOptions;
       grants?: CapabilityGrant[];
@@ -30,6 +47,8 @@ export type HandsRequest =
       kind: "file";
       method: "readTextFile" | "writeFile";
       path: string;
+      /** Native tool/task identity supplied by trusted composition, never request arguments. */
+      callId?: string;
       content?: string;
       grants?: CapabilityGrant[];
     };
@@ -40,12 +59,18 @@ export interface ExecutionBackend {
   readonly generation: string;
   readonly cwd: string;
   readonly shell: boolean;
+  /** Operator registration only; models cannot supply executable paths or replay declarations. */
+  readonly customHand?: CustomHand | undefined;
   /** Effective registrations are a snapshot; actual effects still check live policy. */
   readonly tools?: readonly CodingToolName[] | undefined;
   /** Private brain-owned text/image projection, mounted read-only in hands. */
   readonly resourceProjectionDirectory: string;
   /** Private durable receipt proves ownership before derived resources may be refreshed. */
   readonly resourceProjectionReceipt: string;
+  /** Pre-intent tool denial returns a bounded reason; effects still recheck live authority. */
+  beforeTool?(request: Extract<HandsRequest, { kind: "tool" | "custom" }>): string | undefined;
+  /** Pending requests seal before another model dispatch rather than parking a provider loop. */
+  pendingPermission?(): string | undefined;
   invoke(request: HandsRequest, context: Context): Promise<unknown>;
   close(): Promise<void>;
 }
@@ -65,6 +90,8 @@ export interface DockerHandsConfiguration {
   resources: string;
   shell: boolean;
   readOnlyMounts: { source: string; destination: string }[];
+  /** Optional single custom hand, never repository/native brain extension code. */
+  customHand?: CustomHand;
   /** Persistent RW selected mounts are supported only without arbitrary execution. */
   readWriteMounts?: { source: string; destination: string }[];
 }

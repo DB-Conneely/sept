@@ -4,7 +4,12 @@
  * the controller guarantees host cleanup and lease release on every exit path.
  */
 
-import { ExecutionTimeoutError, RunStore, type Manifest } from "../durable/index.js";
+import {
+  CapabilityRequestWaitingError,
+  ExecutionTimeoutError,
+  RunStore,
+  type Manifest,
+} from "../durable/index.js";
 import type { Observability } from "../observability/index.js";
 import { classifyError, NOOP_TELEMETRY } from "../observability/index.js";
 import { PiSessionHost, type SessionHost } from "../pi-integration/index.js";
@@ -14,6 +19,7 @@ import {
   RuntimeLimitError,
   updateRuntimeSnapshot,
 } from "./runtime-state.js";
+import { reconcilePermissionWait } from "./worker-recovery.js";
 import { RuntimeSessionLifecycle } from "./session-lifecycle.js";
 import { RuntimeTransitions } from "./transitions.js";
 
@@ -89,8 +95,32 @@ export class CycleController {
     try {
       await this.execute();
     } catch (error: unknown) {
-      this.recordFailure(error);
-      throw error;
+      if (
+        error instanceof CapabilityRequestWaitingError &&
+        this.store.snapshot().status === "active"
+      ) {
+        await this.closeHost();
+        if (this.cancellationRequested()) {
+          return;
+        }
+        updateRuntimeSnapshot(this.store, { permissionRequestId: error.requestId });
+        this.host?.checkpointPermissionWait?.();
+        updateRuntimeSnapshot(this.store, {
+          status: "waiting",
+          phase: "waiting",
+          reason: "Exact permission awaits a local operator decision",
+          permissionRequestId: error.requestId,
+          terminalCause: undefined,
+        });
+        this.store.event("capability_request_waiting", { requestId: error.requestId });
+        this.store.conversationState(
+          `permission-wait-${String(this.store.snapshot().invocations)}`,
+          "waiting",
+        );
+      } else {
+        this.recordFailure(error);
+        throw error;
+      }
     } finally {
       await this.finalize(release);
     }
@@ -104,6 +134,7 @@ export class CycleController {
       return;
     }
     reconcileActiveDeadline(this.store);
+    await reconcilePermissionWait(this.store);
     this.recordStarted(snapshot);
     const sessions = new RuntimeSessionLifecycle(
       this.store,

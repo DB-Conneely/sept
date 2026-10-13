@@ -26,3 +26,6 @@ export { decideRollover, providerContextTokens, type RolloverDecision } from "./
 export { PiSessionHost } from "./durable-host.js";
 export { findSuccessorSession } from "./durable-session-files.js";
 export { assertCompatibleStateRoot, assertNativeRun, isLegacyRun } from "./durable-preflight.js";
+
+/** Recover only a verified closed permission invocation into exact durable dormant input evidence. */
+export { checkpointPermissionWait, readInvocationAdmission } from "./durable-admission.js";

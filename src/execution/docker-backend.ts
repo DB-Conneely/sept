@@ -1,43 +1,32 @@
 /** Bridges one supplied Docker Linux namespace to native Pi; Docker provisioning remains consumer-owned. */
 
-import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, statSync, watch, type FSWatcher } from "node:fs";
+import { mkdirSync, watch, type FSWatcher } from "node:fs";
 import { join } from "node:path";
 import type { Context } from "@earendil-works/chord";
 import {
-  atomicWrite,
   acquireStateRootLease,
   SeptError,
   type RunStore,
   CapabilityPolicyStore,
+  CapabilityRequestWaitingError,
   type CapabilityPolicy,
 } from "../durable/index.js";
 import { HandsBackendUnavailableError } from "./contracts.js";
 import type { DockerHandsConfiguration, ExecutionBackend, HandsRequest } from "./contracts.js";
-import { HANDS_REQUEST_BYTES, handsRecord } from "./protocol.js";
-import {
-  capabilityBinding,
-  admitCapabilityRequest,
-  capabilityTools,
-} from "./capability-admission.js";
+import { HANDS_REQUEST_BYTES, parseHandsRequest } from "./protocol.js";
+import { capabilityBinding, capabilityTools } from "./capability-admission.js";
 import {
   dockerArguments,
   runDocker,
   inspect,
   revokeDockerBinding,
-  reconcileDockerBinding,
+  recordHandsBinding,
   validateDockerConfiguration,
 } from "./docker-control.js";
+import { handsProjectionReceipt } from "./profile-configuration.js";
+import { CapabilityRequestAuthority } from "./capability-requests.js";
 import { validateDockerProfile } from "./profile.js";
 
-function projectionReceipt(resources: string, root: string): string {
-  return join(
-    root,
-    ".hands-projections",
-    createHash("sha256").update(resources).digest("hex"),
-    "receipt.json",
-  );
-}
 function openingPolicy(
   configuration: DockerHandsConfiguration,
   store: CapabilityPolicyStore,
@@ -53,48 +42,12 @@ function openingPolicy(
   return policy;
 }
 
-async function recordBinding(
-  store: RunStore,
-  configuration: DockerHandsConfiguration,
-  cwd: string,
-): Promise<void> {
-  const path = join(store.runDir, "hands-binding.json");
-  if (existsSync(path)) {
-    if (statSync(path).size > 16 * 1024) {
-      throw new SeptError("Hands binding metadata is oversized");
-    }
-    const previous: unknown = JSON.parse(readFileSync(path, "utf8"));
-    const binding = handsRecord(previous);
-    // A surviving namespace may contain interrupted mutations. Consumer restart supplies fresh identity.
-    if (
-      binding.containerId === configuration.containerId &&
-      binding.generation === configuration.generation
-    ) {
-      throw new SeptError("Hands restart requires a fresh consumer-started backend generation");
-    }
-    if (typeof binding.containerId !== "string" || typeof binding.generation !== "string") {
-      throw new SeptError("Previous hands binding is malformed");
-    }
-    // Unknown surviving writes/commands must join before native scheduling with fresh authority.
-    await reconcileDockerBinding(
-      { containerId: binding.containerId, generation: binding.generation },
-      configuration,
-    );
-  }
-  atomicWrite(path, {
-    profile: configuration.profile,
-    containerId: configuration.containerId,
-    generation: configuration.generation,
-    cwd,
-    runId: store.runId,
-  });
-}
-
 /** Owns bounded control calls, cancellation, and namespace lease for one resident run. */
 export class DockerExecutionBackend implements ExecutionBackend {
   public readonly id: string;
   public readonly generation: string;
   public readonly shell: boolean;
+  public readonly customHand: DockerHandsConfiguration["customHand"];
   public readonly tools: readonly import("./contracts.js").CodingToolName[] | undefined;
   private readonly watcher: FSWatcher | undefined;
   public readonly resourceProjectionDirectory: string;
@@ -102,6 +55,7 @@ export class DockerExecutionBackend implements ExecutionBackend {
   private readonly joins = new Set<Promise<void>>();
   private transport: Promise<void> = Promise.resolve();
   private unavailable = false;
+  private readonly permissions: CapabilityRequestAuthority;
   private stopping: Promise<void> | undefined;
 
   private constructor(
@@ -113,10 +67,21 @@ export class DockerExecutionBackend implements ExecutionBackend {
     projectionReceipt: string,
     private readonly policyStore: CapabilityPolicyStore,
     private readonly policy: CapabilityPolicy,
+    store: RunStore,
   ) {
     this.id = `docker:${configuration.containerId}`;
     this.generation = configuration.generation;
-    this.shell = policy.execute;
+    this.customHand =
+      policy.execute || policy.mode === "request_approval" ? configuration.customHand : undefined;
+    this.shell = policy.execute || (policy.mode === "request_approval" && configuration.shell);
+    this.permissions = new CapabilityRequestAuthority(
+      configuration,
+      cwd,
+      store,
+      policyStore,
+      policy,
+      () => this.assertPolicy(),
+    );
     this.tools = capabilityTools(policy, configuration);
     this.watcher = watch(join(policyStore.path, ".."), () => {
       try {
@@ -147,16 +112,17 @@ export class DockerExecutionBackend implements ExecutionBackend {
     mkdirSync(leaseRoot, { recursive: true });
     const release = acquireStateRootLease(leaseRoot);
     try {
-      await recordBinding(store, configuration, cwd);
+      await recordHandsBinding(store, configuration, cwd);
       return new DockerExecutionBackend(
         configuration,
         cwd,
         workspace,
         brainRoots,
         release,
-        projectionReceipt(configuration.resources, brainRoots[1] ?? store.runDir),
+        handsProjectionReceipt(configuration.resources, brainRoots[1] ?? store.runDir),
         policyStore,
         policy,
+        store,
       );
     } catch (error: unknown) {
       release();
@@ -171,9 +137,10 @@ export class DockerExecutionBackend implements ExecutionBackend {
     const joined = new Promise<void>((resolvePromise) => {
       finish = resolvePromise;
     });
-    this.joins.add(joined);
+    const expiryTimer = this.permissionTimer(request);
     // Bounded transport backpressure keeps native batches inside the supplied PID/memory limits.
     // Pi still owns task scheduling/replay; queued calls retain cancellation ownership.
+    this.joins.add(joined);
     const preceding = this.transport;
     this.transport = joined;
     const abort = (): void => {
@@ -198,27 +165,48 @@ export class DockerExecutionBackend implements ExecutionBackend {
         { cause: error },
       );
     } finally {
+      if (expiryTimer !== undefined) {
+        clearTimeout(expiryTimer);
+      }
       context.abortSignal?.removeEventListener("abort", abort);
       this.joins.delete(joined);
       finish();
     }
   }
 
+  private permissionTimer(request: HandsRequest): NodeJS.Timeout | undefined {
+    const expiry = this.permissions.approvalExpiry(request);
+    return expiry === undefined
+      ? undefined
+      : setTimeout(
+          () => {
+            void this.stopNamespace().catch(() => undefined);
+          },
+          Math.max(1, expiry - Date.now()),
+        );
+  }
+
   private async dispatch(context: Context, input: string): Promise<unknown> {
     this.assertAvailable(context);
     await this.validateLive(context);
     this.assertPolicy();
+    this.permissions.authorize(parseHandsRequest(JSON.parse(input)));
     const raw = await runDocker(dockerArguments(this.configuration, this.cwd), input);
     this.assertAvailable(context);
     this.assertPolicy();
+    this.permissions.authorize(parseHandsRequest(JSON.parse(input)));
     const value: unknown = JSON.parse(raw);
     return value;
   }
 
   private admit(request: HandsRequest, context: Context): string {
     this.assertAvailable(context);
-    const policy = this.assertPolicy();
-    const admitted = admitCapabilityRequest(policy, request, this.cwd, this.configuration);
+    const pending = this.permissions.pendingPermission();
+    if (pending !== undefined) {
+      throw new CapabilityRequestWaitingError(pending);
+    }
+    this.assertPolicy();
+    const admitted = this.permissions.authorize(request);
     if (this.joins.size >= 8) {
       throw new SeptError("Hands backend is at capacity");
     }
@@ -230,6 +218,17 @@ export class DockerExecutionBackend implements ExecutionBackend {
       throw new SeptError("Hands request exceeds its bound");
     }
     return input;
+  }
+
+  /** Native pre-intent gate and generation seal use this same live effect authority. */
+  public beforeTool(
+    request: Extract<HandsRequest, { kind: "tool" | "custom" }>,
+  ): string | undefined {
+    return this.permissions.beforeTool(request);
+  }
+  /** No model polling while a decision is pending. */
+  public pendingPermission(): string | undefined {
+    return this.permissions.pendingPermission();
   }
 
   private assertPolicy(): CapabilityPolicy {

@@ -24,6 +24,7 @@ import {
 } from "../execution/index.js";
 import { PiSessionHost } from "../pi-integration/index.js";
 import type { HostFactory } from "../runtime/index.js";
+import { permissionDecision } from "./permission-decisions.js";
 import type { CliInvocation } from "./options.js";
 
 function localConfiguration(path: string | undefined): CapabilityConfiguration {
@@ -64,6 +65,9 @@ function inputConfiguration(
     }
     return localConfiguration(invocation.options.policy);
   }
+  if (invocation.options.mode === "request_approval") {
+    return { ...defaultCapabilities(), mode: "request_approval" };
+  }
   if (invocation.options.mode === "scoped") {
     return defaultCapabilities();
   }
@@ -73,7 +77,8 @@ function inputConfiguration(
   return localConfiguration(undefined);
 }
 
-async function assertExpansion(
+/** Validate exclusive old ownership and a truly fresh target before expanding or rebinding authority. */
+export async function assertCapabilityExpansion(
   previous: CapabilityPolicy,
   effective: CapabilityConfiguration,
   changed: boolean,
@@ -117,7 +122,7 @@ async function setPermissions(
   const changed =
     previous !== undefined && JSON.stringify(previous.binding) !== JSON.stringify(binding);
   if (previous !== undefined) {
-    await assertExpansion(previous, effective, changed, root, binding);
+    await assertCapabilityExpansion(previous, effective, changed, root, binding);
   }
   const activated = store.activate(effective, binding, revision(invocation.options));
   if (previous !== undefined && !changed) {
@@ -140,6 +145,9 @@ export async function runPermissions(
   mkdirSync(root, { recursive: true, mode: 0o700 });
   const store = new CapabilityPolicyStore(root);
   const previous = store.read();
+  if (["requests", "inspect", "approve", "deny"].includes(invocation.action ?? "")) {
+    return permissionDecision(invocation, root, agentDir, store, previous);
+  }
   if (invocation.action === "show") {
     return (
       previous ?? {

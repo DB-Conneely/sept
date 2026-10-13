@@ -5,10 +5,22 @@
  */
 
 import { existsSync } from "node:fs";
-import { join } from "node:path";
-import { listRuns, SeptError, type RunStore } from "../durable/index.js";
+import { dirname, join } from "node:path";
+import {
+  CapabilityRequestStore,
+  CapabilityRequestWaitingError,
+  listRuns,
+  SeptError,
+  type RunStore,
+} from "../durable/index.js";
 import type { Observability } from "../observability/index.js";
-import { assertCompatibleStateRoot, isLegacyRun } from "../pi-integration/index.js";
+import {
+  assertCompatibleStateRoot,
+  isLegacyRun,
+  checkpointPermissionWait,
+  readInvocationAdmission,
+} from "../pi-integration/index.js";
+import { revokeDockerBinding } from "../execution/index.js";
 import { updateRuntimeSnapshot } from "./runtime-state.js";
 import type { WorkerAdoption } from "./contracts.js";
 
@@ -82,9 +94,47 @@ export function recoverWorkerResident(
     return { resident: undefined, adoption: "none" };
   }
   const status = resident.snapshot().status;
-  if (canSchedule && status === "waiting" && resident.pendingMessages().length > 0) {
+  if (shouldWake(resident, canSchedule)) {
     wakeWaitingRun(resident, telemetry);
     return { resident, adoption: "wake_recovered" };
   }
   return { resident, adoption: status === "active" ? "active" : "waiting" };
+}
+
+function permissionWaiting(store: RunStore): boolean {
+  return store.snapshot().permissionRequestId !== undefined;
+}
+/** Crash recovery closes the captured effect namespace before acknowledgement/waiting, never schedules a retry. */
+export async function reconcilePermissionWait(store: RunStore): Promise<void> {
+  const snapshot = store.snapshot();
+  const admission = readInvocationAdmission(store);
+  if (
+    snapshot.permissionRequestId === undefined &&
+    (admission?.checkpointed !== false ||
+      admission.requestId !== `sept-invocation-${String(snapshot.invocations)}`)
+  ) {
+    return;
+  }
+  const pending = new CapabilityRequestStore(dirname(store.runDir))
+    .read()
+    .find((entry) => entry.runId === store.runId && entry.invocation === snapshot.invocations);
+  if (pending === undefined) {
+    return;
+  }
+  await revokeDockerBinding(pending.binding);
+  if (store.snapshot().status !== "active") {
+    return;
+  }
+  updateRuntimeSnapshot(store, { permissionRequestId: pending.id });
+  checkpointPermissionWait(store);
+  throw new CapabilityRequestWaitingError(pending.id);
+}
+
+function shouldWake(store: RunStore, canSchedule: boolean): boolean {
+  return (
+    canSchedule &&
+    store.snapshot().status === "waiting" &&
+    store.pendingMessages().length > 0 &&
+    !permissionWaiting(store)
+  );
 }

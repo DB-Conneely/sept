@@ -150,3 +150,29 @@ export function completeDurableAdmission(store: RunStore, requestId: string): vo
     checkpointed: true,
   });
 }
+
+/** Fsync the exact closed invocation checkpoint before controller publishes operator waiting. */
+export function checkpointPermissionWait(store: RunStore): void {
+  const admission = readInvocationAdmission(store);
+  if (admission === undefined || admission.checkpointed) {
+    return;
+  }
+  const messages = admission.operatorMessageIds.map((id) => {
+    const message = store.operatorMessage(id);
+    if (message === undefined) {
+      throw new SeptError("Permission waiting lost captured operator identity");
+    }
+    return message;
+  });
+  store.checkpoint(
+    {
+      status: "waiting",
+      summary: "Exact permission awaits a local operator decision",
+      verification: ["Original call denied before effects"],
+      next_action: "Inspect and decide locally, then explicitly retry",
+    },
+    messages,
+    String(admission.conversationId),
+  );
+  completeDurableAdmission(store, admission.requestId);
+}

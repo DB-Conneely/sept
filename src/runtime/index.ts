@@ -13,3 +13,6 @@ export type {
 export { CycleController, type HostFactory } from "./controller.js";
 export { RunNotFoundError, WorkerConflictError } from "./errors.js";
 export { WorkerRuntime } from "./worker.js";
+
+/** Explicit installed operator wake shares durable accepted input and existing invocation budgets. */
+export { wakeRunForOperator } from "./worker-messages.js";

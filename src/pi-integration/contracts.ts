@@ -1,3 +1,5 @@
+import type * as NativePi from "@earendil-works/pi-durable";
+import type { DurableInvocation } from "./durable-invocation.js";
 /**
  * Defines the narrow runtime-facing contracts of the Pi integration boundary. Runtime owns policy
  * and durable lifecycle transitions; implementations here own native Pi sessions, while optional
@@ -63,6 +65,18 @@ export interface SessionHost {
     successorId: string;
     successorFile?: string;
   }>;
+  /** Permission waiting checkpoints only the sealed invocation, never later input. */
+  checkpointPermissionWait?(): void;
   abort(): Promise<void>;
   close(): Promise<void>;
+}
+
+/** Native owners travel together so partial host construction can close every acquired resource. */
+export interface OpenedDurableRuntime {
+  harness: NativePi.Harness;
+  backend: ExecutionBackend;
+  conversation: NativePi.Conversation;
+  invocation: DurableInvocation;
+  sessionFile: string;
+  refreshResources: () => Promise<void>;
 }

@@ -1,6 +1,8 @@
 /** Bounded Docker control transport and exact-generation shutdown, without provisioning. */
 import { spawn } from "node:child_process";
-import { SeptError } from "../durable/index.js";
+import { existsSync, readFileSync, statSync } from "node:fs";
+import { join } from "node:path";
+import { atomicWrite, type RunStore, SeptError } from "../durable/index.js";
 import type { DockerHandsConfiguration } from "./contracts.js";
 import { HANDS_RESPONSE_BYTES, handsRecord } from "./protocol.js";
 import { validateDockerProfile } from "./profile.js";
@@ -169,4 +171,42 @@ export async function reconcileDockerBinding(
   if (state.Running !== true || state.StartedAt !== next.generation) {
     throw new SeptError("Fresh consumer namespace generation could not be reconciled");
   }
+}
+
+/** Persist validated namespace ownership before native scheduling; prior uncertainty joins first. */
+export async function recordHandsBinding(
+  store: RunStore,
+  configuration: DockerHandsConfiguration,
+  cwd: string,
+): Promise<void> {
+  const path = join(store.runDir, "hands-binding.json");
+  if (existsSync(path)) {
+    if (statSync(path).size > 16 * 1024) {
+      throw new SeptError("Hands binding metadata is oversized");
+    }
+    const previous: unknown = JSON.parse(readFileSync(path, "utf8"));
+    const binding = handsRecord(previous);
+    // A surviving namespace may contain interrupted mutations. Consumer restart supplies fresh identity.
+    if (
+      binding.containerId === configuration.containerId &&
+      binding.generation === configuration.generation
+    ) {
+      throw new SeptError("Hands restart requires a fresh consumer-started backend generation");
+    }
+    if (typeof binding.containerId !== "string" || typeof binding.generation !== "string") {
+      throw new SeptError("Previous hands binding is malformed");
+    }
+    // Unknown surviving writes/commands must join before native scheduling with fresh authority.
+    await reconcileDockerBinding(
+      { containerId: binding.containerId, generation: binding.generation },
+      configuration,
+    );
+  }
+  atomicWrite(path, {
+    profile: configuration.profile,
+    containerId: configuration.containerId,
+    generation: configuration.generation,
+    cwd,
+    runId: store.runId,
+  });
 }

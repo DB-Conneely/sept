@@ -1,5 +1,6 @@
 /** The minimum native ExecutionEnv shares the supplied backend; unsupported methods refuse explicitly. */
 
+import { createHash } from "node:crypto";
 import type { Context } from "@earendil-works/chord";
 import { posix } from "node:path";
 import {
@@ -29,9 +30,11 @@ function unsupportedFile(..._arguments: unknown[]): Promise<Result<never, FileEr
 export class BackendExecutionEnv implements ExecutionEnv {
   public readonly id: string;
   public readonly cwd: string;
+  private effectOrdinal = 0;
   public constructor(
     private readonly backend: ExecutionBackend,
     private readonly onFailure: (error: unknown) => void = () => undefined,
+    private readonly nativeIdentity?: string,
   ) {
     this.id = `${backend.id}:${backend.generation}`;
     this.cwd = backend.cwd;
@@ -51,7 +54,10 @@ export class BackendExecutionEnv implements ExecutionEnv {
   public async readTextFile(path: string, context: Context): Promise<Result<string, FileError>> {
     try {
       const result = handsRecord(
-        await this.backend.invoke({ kind: "file", method: "readTextFile", path }, context),
+        await this.backend.invoke(
+          { kind: "file", method: "readTextFile", path, ...this.identity("readTextFile", [path]) },
+          context,
+        ),
       );
       if (result.ok === true && typeof result.value === "string") {
         return ok(result.value);
@@ -81,7 +87,16 @@ export class BackendExecutionEnv implements ExecutionEnv {
     }
     try {
       const result = handsRecord(
-        await this.backend.invoke({ kind: "file", method: "writeFile", path, content }, context),
+        await this.backend.invoke(
+          {
+            kind: "file",
+            method: "writeFile",
+            path,
+            content,
+            ...this.identity("writeFile", [path, content]),
+          },
+          context,
+        ),
       );
       return result.ok === true
         ? ok(undefined)
@@ -97,6 +112,18 @@ export class BackendExecutionEnv implements ExecutionEnv {
         ),
       );
     }
+  }
+
+  private identity(method: string, arguments_: string[]): { callId?: string } {
+    if (this.nativeIdentity === undefined) {
+      return {};
+    }
+    const digest = createHash("sha256").update(JSON.stringify(arguments_)).digest("hex");
+    return {
+      callId: createHash("sha256")
+        .update(JSON.stringify([this.nativeIdentity, method, this.effectOrdinal++, digest]))
+        .digest("hex"),
+    };
   }
 
   private report(error: unknown, context: Context): void {

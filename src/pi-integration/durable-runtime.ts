@@ -9,12 +9,13 @@ import { BackendExecutionEnv, type ExecutionBackend } from "../execution/index.j
 import { atomicWrite, SeptError, type Manifest, type RunStore } from "../durable/index.js";
 import { assertModelMetadata, createPodModelRuntime } from "../model-access/index.js";
 import { NOOP_TELEMETRY, type Observability } from "../observability/index.js";
-import type { PiSessionHostDependencies } from "./contracts.js";
+import type { PiSessionHostDependencies, OpenedDurableRuntime } from "./contracts.js";
+export type { OpenedDurableRuntime } from "./contracts.js";
 import { DurableInvocation } from "./durable-invocation.js";
 import { loadTrustedExtensions } from "./durable-extensions.js";
 import { loadDurableSections } from "./durable-resources.js";
 import { readDurableLocator, writeDurableLocator } from "./durable-session-files.js";
-import { createDurableCodingTools } from "./durable-tools.js";
+import { createDurableCodingTools, bindNativeToolEnvironment } from "./durable-tools.js";
 import { loadNativeSqliteDriver } from "./sqlite-driver.js";
 import { assertNativeRun } from "./durable-preflight.js";
 import {
@@ -27,16 +28,6 @@ const HARNESS_SETTINGS = {
   compaction: { enabled: false },
   retry: { enabled: true, maxRetries: 3, baseDelayMs: 1000 },
 } satisfies NativePi.HarnessSettings;
-
-/** Native owners travel together so partial host construction can close every acquired resource. */
-export interface OpenedDurableRuntime {
-  harness: NativePi.Harness;
-  backend: ExecutionBackend;
-  conversation: NativePi.Conversation;
-  invocation: DurableInvocation;
-  sessionFile: string;
-  refreshResources: () => Promise<void>;
-}
 
 /** Create a genuinely fresh conversation and provider identity from immutable run model choices. */
 export function createDurableConversation(
@@ -117,7 +108,11 @@ async function nativeRegistry(
     ...(await loadTrustedExtensions(agentDir)),
     ...(dependencies.extensions ?? []),
   ]) {
-    registry.install(extension);
+    registry.install(
+      bindNativeToolEnvironment(extension, backend, (error) => {
+        invocation.report(error);
+      }),
+    );
   }
   return registry;
 }
@@ -150,7 +145,13 @@ async function openHarness(
     throw new SeptError("A supported supplied hands backend is required");
   }
   const { models, model } = await authenticatedModels(manifest, agentDir, dependencies);
-  const invocation = new DurableInvocation(manifest, store, model.contextWindow, telemetry);
+  const invocation = new DurableInvocation(
+    manifest,
+    store,
+    model.contextWindow,
+    telemetry,
+    backend,
+  );
   const registry = await nativeRegistry(
     agentDir,
     dependencies,

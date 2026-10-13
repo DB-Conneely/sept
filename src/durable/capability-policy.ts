@@ -26,7 +26,7 @@ export interface CapabilityGrant extends CapabilityRights {
 }
 /** Operator input. Network requests unsupported by the shipped profile are refused before activation. */
 export interface CapabilityConfiguration {
-  mode: "full_access" | "scoped";
+  mode: "full_access" | "scoped" | "request_approval";
   workspace: CapabilityRights;
   selected: CapabilityGrant[];
   execute: boolean;
@@ -83,14 +83,15 @@ export function parseCapabilityConfiguration(value: unknown): CapabilityConfigur
     throw new SeptError("Capability roots must be unique");
   }
   return {
-    mode: enumValue(input.mode, ["full_access", "scoped"], "capability mode"),
+    mode: enumValue(input.mode, ["full_access", "scoped", "request_approval"], "capability mode"),
     workspace: rights(input.workspace),
     selected,
     execute: boolean(input.execute),
     network: boolean(input.network),
   };
 }
-function binding(value: unknown): CapabilityBinding {
+/** Decode bounded immutable namespace identity at the private operator/facts boundary. */
+export function parseCapabilityBinding(value: unknown): CapabilityBinding {
   const input = unknownRecord(value, "capability binding");
   exactKeys(input, ["containerId", "generation", "fingerprint"], [], "capability binding");
   const containerId = boundedString(input.containerId, 64, 64, "capability backend");
@@ -136,7 +137,7 @@ function policy(value: unknown): CapabilityPolicy {
     version: 1,
     revision: boundedInteger(input.revision, 1, Number.MAX_SAFE_INTEGER - 1, "capability revision"),
     denied: boolean(input.denied),
-    binding: binding(input.binding),
+    binding: parseCapabilityBinding(input.binding),
   };
 }
 /** Owns only the private policy record, separate from native tasks and the worker slot lease. */

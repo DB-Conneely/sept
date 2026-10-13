@@ -2,7 +2,13 @@
 
 import type { ModelImageResizeOptions } from "@earendil-works/pi-ai";
 import { SeptError } from "../durable/index.js";
-import type { CodingToolName, HandsRequest, HandsResources, HandsToolResult } from "./contracts.js";
+import type {
+  CodingToolName,
+  HandsRequest,
+  HandsResources,
+  HandsToolResult,
+  CustomHand,
+} from "./contracts.js";
 
 /** Transport bounds cover resized image attachments without unbounded buffering. */
 export const HANDS_REQUEST_BYTES = 512 * 1024;
@@ -85,6 +91,7 @@ function fileRequest(input: Record<string, unknown>): HandsRequest {
   return {
     kind: "file",
     method: input.method,
+    ...(input.callId === undefined ? {} : { callId: text(input.callId, 256) }),
     path: text(input.path, 4096),
     ...(input.content === undefined ? {} : { content: text(input.content) }),
     ...(input.grants === undefined ? {} : { grants: grants(input.grants) }),
@@ -100,11 +107,15 @@ export function parseHandsRequest(value: unknown): HandsRequest {
       ...(input.workspaceRead === undefined ? {} : { workspaceRead: input.workspaceRead === true }),
     };
   }
+  if (input.kind === "custom") {
+    return customRequest(input);
+  }
   if (input.kind === "tool") {
     return {
       kind: "tool",
       name: toolName(input.name),
       callId: text(input.callId, 256),
+      ...(input.taskKey === undefined ? {} : { taskKey: text(input.taskKey, 64) }),
       arguments: handsRecord(input.arguments),
       ...(input.resize === undefined ? {} : { resize: resize(input.resize) }),
       ...(input.grants === undefined ? {} : { grants: grants(input.grants) }),
@@ -154,5 +165,34 @@ export function parseHandsResources(value: unknown): HandsResources {
     append: text(input.append),
     instructions: text(input.instructions),
     skills: text(input.skills),
+  };
+}
+
+function customRegistration(value: unknown): CustomHand {
+  const input = handsRecord(value);
+  if (
+    typeof input.path !== "string" ||
+    !/^\/selected\/[A-Za-z0-9_-]+\/[^\x00-\x1f]+$/.test(input.path) ||
+    typeof input.sha256 !== "string" ||
+    !/^[a-f0-9]{64}$/.test(input.sha256) ||
+    (input.replay !== "safe" && input.replay !== "unsafe")
+  ) {
+    throw new SeptError("Custom hand registration is malformed");
+  }
+  return { path: input.path, sha256: input.sha256, replay: input.replay };
+}
+
+function customRequest(input: Record<string, unknown>): HandsRequest {
+  const args = handsRecord(input.arguments);
+  if (Object.keys(args).some((key) => key !== "text")) {
+    throw new SeptError("Custom hand arguments are malformed");
+  }
+  return {
+    kind: "custom",
+    callId: text(input.callId, 256),
+    ...(input.taskKey === undefined ? {} : { taskKey: text(input.taskKey, 64) }),
+    arguments: { text: text(args.text, 1024) },
+    ...(input.hand === undefined ? {} : { hand: customRegistration(input.hand) }),
+    ...(input.grants === undefined ? {} : { grants: grants(input.grants) }),
   };
 }

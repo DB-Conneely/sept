@@ -167,8 +167,19 @@ function addOptionalSnapshotFields(input: Record<string, unknown>, snapshot: Run
       "snapshot predecessorSessionId",
     );
   }
+  addPermissionRequestIdentity(input, snapshot);
   if (input.reason !== undefined) {
     snapshot.reason = boundedString(input.reason, 1, 65_536, "snapshot reason");
+  }
+}
+
+function addPermissionRequestIdentity(input: Record<string, unknown>, snapshot: RunSnapshot): void {
+  if (input.permissionRequestId !== undefined) {
+    const id = boundedString(input.permissionRequestId, 64, 64, "permission request identity");
+    if (!/^[a-f0-9]{64}$/.test(id)) {
+      throw new SeptError("Permission request identity is malformed");
+    }
+    snapshot.permissionRequestId = id;
   }
 }
 
@@ -222,21 +233,24 @@ function snapshotBase(input: Record<string, unknown>): RunSnapshot {
 }
 
 /** Validate a complete lifecycle snapshot before read or atomic replacement. */
+const SNAPSHOT_OPTIONAL_FIELDS = [
+  "activeSessionFile",
+  "activeStartedAt",
+  "activeSessionId",
+  "handoverEpoch",
+  "predecessorSessionFile",
+  "predecessorSessionId",
+  "reason",
+  "permissionRequestId",
+  "terminalCause",
+];
+
 function validateSnapshot(value: unknown): RunSnapshot {
   const input = unknownRecord(value, "snapshot");
   exactKeys(
     input,
     ["activeMilliseconds", "epoch", "invocations", "phase", "startedAt", "status", "updatedAt"],
-    [
-      "activeSessionFile",
-      "activeStartedAt",
-      "activeSessionId",
-      "handoverEpoch",
-      "predecessorSessionFile",
-      "predecessorSessionId",
-      "reason",
-      "terminalCause",
-    ],
+    SNAPSHOT_OPTIONAL_FIELDS,
     "snapshot",
   );
   const snapshot = snapshotBase(input);

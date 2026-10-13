@@ -96,6 +96,8 @@ export interface RunSnapshot {
   startedAt: string;
   updatedAt: string;
   reason?: string;
+  /** Closed original permission input; only a newly accepted explicit wake clears dormant authority. */
+  permissionRequestId?: string;
   terminalCause?: TerminalCause;
 }
 

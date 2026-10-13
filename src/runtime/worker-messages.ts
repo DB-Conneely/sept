@@ -4,7 +4,7 @@
  * remain the only source of queue identity, idempotency, and conversation evidence.
  */
 
-import { type RunSnapshot, type RunStore } from "../durable/index.js";
+import { SeptError, type RunSnapshot, type RunStore } from "../durable/index.js";
 import type { Observability } from "../observability/index.js";
 import { updateRuntimeSnapshot } from "./runtime-state.js";
 
@@ -65,15 +65,8 @@ export class WorkerMessages {
     messageId: string,
     queueDepth: number,
   ): void {
-    updateRuntimeSnapshot(store, {
-      status: "active",
-      phase: "ready",
-      reason: undefined,
-      terminalCause: undefined,
-    });
+    wakeRunForOperator(store, messageId);
     const waking = snapshot.status === "waiting";
-    store.event(waking ? "run_woken" : "run_reopened", { messageId });
-    store.conversationState(`${waking ? "wake" : "reopen"}-${messageId}`, "active");
     this.observability.setRunState("active", snapshot.epoch, snapshot.invocations, queueDepth);
     this.observability.event(waking ? "sept.run.woken" : "sept.run.reopened", {
       "sept.queue.depth": queueDepth,
@@ -85,4 +78,22 @@ export class WorkerMessages {
     });
     this.launch(store);
   }
+}
+
+/** Shared installed local/HTTP explicit wake preserves limits and clears only a closed permission wait. */
+export function wakeRunForOperator(store: RunStore, messageId: string): void {
+  const snapshot = store.snapshot();
+  if (snapshot.status !== "waiting" && snapshot.status !== "blocked") {
+    throw new SeptError("Only waiting or reopenable blocked work can be explicitly woken");
+  }
+  const waking = snapshot.status === "waiting";
+  updateRuntimeSnapshot(store, {
+    status: "active",
+    phase: "ready",
+    reason: undefined,
+    terminalCause: undefined,
+    permissionRequestId: undefined,
+  });
+  store.event(waking ? "run_woken" : "run_reopened", { messageId });
+  store.conversationState(`${waking ? "wake" : "reopen"}-${messageId}`, "active");
 }

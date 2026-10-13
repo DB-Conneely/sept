@@ -5,13 +5,7 @@
  */
 
 import { join, resolve } from "node:path";
-import {
-  acquireStateRootLease,
-  listRuns,
-  RunStore,
-  SeptError,
-  WorkerLifecycleStore,
-} from "../durable/index.js";
+import { acquireStateRootLease, RunStore } from "../durable/index.js";
 import { SeptService, validateRequest, publicTaskProjection } from "../ingress/index.js";
 import { ModelAccessService, type AuthenticationMethod } from "../model-access/index.js";
 import { classifyError, type Observability } from "../observability/index.js";
@@ -24,6 +18,7 @@ import {
   assertCapabilityAdmission,
   capabilityHostFactory,
 } from "./permissions.js";
+import { resumePermissionRun, assertLocalRunSlot } from "./permission-decisions.js";
 import { CliError } from "./errors.js";
 import type { CliInvocation } from "./options.js";
 
@@ -196,19 +191,6 @@ function directRequest(options: Record<string, string>): Record<string, unknown>
   };
 }
 
-function assertRunSlotAvailable(root: string): void {
-  if (new WorkerLifecycleStore(root).read().readiness !== "accepting") {
-    throw new SeptError("worker state root is drained and not accepting new work");
-  }
-  const busy = listRuns(root).some((store) => {
-    const status = store.snapshot().status;
-    return status === "active" || status === "waiting" || status === "cancelling";
-  });
-  if (busy) {
-    throw new SeptError("single worker slot is busy");
-  }
-}
-
 async function createDirectRun(context: CommandContext, root: string): Promise<RunStore> {
   const validated = validateRequest(directRequest(context.options), context.piVersion);
   const access = await ModelAccessService.create(context.agentDir);
@@ -235,8 +217,14 @@ async function createDirectRun(context: CommandContext, root: string): Promise<R
 async function executeDirectRun(context: CommandContext, store: RunStore): Promise<void> {
   context.telemetry.workerStarted("none", "run");
   context.telemetry.setWorkerState("busy");
-  context.telemetry.setRunState("active", 1, 0, 0);
-  context.telemetry.log("task.created", {
+  const snapshot = store.snapshot();
+  context.telemetry.setRunState(
+    snapshot.status,
+    snapshot.epoch,
+    snapshot.invocations,
+    store.pendingMessages().length,
+  );
+  context.telemetry.log(context.options.resume === undefined ? "task.created" : "task.resumed", {
     "sept.run.id": store.runId,
     "sept.run.state": "active",
     "sept.outcome": "accepted",
@@ -260,8 +248,9 @@ async function runDirect(context: CommandContext): Promise<void> {
   assertCapabilityAdmission(initializeCapabilities(context.options, stateRoot(context.options)));
   const releaseRoot = acquireStateRootLease(root);
   try {
-    assertRunSlotAvailable(root);
-    await executeDirectRun(context, await createDirectRun(context, root));
+    assertLocalRunSlot(root, context.options.resume);
+    const resumed = resumePermissionRun(context, root);
+    await executeDirectRun(context, resumed ?? (await createDirectRun(context, root)));
   } finally {
     releaseRoot();
     await context.telemetry.shutdown();

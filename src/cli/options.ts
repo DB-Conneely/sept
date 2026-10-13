@@ -10,6 +10,8 @@ const OPTION_KEYS = {
   run: [
     "hands",
     "agent-dir",
+    "resume",
+    "message",
     "max-epochs",
     "max-invocations",
     "model",
@@ -24,7 +26,17 @@ const OPTION_KEYS = {
   doctor: ["agent-dir", "provider"],
   health: ["url"],
   models: ["agent-dir", "model", "provider"],
-  permissions: ["agent-dir", "state-dir", "hands", "policy", "mode", "revision"],
+  permissions: [
+    "agent-dir",
+    "state-dir",
+    "hands",
+    "policy",
+    "mode",
+    "revision",
+    "request",
+    "digest",
+    "expires",
+  ],
   auth: ["agent-dir", "method", "provider"],
 } as const;
 

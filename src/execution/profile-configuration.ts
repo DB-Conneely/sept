@@ -1,7 +1,9 @@
 /** Owns bounded local operator configuration parsing; kernel facts belong to profile.ts. */
+import { createHash } from "node:crypto";
+import { join } from "node:path";
 import { realpathSync, readFileSync, statSync } from "node:fs";
 import { SeptError } from "../durable/index.js";
-import type { DockerHandsConfiguration } from "./contracts.js";
+import type { DockerHandsConfiguration, CustomHand } from "./contracts.js";
 import { handsRecord } from "./protocol.js";
 /** Validate bounded trusted configuration text, never task arguments. */
 export function configuredText(value: unknown): string {
@@ -81,6 +83,9 @@ export function loadHandsConfiguration(path: string | undefined): DockerHandsCon
       resources: directory(input.resources),
       shell: input.shell,
       readOnlyMounts: mounts,
+      ...(input.customHand === undefined
+        ? {}
+        : { customHand: parseCustomHand(input.customHand, mounts, input.shell) }),
       ...(writable.length === 0 ? {} : { readWriteMounts: writable }),
     };
   } catch (error: unknown) {
@@ -89,4 +94,42 @@ export function loadHandsConfiguration(path: string | undefined): DockerHandsCon
     }
     throw new SeptError("Supplied hands configuration is unavailable", { cause: error });
   }
+}
+
+/** Derived projection receipt identity stays private and independent of task/model paths. */
+export function handsProjectionReceipt(resources: string, root: string): string {
+  return join(
+    root,
+    ".hands-projections",
+    createHash("sha256").update(resources).digest("hex"),
+    "receipt.json",
+  );
+}
+
+/** One exact operator program: bounded code path/hash and honest native replay declaration. */
+export function parseCustomHand(
+  value: unknown,
+  mounts: DockerHandsConfiguration["readOnlyMounts"],
+  shell: boolean,
+): CustomHand {
+  const input = handsRecord(value);
+  const path = configuredText(input.path);
+  if (
+    !shell ||
+    !mounts.some((mount) => path.startsWith(`${mount.destination}/`)) ||
+    path.split("/").some((part) => part === "." || part === "..")
+  ) {
+    throw new SeptError(
+      "Custom hand requires the bounded execution profile and a selected RO code path",
+    );
+  }
+  if (
+    typeof input.sha256 !== "string" ||
+    !/^[a-f0-9]{64}$/.test(input.sha256) ||
+    (input.replay !== "safe" && input.replay !== "unsafe") ||
+    Object.keys(input).some((key) => !["path", "sha256", "replay"].includes(key))
+  ) {
+    throw new SeptError("Custom hand registration is malformed");
+  }
+  return { path, sha256: input.sha256, replay: input.replay };
 }

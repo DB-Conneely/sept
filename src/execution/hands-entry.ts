@@ -21,6 +21,7 @@ import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { copyJson } from "@earendil-works/chord";
 import { SeptError } from "../durable/index.js";
 import type { HandsRequest, HandsResources, HandsToolResult } from "./contracts.js";
+import { executeCustomHand } from "./custom-hand.js";
 import { HandsFiles } from "./hands-files.js";
 import { HANDS_REQUEST_BYTES, HANDS_RESPONSE_BYTES, parseHandsRequest } from "./protocol.js";
 
@@ -206,6 +207,14 @@ export async function executeHandsRequest(request: HandsRequest, cwd: string): P
   }
   const files = request.grants === undefined ? undefined : new HandsFiles(request.grants);
   try {
+    if (request.kind === "custom") {
+      const main = await idleProcess();
+      try {
+        return await executeCustomHand(request, files);
+      } finally {
+        await joinCommandDescendants(main);
+      }
+    }
     if (request.kind === "tool") {
       return await tool(request, cwd, files);
     }
