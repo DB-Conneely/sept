@@ -244,3 +244,34 @@ Focused tests remain BLOCKED by runner observer EACCES before test loading (UID1
 
 
 Root closing disposition, 2026-10-14: the supplied UID1000 observer directory EACCES was diagnosed and corrected by assigning only its new private0700 directory to that actor. The unchanged focused command then passed7/7, code0/signalnull/joined, with observation enabled. All263 source identities and five exact proof namespaces were independently checked; original native blocked status and failed receipts remain preserved. Matching final image/full gate/69 installed variants/external sole QA remain pending. Receipt: wrap-20261014T122301Z/issue02-root-preservation-and-closure.json.
+
+## WSA-03 / WPA-03 bounded patch disposition — 2026-10-14
+
+Private source correction implemented in seven proof COPIES only: one shared pre-setup contract rejects empty/unknown/duplicate/missing selections, binds fixed argv/required identities to receipts, and requires substantive-body completion, effect/state/exit records and independent finalizers/closure. Original bodies, expected negative/crash outcomes and historical B3.2 evidence remain unchanged. Network receipts retain original image labels.
+
+One applied batch/syntax9, one consolidated nine-diff review and private whitespace check passed. guard_selfcheck code0/signalnull/joined, all outer finalizers passed:28 before-setup selection negatives (sentinel0), incomplete/missing/duplicate receipt controls, complete expected-negative fixture and independent cleanup-after-failure. Supporting only; no installed acceptance or QA verdict. Receipt SHA256329bf6f12ed23e3985920d560b3104c7845f7afd059c29c5cae46d06d82f3e43; private hashes/lists in issue03 patch-handover.json.
+
+Final matching image pending. Deferred exact69 configured installed cases: mix7/resources5/recovery4/bounds10/operator12/network27/network-requests4. Root/later owners must bind all lists to final source/image and closure. No A1-A16/N1/W1/W2 claim is closed here; original qualifications/retraction preserved. Checks joined; no owned resources outstanding.
+
+
+## WSA-02 / WPA-02 bounded checks — 2026-10-14
+
+Unchanged UID1000/nice10/concurrency4 gate passed286+6/fail0; both separate dependency audits report0 vulnerabilities. Gate receipt7841c43630e2e7cfd631609bcac1e648555c8fd076c3afa5144cce265c806115. Sequential checks admitted fresh3GiB/10GiB; signalsnull, joined, all dispatcher finalizers passed. Root277/278 DAC diagnosis does not establish the only historical failure without original raw assertions.
+
+ONE no-cache build selected sha256:da34db67b82070dc8ff79d246d5f3b841327d47b6ca2eed96342b59fb7d756cc; original620 retained. final_identity RED1/null/joined: private final-image-binding.mjs false-vs-true assertion. Root must expose retained inner installed/namespace fields (single-line output truncates) and dispatch bounded proof diagnosis/repair; no blind rerun/rebuild. Diffcheck0 with12 empty whitespace diagnostics.
+
+Identity and7 final-image cleanup/umask cases remain unclosed/unrun;69 variants deferred. Metadata docs/audits/as-built excluded from image inputs. Historical VERIFIED remains retracted; exact externalIPv6 https://[2606:4700:4700::1111]/cdn-cgi/trace ENETUNREACH, UFW INPUT-DROP, provider-OAuth/Linux-amd64 qualifications preserved. No product/Git/deployment/QA verdict. Issue04 handover records the blocker.
+
+
+## Sole external QA disposition — 14 October 2026
+
+VERIFIED for the owned B1–B3 installed contract on the supplied Linux/amd64 profile, subject to the explicit external qualifications in the phase record. This verdict binds runtime commit 20c6f08ff53f40bd61acaffa4c944cb111c21d97, final immutable image sha256:da34db67b82070dc8ff79d246d5f3b841327d47b6ca2eed96342b59fb7d756cc and the current evidence below. Final documentation is outside image inputs; the same QA must confirm root's resulting commit. No broader external-route/provider-fault/refresh or packaging claim is made.
+
+- WPA/WSA-01: actual native openai-codex/gpt-6.1-sol/high auditor and four sequential native repair stages are retained; QA remains external. No fallback was substituted.
+- WPA/WSA-02: final explicit-image unmodified gate 286+6 passed with zero failures/skips/cancellations, UID 1000/nice 10/concurrency 4; full and production audits each 0 vulnerabilities and diffcheck passed. QA's initial observer-parent EACCES is retained separately and corrected only on its newly created evidence parent. No historical failure's sole cause is invented.
+- WPA/WSA-03: the shared pre-setup exact ordered-selection and substantive-body/effect/exit/finalizer contract is exercised by all 69 final variants: network 27, requests 4, mix 7, resources 5, recovery 4, operator 12 and bounds 10. Empty/duplicate/subset/unknown/reordered invocations remain refused; no assertion or deadline was weakened.
+- WPA/WSA-04: all 27 network and4 network-request cases pass with actual permitted/protected counters, both filter families, exact denial/WAIT/no-auto/new-retry and socket closure. Original net-cancel remains a real pre-effect joined Engine stream loss with durable failure; its physical socket trigger is unknown. A diagnostic-only pass and the final full-family pass do not establish that trigger. QA added bounded private first-cause errno/correlation observation, with no proxy/product/image change.
+- WPA/WSA-05: inspectable inner receipts, actual code/signal/join and independent finalizers now bind current source/image. Fresh closure checks 228 namespace records,480 host lifetimes,242 endpoints and104 lease roots; 410 mutexes remain. One deliberate-crash owner was preserved and closed through the installed public lease API, without unlink or bypass.
+- WPA/WSA-06 and issue02: source fixes were independently reviewed; the final selected-image seven cleanup/umask cases are source/caller/byte-qualified and retained. Publication/abort double failures block truthfully, the normal native write succeeds, umask022/077 native nested resource/skill reads succeed, and foreign/alias roots refuse without effects. The39-line proof helper uses the actual UID 10001 public lease API and proves 15 claims/stable mutexes; no production ownership rule changed.
+
+Evidence under warm-delivery-20261013T210802Z/root/wrap-20261014T122301Z: qa-external/{review-freeze,closing,closure-identity,crash-lease-closure,handover}.json; original failed/diagnostic receipts and collector bookkeeping failures remain. The exact final image binding is patcher/proof/final-binding-O2xAze/receipt.json (SHA256 02067c6f3b99115b3024800019e3b7e078bdf3a3831520fdd24941a6c02a740f); cleanup-12aDM9 and umask-51sHu3 retain the seven image cases. All 648 post-gate emissions equal that image. Original report prefixes and later native03/04 appendices are preserved.
