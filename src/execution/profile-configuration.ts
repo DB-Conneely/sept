@@ -75,7 +75,7 @@ export function loadHandsConfiguration(path: string | undefined): DockerHandsCon
     }
     const value: unknown = JSON.parse(readFileSync(path, "utf8"));
     const input = handsRecord(value);
-    if (input.profile !== "docker-linux-v1" || typeof input.shell !== "boolean") {
+    if (input.profile !== "docker-linux-warm-v1" || typeof input.shell !== "boolean") {
       throw new SeptError("Hands profile is unsupported");
     }
     const containerId = immutableId(configuredText(input.containerId));

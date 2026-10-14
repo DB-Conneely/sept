@@ -1,3 +1,5 @@
+import { EngineStreamDecoder } from "../../src/execution/engine-stream.js";
+import { guardedCommand } from "../../src/execution/hands-processes.js";
 /** Unix HTTP/framing regressions are supporting fixtures; installed Engine proof remains mandatory. */
 import assert from "node:assert/strict";
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -6,16 +8,7 @@ import test from "node:test";
 import { SeptError } from "../../src/durable/index.js";
 import { EngineControlError } from "../../src/execution/contracts.js";
 import { DockerEngineControl } from "../../src/execution/docker-engine.js";
-import { Agent, type ClientRequest } from "node:http";
-import {
-  parseEngineJson,
-  engineBody,
-  controlRequest,
-  collectResponse,
-  settleResponse,
-  settleAttachment,
-  joinEngineConnections,
-} from "../../src/execution/protocol.js";
+import { parseEngineJson } from "../../src/execution/protocol.js";
 import {
   engineSocketIdentity,
   engineText,
@@ -34,25 +27,26 @@ import {
   revokeDockerBinding,
   revokeRecordedHandsBinding,
   reconcileDockerBinding,
-  handsExecution,
 } from "../../src/execution/docker-control.js";
 import { suppliedEngine, recordFixtureKernel, engineFrame as frame } from "./backend-support.js";
 import {
   captureNamespaceLifetime,
   stopCapturedNamespace,
-  guardedCommand,
-  EngineStreamDecoder,
   parseNamespaceLifetime,
 } from "../../src/execution/hands-processes.js";
 import { fixtureDirectories, fixtureStore } from "./support.js";
 
 const ID = "a".repeat(64);
-void test("DockerEngineControl, controlRequest, collectResponse and consumeHandsProcessStream join stdin/stdout", async () => {
+void test("DockerEngineControl, HandsAttachment, engineExchange, openEngineAttachment, collectEngineMetadata and collectHandsAttachment join stdin/stdout", async () => {
   const fixture = await suppliedEngine();
   const engine = await DockerEngineControl.open(fixture.path);
   try {
     assert.equal(engine.daemonId, fixture.facts.daemon);
-    const execution = handsExecution("/workspace", "EXACT_STDIN", { network: false });
+    const execution = {
+      cwd: "/workspace",
+      input: "EXACT_STDIN",
+      command: guardedCommand(["--eval", "0"]),
+    };
     assert.equal(await engine.exec(ID, execution), "bounded result");
     assert.equal(fixture.facts.input, "EXACT_STDIN");
     // Actual fixture HTTP completion exercises settleResponse before retaining the idle Agent socket.
@@ -85,10 +79,14 @@ void test("DockerEngineControl, controlRequest, collectResponse and consumeHands
   }
 });
 void test("EngineStreamDecoder accepts exact capacity and refuses overflow, forged or truncated frames", () => {
-  const decoder = new EngineStreamDecoder(4);
+  const accepted: Buffer[] = [];
+  const decoder = new EngineStreamDecoder(4, (chunk) => {
+    accepted.push(chunk);
+  });
   decoder.write(frame(1, "1234").subarray(0, 5));
   decoder.write(frame(1, "1234").subarray(5));
-  assert.equal(decoder.finish(), "1234");
+  decoder.finish();
+  assert.equal(Buffer.concat(accepted).toString(), "1234");
   assert.throws(() => {
     new EngineStreamDecoder(4).write(frame(1, "12345"));
   }, EngineControlError);
@@ -97,15 +95,15 @@ void test("EngineStreamDecoder accepts exact capacity and refuses overflow, forg
   }, SeptError);
   const truncated = new EngineStreamDecoder(4);
   truncated.write(frame(1, "1234").subarray(0, 9));
-  assert.throws(() => truncated.finish(), SeptError);
+  assert.throws(() => {
+    truncated.finish();
+  }, SeptError);
   assert.equal(apiMinor("1.52"), 52);
   assert.throws(() => apiMinor("2.1"), SeptError);
   assert.equal(engineText("daemon"), "daemon");
   assert.throws(() => engineText("HOSTILE\nCANARY"), SeptError);
   assert.equal(immutableId(ID), ID);
   assert.throws(() => immutableId("name"), SeptError);
-  assert.equal(engineBody(undefined), "");
-  assert.throws(() => engineBody("a".repeat(512 * 1024)), SeptError);
   assert.deepEqual(parseEngineJson(Buffer.from('{"ok":true}')), { ok: true });
   assert.throws(() => parseEngineJson(Buffer.from("HOSTILE_JSON_CANARY")), SeptError);
 });
@@ -115,7 +113,7 @@ void test("Engine receipt refuses old/mismatched adoption and generation replace
   const directories = fixtureDirectories("sept-engine-binding-");
   const store = fixtureStore(directories, "fixture", "bounded ownership");
   const config = {
-    profile: "docker-linux-v1" as const,
+    profile: "docker-linux-warm-v1" as const,
     dataDomain: "mutable-file-bind" as const,
     engineSocket: fixture.path,
     containerId: ID,
@@ -252,54 +250,3 @@ void test("pinnedConfirmation refuses replacement before acknowledgment and stop
     await fixture.close();
   }
 });
-
-void test("fixed HTTP helpers join metadata while an idle connection remains explicitly owned", async () => {
-  const fixture = await suppliedEngine();
-  const agent = new Agent({ keepAlive: true, maxSockets: 1, maxFreeSockets: 1 });
-  try {
-    const control = controlRequest(
-      fixture.path,
-      "/version",
-      "GET",
-      engineBody(undefined),
-      "http",
-      agent,
-    );
-    const output = metadataOutput(control);
-    control.end();
-    assert.deepEqual(await output, { Os: "linux", ApiVersion: "1.52", MinAPIVersion: "1.44" });
-    assert.equal(control.socket?.closed, false);
-    const joined = joinEngineConnections(agent);
-    agent.destroy();
-    await joined;
-    assert.equal(control.socket.closed, true);
-    const stream = await new Promise<string>((resolve, reject) => {
-      settleAttachment("joined", undefined, resolve, reject);
-    });
-    assert.equal(stream, "joined");
-  } finally {
-    agent.destroy();
-    await fixture.close();
-  }
-});
-
-function metadataOutput(control: ClientRequest): Promise<unknown> {
-  return new Promise<unknown>((resolve, reject) => {
-    let bytes: Buffer | undefined;
-    control.once("response", (response) => {
-      collectResponse(
-        response,
-        () => {
-          assert.fail("Valid fixture response must succeed");
-        },
-        (result) => {
-          bytes = result;
-        },
-      );
-    });
-    control.once("close", () => {
-      settleResponse(bytes, undefined, resolve, reject);
-    });
-    control.once("error", reject);
-  });
-}

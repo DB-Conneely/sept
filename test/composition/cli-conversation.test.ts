@@ -10,6 +10,7 @@ import { createServer, type Server, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
+import { waitFor } from "../runtime/support.js";
 import {
   arrayField,
   closeServer,
@@ -223,10 +224,7 @@ async function completedPhase(
   });
   assert.match(await resumed.text(), /event: terminal/);
   await waitForTask(base, runId, fixture.token, "complete");
-  const health = await fetch(`${base}/health`, {
-    headers: { Authorization: `Bearer ${fixture.token}` },
-  });
-  assert.equal((await responseRecord(health)).readiness, "drained");
+  await assertDrainedWorker(base, fixture.token);
   const tail = await fetch(
     `${base}/v1/tasks/${runId}/conversation?after=${String(nextCursor)}&limit=250`,
     { headers: { Authorization: `Bearer ${fixture.token}` } },
@@ -294,3 +292,17 @@ void test(
   "installed worker preserves conversation through Pi rotation and restart while drain is active",
   conversationScenario,
 );
+
+async function assertDrainedWorker(base: string, token: string): Promise<void> {
+  // Durable completion precedes controller/attachment closure; drain must observe the joined slot.
+  await waitFor(async () => {
+    const response = await fetch(`${base}/health`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    return (await responseRecord(response)).readiness === "drained";
+  });
+  const health = await fetch(`${base}/health`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  assert.equal((await responseRecord(health)).readiness, "drained");
+}

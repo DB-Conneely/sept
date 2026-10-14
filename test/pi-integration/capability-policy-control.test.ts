@@ -1,3 +1,4 @@
+import { guardedCommand } from "../../src/execution/hands-processes.js";
 /** Focused composition contracts supplement installed operator/worker kernel acceptance. */
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, renameSync, writeFileSync } from "node:fs";
@@ -10,11 +11,13 @@ import {
   defaultCapabilities,
   DockerExecutionBackend,
 } from "../../src/execution/index.js";
-import { CapabilityRequestAuthority } from "../../src/execution/capability-requests.js";
+import {
+  CapabilityRequestAuthority,
+  verifyHandsPolicy,
+} from "../../src/execution/capability-requests.js";
 import { openingPolicy } from "../../src/execution/capability-admission.js";
 import { HandsFiles } from "../../src/execution/hands-files.js";
 import {
-  handsExecution,
   qualifyKernelProfile,
   validateDockerConfiguration,
   revokeDockerBinding,
@@ -38,7 +41,7 @@ void test("local operator show and installed admission keep missing policy dorma
   writeFileSync(join(root, "prior-runtime.json"), "{}");
   assert.equal((await initializeCapabilities({}, root)).read(), undefined);
   assert.throws(() => {
-    assertCapabilityAdmission(store);
+    assertCapabilityAdmission(store, undefined);
   }, SeptError);
   const result = await runPermissions(
     { command: "permissions", action: "show", options: {} },
@@ -59,7 +62,7 @@ void test("supplied root replacement changes capability binding before effects",
   mkdirSync(workspace);
   mkdirSync(resources);
   const configuration = {
-    profile: "docker-linux-v1" as const,
+    profile: "docker-linux-warm-v1" as const,
     dataDomain: "private" as const,
     workspaceLimits: { bytes: 134217728, inodes: 32768 },
     engineSocket: "/run/docker.sock",
@@ -83,10 +86,12 @@ void test("supplied root replacement changes capability binding before effects",
   assert.throws(() => openingPolicy(configuration, store), SeptError);
   store.initialize(defaultCapabilities(), first);
   assert.equal(JSON.stringify(store.read()?.binding), JSON.stringify(first));
-  assertCapabilityAdmission(store);
+  const current = store.read();
+  assert.ok(current);
+  assert.throws(() => verifyHandsPolicy(configuration, store, current), SeptError);
   store.revoke(1);
   assert.throws(() => {
-    assertCapabilityAdmission(store);
+    assertCapabilityAdmission(store, undefined);
   }, SeptError);
 });
 void test("native host factory and anchored file owner refuse absent authority without ambient effects", async () => {
@@ -95,7 +100,7 @@ void test("native host factory and anchored file owner refuse absent authority w
   await assert.rejects(
     DockerExecutionBackend.create(
       {
-        profile: "docker-linux-v1",
+        profile: "docker-linux-warm-v1",
         dataDomain: "private",
         workspaceLimits: { bytes: 134217728, inodes: 32768 },
         engineSocket: "/run/docker.sock",
@@ -122,13 +127,16 @@ void test("native host factory and anchored file owner refuse absent authority w
     SeptError,
   );
   assert.throws(
-    () => new HandsFiles([{ root: join(directories.root, "missing"), read: true, write: true }]),
+    () =>
+      new HandsFiles([{ root: join(directories.root, "missing"), read: true, write: true }], () =>
+        Promise.resolve(),
+      ),
     SeptError,
   );
 });
 void test("Docker control remains bounded and generation-specific with a credential-free hands command", async () => {
   const configuration = {
-    profile: "docker-linux-v1" as const,
+    profile: "docker-linux-warm-v1" as const,
     dataDomain: "private" as const,
     workspaceLimits: { bytes: 134217728, inodes: 32768 },
     engineSocket: "/run/docker.sock",
@@ -139,7 +147,7 @@ void test("Docker control remains bounded and generation-specific with a credent
     shell: false,
     readOnlyMounts: [],
   };
-  const arguments_ = handsExecution("/workspace", "", { network: false }).command;
+  const arguments_ = guardedCommand(["--eval", "0"]);
   assert.ok(arguments_.includes("PI_OFFLINE=1"));
   assert.ok(arguments_.includes("--disable-sigusr1"));
   assert.equal(
@@ -163,7 +171,7 @@ void test("network expansion requires a fresh generation even when file and exec
   };
   await assert.rejects(
     assertCapabilityExpansion(policy, { ...policy, network: true }, false, root, binding, {
-      profile: "docker-linux-v1",
+      profile: "docker-linux-warm-v1",
       dataDomain: "private",
       workspaceLimits: { bytes: 134217728, inodes: 32768 },
       engineSocket: "/run/docker.sock",
@@ -181,7 +189,7 @@ void test("a durable network grant cannot open an ungrantable supplied namespace
   const directories = fixtureDirectories("sept-network-stored-rights-");
   const store = fixtureStore(directories, "fixture", "deny unsupported stored rights");
   const configuration = {
-    profile: "docker-linux-v1" as const,
+    profile: "docker-linux-warm-v1" as const,
     dataDomain: "private" as const,
     workspaceLimits: { bytes: 134217728, inodes: 32768 },
     engineSocket: "/run/docker.sock",
@@ -212,7 +220,7 @@ void test("CapabilityRequestAuthority pre-intent default does not create a pendi
   const directories = fixtureDirectories("sept-request-authority-");
   const store = fixtureStore(directories, "fixture", "bounded request authority");
   const configuration = {
-    profile: "docker-linux-v1" as const,
+    profile: "docker-linux-warm-v1" as const,
     dataDomain: "private" as const,
     workspaceLimits: { bytes: 134217728, inodes: 32768 },
     engineSocket: "/run/docker.sock",
@@ -253,7 +261,7 @@ void test("kernel qualification fails closed and mutable individual files need n
     ({ DockerEngineControl }) => DockerEngineControl.open(fixture.path),
   );
   const configuration = {
-    profile: "docker-linux-v1" as const,
+    profile: "docker-linux-warm-v1" as const,
     dataDomain: "mutable-file-bind" as const,
     engineSocket: fixture.path,
     containerId: "a".repeat(64),

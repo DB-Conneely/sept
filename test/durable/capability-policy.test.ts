@@ -114,7 +114,7 @@ void test("independent rights omit tools and every direct/replayed effect checks
   );
 });
 const uniformReadConfiguration = {
-  profile: "docker-linux-v1" as const,
+  profile: "docker-linux-warm-v1" as const,
   dataDomain: "private" as const,
   workspaceLimits: { bytes: 134217728, inodes: 32768 },
   engineSocket: "/run/docker.sock",
@@ -134,10 +134,7 @@ void test("uniform read permits native searches; missing mounted read refuses se
     binding,
   };
   assert.deepEqual(capabilityTools(policy, uniformReadConfiguration), ["read", "write", "edit"]);
-  assert.deepEqual(
-    admitCapabilityRequest(policy, { kind: "resources" }, "/workspace", uniformReadConfiguration),
-    { kind: "resources", workspaceRead: false },
-  );
+  assertUntraversableResources(policy, uniformReadConfiguration);
   assert.throws(
     () =>
       admitCapabilityRequest(
@@ -219,10 +216,7 @@ void test("mutable bind compatibility admits individual files while commands/dis
   };
   assert.deepEqual(capabilityTools(policy, configuration), ["read", "write", "edit"]);
   assertMutableRequestTools(policy, configuration);
-  assert.deepEqual(
-    admitCapabilityRequest(policy, { kind: "resources" }, "/workspace", configuration),
-    { kind: "resources", workspaceRead: false },
-  );
+  assertUntraversableResources(policy, configuration);
   assert.equal(
     admitCapabilityRequest(
       policy,
@@ -257,4 +251,23 @@ function assertMutableRequestTools(
     "write",
     "edit",
   ]);
+}
+
+function assertUntraversableResources(
+  policy: Parameters<typeof admitCapabilityRequest>[0],
+  configuration: Parameters<typeof validateCapabilities>[1],
+): void {
+  assert.deepEqual(
+    admitCapabilityRequest(policy, { kind: "resources" }, "/workspace", configuration),
+    {
+      kind: "resources",
+      workspaceRead: false,
+      grants: [
+        { root: "/workspace", read: true, write: true },
+        ...policy.selected,
+        { root: "/resources", read: true, write: false },
+        { root: "/tmp", read: true, write: true },
+      ],
+    },
+  );
 }

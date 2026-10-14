@@ -124,10 +124,12 @@ async function refreshSections(
   invocation: DurableInvocation,
   backend: ExecutionBackend,
 ): Promise<void> {
+  // The current protected epoch must exist before native registry replacement or successor dispatch.
+  const sections = await loadDurableSections(manifest, agentDir, backend);
   registry.install(
     NativePi.defineExtension({
       name: "sept",
-      sections: await loadDurableSections(manifest, agentDir, backend),
+      sections,
       hooks: invocation.hooks(),
     }),
   );

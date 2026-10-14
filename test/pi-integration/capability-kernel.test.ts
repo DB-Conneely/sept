@@ -42,7 +42,7 @@ function profileFixture(): {
     mkdirSync(join(root, name));
   }
   const configuration: DockerHandsConfiguration = {
-    profile: "docker-linux-v1",
+    profile: "docker-linux-warm-v1",
     dataDomain: "mutable-file-bind",
     engineSocket: "/run/docker.sock",
     containerId: "a".repeat(64),

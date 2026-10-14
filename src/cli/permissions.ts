@@ -187,13 +187,18 @@ async function revokePermissions(
   store: CapabilityPolicyStore,
   expected: number,
 ): Promise<unknown> {
-  const denied = store.revoke(expected);
   const configuration = loadHandsConfiguration(
     invocation.options.hands ?? process.env.SEPT_HANDS_CONFIGURATION,
   );
-  if (JSON.stringify(denied.binding) !== JSON.stringify(capabilityBinding(configuration))) {
+  const previous = store.read();
+  if (
+    previous === undefined ||
+    JSON.stringify(previous.binding) !== JSON.stringify(capabilityBinding(configuration))
+  ) {
     throw new SeptError("Revocation configuration does not match persisted capability authority");
   }
+  // Incompatible cold configuration cannot mutate records; valid revocation still denies before stop.
+  const denied = store.revoke(expected);
   await revokeDockerBinding(denied.binding, configuration, { policyPath: store.path });
   return { revision: denied.revision, denied: true, stopped: true };
 }
@@ -237,12 +242,35 @@ export async function initializeCapabilities(
   return store;
 }
 
-/** Installed admission reads live operator authority; missing/denied state cannot schedule native work. */
-export function assertCapabilityAdmission(store: CapabilityPolicyStore): void {
+/** Installed admission binds current warm configuration before accepting input or preparing native state. */
+export function assertCapabilityAdmission(
+  store: CapabilityPolicyStore,
+  configurationPath: string | undefined,
+): void {
   const policy = store.read();
   if (policy === undefined || policy.denied) {
     throw new CapabilityPolicyDeniedError(
       "Operator capability configuration is required before execution",
+    );
+  }
+  try {
+    const configuration = loadHandsConfiguration(configurationPath);
+    if (JSON.stringify(policy.binding) !== JSON.stringify(capabilityBinding(configuration))) {
+      throw new CapabilityPolicyDeniedError(
+        "Current warm configuration requires operator activation",
+      );
+    }
+    validateCapabilities(policy, configuration);
+  } catch (error: unknown) {
+    if (error instanceof CapabilityPolicyDeniedError) {
+      throw error;
+    }
+    // Unsupported supplied configuration is dormant scheduling, preserving authenticated history/health.
+    throw new CapabilityPolicyDeniedError(
+      "Warm hands profile configuration is unavailable or incompatible",
+      {
+        cause: error,
+      },
     );
   }
 }

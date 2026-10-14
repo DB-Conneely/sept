@@ -165,7 +165,10 @@ async function runWorker(context: CommandContext): Promise<void> {
       () => service.boundEndpoint(),
     ),
     capabilityAdmission: () => {
-      assertCapabilityAdmission(policy);
+      assertCapabilityAdmission(
+        policy,
+        context.options.hands ?? process.env.SEPT_HANDS_CONFIGURATION,
+      );
     },
     piVersion: context.piVersion,
     telemetry: context.telemetry,
@@ -247,12 +250,14 @@ async function executeDirectRun(context: CommandContext, store: RunStore): Promi
 async function runDirect(context: CommandContext): Promise<void> {
   const root = stateRoot(context.options);
   assertCompatibleStateRoot(root, context.telemetry);
-  assertCapabilityAdmission(
-    await initializeCapabilities(context.options, stateRoot(context.options)),
-  );
+  const policy = await initializeCapabilities(context.options, root);
   const releaseRoot = acquireStateRootLease(root);
   try {
     assertLocalRunSlot(root, context.options.resume);
+    assertCapabilityAdmission(
+      policy,
+      context.options.hands ?? process.env.SEPT_HANDS_CONFIGURATION,
+    );
     const resumed = await resumePermissionRun(context, root, context.agentDir);
     await executeDirectRun(context, resumed ?? (await createDirectRun(context, root)));
   } finally {

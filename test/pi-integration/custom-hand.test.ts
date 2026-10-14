@@ -91,7 +91,7 @@ function authorityFixture() {
   const root = join(directories.root, "policy");
   mkdirSync(root);
   const configuration = {
-    profile: "docker-linux-v1" as const,
+    profile: "docker-linux-warm-v1" as const,
     dataDomain: "private" as const,
     workspaceLimits: { bytes: 134217728, inodes: 32768 },
     engineSocket: "/run/docker.sock",
@@ -158,7 +158,12 @@ void test("operator inspection is inert and approved effect composition refuses 
 });
 void test("custom effect composition refuses an absent registered program", async () => {
   await assert.rejects(
-    executeCustomHand({ kind: "custom", callId: "x", arguments: { text: "bounded" } }, undefined),
+    executeCustomHand(
+      { kind: "custom", callId: "x", arguments: { text: "bounded" } },
+      undefined,
+      "/workspace",
+      undefined,
+    ),
     SeptError,
   );
 });

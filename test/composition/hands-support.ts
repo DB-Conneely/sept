@@ -119,7 +119,7 @@ export function supplyHands(
     seedWorkspace(containerId, workspace);
     const path = join(root, "hands-configuration.json");
     const configuration = {
-      profile: "docker-linux-v1",
+      profile: "docker-linux-warm-v1",
       engineSocket: new URL(
         docker(["context", "inspect", "--format", "{{.Endpoints.docker.Host}}"]),
       ).pathname,

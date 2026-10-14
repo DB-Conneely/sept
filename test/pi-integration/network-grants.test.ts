@@ -14,8 +14,11 @@ import {
   validateNetworkProfile,
   networkFirewall,
 } from "../../src/execution/network-profile.js";
+import { validateLiveHands } from "../../src/execution/hands-live-authority.js";
+import { DockerEngineControl } from "../../src/execution/docker-engine.js";
+import { suppliedEngine } from "./backend-support.js";
 import { validateNetworkEnforcement } from "../../src/execution/network-enforcement.js";
-import { handsExecution } from "../../src/execution/docker-control.js";
+import { guardedCommand } from "../../src/execution/hands-processes.js";
 import { createDurableCodingTools } from "../../src/pi-integration/durable-tools.js";
 import { fixtureDirectories } from "./support.js";
 import { FixtureExecutionBackend } from "./backend-support.js";
@@ -33,7 +36,7 @@ const network = {
 };
 function configuration() {
   return {
-    profile: "docker-linux-v1" as const,
+    profile: "docker-linux-warm-v1" as const,
     dataDomain: "private" as const,
     workspaceLimits: { bytes: 134217728, inodes: 32768 },
     engineSocket: "/run/docker.sock",
@@ -177,12 +180,8 @@ void test("file-only command arguments retain the denied network default", () =>
   assert.equal(admitCapabilityRequest(policy(), request, "/workspace", configured).kind, "tool");
 });
 void test("trusted dispatch defaults to inherited socket denial and enables only selected network intent", () => {
-  assert.ok(
-    handsExecution("/workspace", "", { network: false }).command.includes("SEPT_HANDS_NETWORK=0"),
-  );
-  assert.ok(
-    handsExecution("/workspace", "", { network: true }).command.includes("SEPT_HANDS_NETWORK=1"),
-  );
+  assert.ok(guardedCommand(["--eval", "0"], { network: false }).includes("SEPT_HANDS_NETWORK=0"));
+  assert.ok(guardedCommand(["--eval", "0"], { network: true }).includes("SEPT_HANDS_NETWORK=1"));
 });
 void test("actual topology excludes private brain interfaces and metadata without denying ordinary private peers", async () => {
   const configured = configuration();
@@ -262,4 +261,24 @@ void test("installed native Bash schema accepts explicit bounded network intent 
   assert.ok(bash);
   assert.match(JSON.stringify(bash.parameters), /Explicitly request network access/);
   assert.match(JSON.stringify(bash.parameters), /Shell command to execute/);
+});
+
+void test("validateLiveHands refuses changed generation before any privileged network probe", async () => {
+  const fixture = await suppliedEngine();
+  const engine = await DockerEngineControl.open(fixture.path);
+  try {
+    await assert.rejects(
+      validateLiveHands(
+        { ...configuration(), engineSocket: fixture.path },
+        engine,
+        { kind: "file", method: "readTextFile", path: "file.txt" },
+        { workspace: fixture.root, brainRoots: [], policyPath: fixture.root },
+      ),
+      SeptError,
+    );
+    assert.equal(fixture.facts.execStarts, 0);
+  } finally {
+    await engine.close();
+    await fixture.close();
+  }
 });

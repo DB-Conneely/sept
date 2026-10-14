@@ -29,4 +29,5 @@ export {
   revokeDockerBinding,
   revokeRecordedHandsBinding,
   reconcileDockerBinding,
+  assertHandsRunProfile,
 } from "./docker-control.js";

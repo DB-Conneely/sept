@@ -192,6 +192,7 @@ export function admitCapabilityRequest(
     return {
       ...request,
       workspaceRead: namespaceReadable(policy, configuration),
+      grants,
     };
   }
   if ((request.kind === "tool" && request.name === "bash") || request.kind === "custom") {

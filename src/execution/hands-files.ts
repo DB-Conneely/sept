@@ -1,9 +1,11 @@
+import type { HandsEffectCheck } from "./contracts.js";
 /** Anchored file-only Pi operations. Every component is opened beneath a retained namespace root. */
 import {
   closeSync,
   constants,
   fstatSync,
   ftruncateSync,
+  type Stats,
   mkdirSync,
   openSync,
   readSync,
@@ -17,6 +19,15 @@ import {
   type EditToolOptions,
 } from "@earendil-works/pi-coding-agent";
 import { SeptError, type CapabilityGrant } from "../durable/index.js";
+import {
+  resolveResourceAlias,
+  sniffCapturedMime,
+  openHandsRoots,
+  privateHandsPath,
+  HandsPathMissingError,
+  readHandsDirectory,
+  type HandsRoot,
+} from "./hands-paths.js";
 
 // One file body may allocate at most 16 MiB, including when a mutable inode grows after fstat.
 const HANDS_FILE_BYTES = 16 * 1024 * 1024;
@@ -45,25 +56,20 @@ function createDirectory(path: string): void {
 
 /** One entry owns its root descriptors until Pi's complete tool body settles. */
 export class HandsFiles {
-  private readonly roots: { grant: CapabilityGrant; descriptor: number }[] = [];
-  public constructor(grants: readonly CapabilityGrant[]) {
-    try {
-      for (const grant of grants) {
-        this.roots.push({
-          grant,
-          descriptor: openSync(
-            grant.root,
-            constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
-          ),
-        });
-      }
-    } catch (error: unknown) {
-      this.close();
-      throw new SeptError("Hands file roots are unavailable", { cause: error });
-    }
+  private readonly roots: HandsRoot[];
+  private readonly metadata = new Map<string, Stats | undefined>();
+  public constructor(
+    grants: readonly CapabilityGrant[],
+    private readonly authorize: HandsEffectCheck,
+    aliases: readonly { alias: string; descriptor: number }[] = [],
+  ) {
+    this.roots = openHandsRoots(grants, aliases);
   }
   private root(path: string, right: "read" | "write"): { descriptor: number; parts: string[] } {
     const absolute = posix.resolve(path);
+    if (privateHandsPath(absolute)) {
+      throw new SeptError("Hands private capture path was denied");
+    }
     const selected = this.roots.find(
       ({ grant }) => absolute === grant.root || absolute.startsWith(`${grant.root}/`),
     );
@@ -103,6 +109,9 @@ export class HandsFiles {
       return { descriptor: current, name, owned };
     } catch (error: unknown) {
       owned.reverse().forEach(closeSync);
+      if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+        throw new HandsPathMissingError("Hands anchored path is absent", { cause: error });
+      }
       throw new SeptError("Hands anchored directory lookup was refused", { cause: error });
     }
   }
@@ -157,29 +166,37 @@ export class HandsFiles {
   }
   /** MIME detection reads the same pinned regular inode; Pi retains all image parsing/resizing. */
   public async mime(path: string): Promise<string | null> {
+    await this.authorize("read", path);
     const descriptor = this.file(path, "read");
     try {
-      return await detectSupportedImageMimeTypeFromFile(`/proc/self/fd/${String(descriptor)}`);
+      // Pi's unchanged detector consumes 4,100 header bytes; capture exactly that bounded prefix.
+      const bytes = Buffer.alloc(4100);
+      const count = readSync(descriptor, bytes, 0, bytes.length, 0);
+      return await sniffCapturedMime(
+        bytes.subarray(0, count),
+        detectSupportedImageMimeTypeFromFile,
+      );
     } finally {
       closeSync(descriptor);
     }
   }
   /** Read only from a validated retained inode, never a realpath followed by an ambient open. */
-  public read(path: string, maximum = HANDS_FILE_BYTES): Promise<Buffer> {
+  public async read(path: string, maximum = HANDS_FILE_BYTES): Promise<Buffer> {
+    await this.authorize("read", path);
     const descriptor = this.file(path, "read");
     try {
-      return Promise.resolve(boundedRead(descriptor, maximum));
+      return boundedRead(descriptor, maximum);
     } finally {
       closeSync(descriptor);
     }
   }
   /** Write-only needs no read; no truncation occurs until regular single-link identity is checked. */
-  public write(path: string, content: string): Promise<void> {
+  public async write(path: string, content: string): Promise<void> {
+    await this.authorize("write", path);
     const descriptor = this.file(path, "write");
     try {
       ftruncateSync(descriptor, 0);
       writeFileSync(descriptor, content);
-      return Promise.resolve();
     } finally {
       closeSync(descriptor);
     }
@@ -189,17 +206,114 @@ export class HandsFiles {
     return Promise.resolve();
   }
   /** Checking edit access requires both independent rights without reading or mutating content. */
-  public access(path: string, required: "read" | "edit" = "read"): Promise<void> {
+  public async access(path: string, required: "read" | "edit" = "read"): Promise<void> {
+    await this.authorize("read", path);
     closeSync(this.file(path, "read"));
     if (required === "edit") {
+      await this.authorize("write", path);
       closeSync(this.file(path, "write"));
     }
-    return Promise.resolve();
+  }
+  /** Capture authorized resource bytes after internal aliases have been confined to one granted root. */
+  public resource(path: string): Buffer {
+    const resolved = resolveResourceAlias(path, this.roots);
+    const descriptor = this.file(resolved, "read");
+    try {
+      return boundedRead(descriptor, 1024 * 1024);
+    } finally {
+      closeSync(descriptor);
+    }
+  }
+  /** Anchored metadata cannot follow a workspace alias into process/control files. */
+  public async stat(path: string): Promise<Stats> {
+    if (this.metadata.has(path)) {
+      const captured = this.metadata.get(path);
+      if (captured === undefined) {
+        throw new SeptError("Hands listing metadata was refused");
+      }
+      return captured;
+    }
+    await this.authorize("read", path);
+    return this.resourceStat(path, { internalAliases: false });
+  }
+  /** Synchronous metadata belongs only to an acknowledged resource/listing batch, never an ambient native callback. */
+  public resourceStat(
+    path: string,
+    options: { internalAliases: boolean } = { internalAliases: true },
+  ): Stats {
+    const descriptor = this.lookup(
+      options.internalAliases ? resolveResourceAlias(path, this.roots) : path,
+    );
+    try {
+      const stat = fstatSync(descriptor);
+      if (!stat.isDirectory() && (!stat.isFile() || stat.nlink !== 1)) {
+        throw new SeptError("Hands discovery type or alias was refused");
+      }
+      return stat;
+    } finally {
+      closeSync(descriptor);
+    }
+  }
+  private lookup(path: string): number {
+    const root = this.root(path, "read");
+    if (root.parts.length === 0) {
+      return openSync(
+        `/proc/self/fd/${String(root.descriptor)}`,
+        constants.O_RDONLY | constants.O_DIRECTORY,
+      );
+    }
+    const parent = this.parent(path, "read", false);
+    try {
+      return openSync(
+        `/proc/self/fd/${String(parent.descriptor)}/${parent.name}`,
+        constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+      );
+    } finally {
+      parent.owned.reverse().forEach(closeSync);
+    }
+  }
+  /** Bounded directory enumeration uses the retained directory identity rather than ambient paths. */
+  public async entries(path: string, capacity: number): Promise<string[]> {
+    await this.authorize("read", path);
+    const entries = this.resourceEntries(path, capacity, { internalAliases: false }).filter(
+      (name) => !privateHandsPath(posix.join(path, name)),
+    );
+    // Native ls reads this bounded metadata batch after its single live acknowledgment, never through ambient stat.
+    for (const name of entries) {
+      const child = posix.join(path, name);
+      try {
+        this.metadata.set(child, this.resourceStat(child, { internalAliases: false }));
+      } catch {
+        this.metadata.set(child, undefined);
+      }
+    }
+    return entries;
+  }
+  /** Snapshot enumeration remains synchronous after the parent resource acknowledgment. */
+  public resourceEntries(
+    path: string,
+    capacity: number,
+    options: { internalAliases: boolean } = { internalAliases: true },
+  ): string[] {
+    const descriptor = this.lookup(
+      options.internalAliases ? resolveResourceAlias(path, this.roots) : path,
+    );
+    try {
+      if (!fstatSync(descriptor).isDirectory()) {
+        throw new SeptError("Hands discovery requires a directory");
+      }
+      return readHandsDirectory(descriptor, capacity);
+    } finally {
+      closeSync(descriptor);
+    }
   }
   /** Close all owned directory handles on success, refusal and partial initialization. */
   public close(): void {
+    this.metadata.clear();
     for (const root of this.roots.splice(0)) {
       closeSync(root.descriptor);
     }
   }
 }
+
+export { handsReadOptions, executeHandsFile } from "./hands-file-options.js";

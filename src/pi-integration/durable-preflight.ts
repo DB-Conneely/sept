@@ -10,6 +10,7 @@ import {
   statSync,
 } from "node:fs";
 import { join } from "node:path";
+import { assertHandsRunProfile } from "../execution/index.js";
 import { listRuns, SeptError, type RunStore, type RunSnapshot } from "../durable/index.js";
 import { readInvocationAdmission, type DurableAdmission } from "./durable-admission.js";
 import { readDurableLocator } from "./durable-session-files.js";
@@ -242,6 +243,7 @@ export function isLegacyRun(store: RunStore, telemetry: Observability = NOOP_TEL
 
 /** Reject any native mutation/adoption of legacy history before acquiring authority or writing. */
 export function assertNativeRun(store: RunStore, telemetry: Observability = NOOP_TELEMETRY): void {
+  assertHandsRunProfile(store);
   if (isLegacyRun(store, telemetry)) {
     throw new SeptError(
       "Legacy Pi history requires the preserved old build and state root; Pi Durable cannot resume or mutate it",

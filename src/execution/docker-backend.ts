@@ -1,7 +1,6 @@
 /** Bridges one supplied Docker Linux namespace to native Pi; Docker provisioning remains consumer-owned. */
 
-import { watch, type FSWatcher } from "node:fs";
-import { join } from "node:path";
+import type { FSWatcher } from "node:fs";
 import type { Context } from "@earendil-works/chord";
 import {
   SeptError,
@@ -10,24 +9,27 @@ import {
   CapabilityRequestWaitingError,
   type CapabilityPolicy,
 } from "../durable/index.js";
-import { HandsBackendUnavailableError } from "./contracts.js";
+import { assertHandsAvailable } from "./hands-loss.js";
 import type { DockerHandsConfiguration, ExecutionBackend, HandsRequest } from "./contracts.js";
-import { HANDS_REQUEST_BYTES, parseHandsRequest } from "./protocol.js";
-import { capabilityBinding, capabilityTools, openingPolicy } from "./capability-admission.js";
-import {
-  acquireHandsLease,
-  handsExecution,
-  inspect,
-  revokeDockerBinding,
-  recordHandsBinding,
-  validateDockerConfiguration,
-} from "./docker-control.js";
-import { validateDockerProfile, verifyKernelBinding } from "./profile.js";
-import { validateNetworkEnforcement } from "./network-enforcement.js";
-import { DockerEngineControl } from "./docker-engine.js";
-import { validateSealedInputs } from "./hands-processes.js";
+import { openHandsControl, closeFailedHandsOpening } from "./hands-opening.js";
+import { captureHandsRequest } from "./hands-request.js";
+import { capabilityTools, openingPolicy } from "./capability-admission.js";
+import { revokeDockerBinding, recordHandsBinding } from "./docker-control.js";
+import { validateLiveHands } from "./hands-live-authority.js";
+import type { DockerEngineControl } from "./docker-engine.js";
 import { handsProjectionReceipt } from "./profile-configuration.js";
-import { CapabilityRequestAuthority } from "./capability-requests.js";
+import { WarmHandsChannel } from "./warm-channel.js";
+import {
+  CapabilityRequestAuthority,
+  verifyHandsPolicy,
+  watchHandsPolicy,
+} from "./capability-requests.js";
+import { HandsProcessOwner } from "./hands-process-owner.js";
+import {
+  invokeHandsOperation,
+  joinHandsBeforeClose,
+  invokeAdmittedHands,
+} from "./hands-operation.js";
 
 /** Owns bounded control calls, cancellation, and namespace lease for one resident run. */
 export class DockerExecutionBackend implements ExecutionBackend {
@@ -42,8 +44,12 @@ export class DockerExecutionBackend implements ExecutionBackend {
   private readonly joins = new Set<Promise<void>>();
   private transport: Promise<void> = Promise.resolve();
   private unavailable = false;
+  private channel: WarmHandsChannel | undefined;
+  private processes: HandsProcessOwner | undefined;
   private readonly permissions: CapabilityRequestAuthority;
   private stopping: Promise<void> | undefined;
+  private loss: Error | undefined;
+  private namespaceStopped = false;
 
   private constructor(
     private readonly configuration: DockerHandsConfiguration,
@@ -71,13 +77,11 @@ export class DockerExecutionBackend implements ExecutionBackend {
       () => this.assertPolicy(),
     );
     this.tools = capabilityTools(policy, configuration);
-    this.watcher = watch(join(policyStore.path, ".."), () => {
-      try {
-        this.assertPolicy();
-      } catch {
-        void this.stopNamespace().catch(() => undefined);
-      }
-    });
+    this.watcher = watchHandsPolicy(
+      policyStore.path,
+      () => this.assertPolicy(),
+      () => this.stopNamespace(),
+    );
     this.resourceProjectionDirectory = configuration.resources;
     this.resourceProjectionReceipt = handsProjectionReceipt(
       configuration.resources,
@@ -94,25 +98,20 @@ export class DockerExecutionBackend implements ExecutionBackend {
     controlEndpoint?: { address: string; port: number },
   ): Promise<DockerExecutionBackend> {
     const policy = openingPolicy(configuration, policyStore);
-    const workspace = store.manifest().workspace;
-    const engine = await DockerEngineControl.open(configuration.engineSocket);
-    let release: (() => void) | undefined;
+    const { engine, cwd, release } = await openHandsControl(
+      configuration,
+      store,
+      brainRoots,
+      policyStore,
+      controlEndpoint,
+    );
+    let backend: DockerExecutionBackend | undefined;
     try {
-      const cwd = await validateDockerConfiguration(
-        configuration,
-        brainRoots,
-        workspace,
-        controlEndpoint,
-        { policyPath: policyStore.path, initialize: false },
-        engine,
-      );
-      release = acquireHandsLease(configuration, store, brainRoots);
-      await recordHandsBinding(store, configuration, cwd, engine);
-      return new DockerExecutionBackend(
+      backend = new DockerExecutionBackend(
         configuration,
         engine,
         cwd,
-        workspace,
+        store.manifest().workspace,
         brainRoots,
         release,
         policyStore,
@@ -120,11 +119,32 @@ export class DockerExecutionBackend implements ExecutionBackend {
         store,
         controlEndpoint,
       );
+      await backend.start(store);
+      return backend;
     } catch (error: unknown) {
-      await engine.close();
-      release?.();
+      await closeFailedHandsOpening(engine, release, backend?.watcher, () =>
+        backend?.stopNamespace(),
+      );
       throw error;
     }
+  }
+
+  private async start(store: RunStore): Promise<void> {
+    await recordHandsBinding(store, this.configuration, this.cwd, this.engine);
+    this.channel = await WarmHandsChannel.open(
+      this.configuration,
+      this.engine,
+      this.cwd,
+      (error) => {
+        this.loss = error;
+        void this.stopNamespace().catch(() => undefined);
+      },
+    );
+    this.processes = await HandsProcessOwner.open(
+      this.configuration,
+      this.engine,
+      this.channel.identity,
+    );
   }
 
   /** Register ownership before validation/dispatch; cancellation invalidates the entire dedicated namespace. */
@@ -134,7 +154,9 @@ export class DockerExecutionBackend implements ExecutionBackend {
     const joined = new Promise<void>((resolvePromise) => {
       finish = resolvePromise;
     });
-    const expiryTimer = this.permissionTimer(request);
+    const expiryTimer = this.permissions.expirationTimer(request, () => {
+      void this.stopNamespace().catch(() => undefined);
+    });
     // Bounded transport backpressure keeps native batches inside the supplied PID/memory limits.
     // Pi still owns task scheduling/replay; queued calls retain cancellation ownership.
     this.joins.add(joined);
@@ -146,65 +168,54 @@ export class DockerExecutionBackend implements ExecutionBackend {
     context.abortSignal?.addEventListener("abort", abort, { once: true });
     try {
       await preceding;
-      return await this.dispatch(context, input);
-    } catch (error: unknown) {
-      // A lost client cannot prove that its command stopped. Join the kernel namespace before settlement.
-      try {
-        await this.stopNamespace();
-      } catch (stopError: unknown) {
-        throw new HandsBackendUnavailableError(
-          "Hands shutdown is unverified; consumer reconciliation is required",
-          { cause: stopError },
-        );
-      }
-      throw new HandsBackendUnavailableError(
-        "Hands backend lost execution authority; interrupted effects may be uncertain",
-        { cause: error },
-      );
+      return await invokeAdmittedHands(context, input, {
+        dispatch: (stage) => this.dispatch(context, input, stage),
+        stop: () => this.stopNamespace(),
+        loss: () => this.loss,
+      });
     } finally {
-      if (expiryTimer !== undefined) {
-        clearTimeout(expiryTimer);
-      }
+      clearTimeout(expiryTimer);
       context.abortSignal?.removeEventListener("abort", abort);
       this.joins.delete(joined);
       finish();
     }
   }
 
-  private permissionTimer(request: HandsRequest): NodeJS.Timeout | undefined {
-    const expiry = this.permissions.approvalExpiry(request);
-    return expiry === undefined
-      ? undefined
-      : setTimeout(
-          () => {
-            void this.stopNamespace().catch(() => undefined);
-          },
-          Math.max(1, expiry - Date.now()),
-        );
-  }
-
-  private async dispatch(context: Context, input: string): Promise<unknown> {
-    const request = parseHandsRequest(JSON.parse(input));
+  private async dispatch(
+    context: Context,
+    request: HandsRequest,
+    stage: (stage: "effect" | "result") => void,
+  ): Promise<unknown> {
     this.assertAvailable(context);
-    await this.validateLive(context);
+    await this.validateLive(context, request);
     this.assertPolicy();
     this.permissions.authorize(request);
-    const raw = await this.engine.exec(
-      this.configuration.containerId,
-      handsExecution(this.cwd, input, {
-        network:
-          (request.kind === "tool" || request.kind === "custom") &&
-          request.arguments.network === true,
-      }),
+    if (this.channel === undefined) {
+      throw new SeptError("Hands resident channel is absent");
+    }
+    stage("effect");
+    const result = await invokeHandsOperation(
+      this.channel,
+      this.processes,
+      request,
+      this.cwd,
+      async () => {
+        await this.authorize(context, request);
+        return this.permissions.authorize(request);
+      },
     );
+    stage("result");
+    await this.authorize(context, request);
+    return result;
+  }
+  private async authorize(context: Context, request: HandsRequest): Promise<void> {
     this.assertAvailable(context);
-    this.assertPolicy();
+    await this.validateLive(context, request);
+    // The permission owner rechecks the whole live policy itself; transport/parent snapshots confer no authority.
     this.permissions.authorize(request);
-    const value: unknown = JSON.parse(raw);
-    return value;
   }
 
-  private admit(request: HandsRequest, context: Context): string {
+  private admit(request: HandsRequest, context: Context): HandsRequest {
     this.assertAvailable(context);
     const pending = this.permissions.pendingPermission();
     if (pending !== undefined) {
@@ -218,17 +229,14 @@ export class DockerExecutionBackend implements ExecutionBackend {
     if (request.kind === "tool" && request.name === "bash" && !this.shell) {
       throw new SeptError("Shell capability is absent");
     }
-    const input = JSON.stringify(admitted);
-    if (Buffer.byteLength(input) > HANDS_REQUEST_BYTES) {
-      throw new SeptError("Hands request exceeds its bound");
-    }
-    return input;
+    return captureHandsRequest(admitted);
   }
 
   /** Native pre-intent gate and generation seal use this same live effect authority. */
   public beforeTool(
     request: Extract<HandsRequest, { kind: "tool" | "custom" }>,
   ): string | undefined {
+    this.assertAvailable();
     return this.permissions.beforeTool(request);
   }
   /** No model polling while a decision is pending. */
@@ -238,60 +246,37 @@ export class DockerExecutionBackend implements ExecutionBackend {
 
   private assertPolicy(): CapabilityPolicy {
     try {
-      const current = this.policyStore.read();
-      if (
-        current === undefined ||
-        current.denied ||
-        // Equal revision cannot legitimize edited authority; captured arguments/rights stay immutable.
-        JSON.stringify(current) !== JSON.stringify(this.policy) ||
-        JSON.stringify(current.binding) !== JSON.stringify(capabilityBinding(this.configuration))
-      ) {
-        throw new HandsBackendUnavailableError(
-          "Live capability authority is unavailable; explicit fresh configuration is required",
-        );
-      }
-      return current;
+      return verifyHandsPolicy(this.configuration, this.policyStore, this.policy);
     } catch (error: unknown) {
-      throw new HandsBackendUnavailableError(
-        "Live capability authority is unavailable; explicit fresh configuration is required",
-        { cause: error },
-      );
+      // Durable denial wins before the asynchronous exact-generation shutdown can acknowledge it.
+      void this.stopNamespace().catch(() => undefined);
+      throw error;
     }
   }
 
-  private assertAvailable(context: Context): void {
-    if (this.unavailable || context.abortSignal?.aborted) {
-      throw new HandsBackendUnavailableError(
-        "Hands operation was interrupted; effects may be uncertain",
-      );
-    }
+  private assertAvailable(context?: Context): void {
+    assertHandsAvailable({
+      unavailable: this.unavailable,
+      loss: this.loss,
+      namespaceStopped: this.namespaceStopped,
+      cancelled: context?.abortSignal?.aborted === true,
+    });
   }
 
-  private async validateLive(context: Context): Promise<void> {
-    const inspected = await inspect(this.configuration, this.engine);
-    validateDockerProfile(this.configuration, inspected, this.workspace, this.brainRoots);
-    verifyKernelBinding(this.configuration, inspected, this.policyStore.path);
-    await validateSealedInputs(this.configuration, this.engine);
-    await validateNetworkEnforcement(
-      this.configuration,
-      inspected,
-      this.controlEndpoint,
-      this.engine,
-    );
-    if (this.unavailable || context.abortSignal?.aborted) {
-      throw new SeptError("Hands execution was cancelled before dispatch");
-    }
+  private async validateLive(context: Context, request: HandsRequest): Promise<void> {
+    await validateLiveHands(this.configuration, this.engine, request, {
+      workspace: this.workspace,
+      brainRoots: this.brainRoots,
+      policyPath: this.policyStore.path,
+      ...(this.controlEndpoint === undefined ? {} : { controlEndpoint: this.controlEndpoint }),
+    });
+    this.assertAvailable(context);
   }
 
   private stopNamespace(): Promise<void> {
     // Denial wins before the asynchronous stop acknowledgement, including concurrent native calls.
     this.unavailable = true;
-    this.stopping ??= this.stopAndVerify();
-    return this.stopping;
-  }
-
-  private async stopAndVerify(): Promise<void> {
-    await revokeDockerBinding(
+    this.stopping ??= revokeDockerBinding(
       {
         containerId: this.configuration.containerId,
         generation: this.generation,
@@ -299,7 +284,19 @@ export class DockerExecutionBackend implements ExecutionBackend {
       this.configuration,
       { policyPath: this.policyStore.path },
       this.engine,
-    );
+    )
+      .then(() => {
+        this.namespaceStopped = true;
+      })
+      .finally(async () => {
+        // Stop joins the exact namespace; resident and Engine ownership still finalize if either close fails.
+        try {
+          await this.channel?.release();
+        } finally {
+          await this.engine.close();
+        }
+      });
+    return this.stopping;
   }
 
   /** Close every owned transport before releasing authority; the consumer owns restart/removal. */
@@ -312,14 +309,18 @@ export class DockerExecutionBackend implements ExecutionBackend {
           await this.stopNamespace();
         } else {
           // A previous failed stop remains unverified after its last transport joined.
-          await this.stopping;
+          await joinHandsBeforeClose(this.processes, this.stopping, () => this.stopNamespace());
         }
       } finally {
         await Promise.all(this.joins);
       }
     } finally {
-      await this.engine.close();
-      this.release();
+      try {
+        await this.channel?.close();
+      } finally {
+        await this.engine.close();
+        this.release();
+      }
     }
   }
 }

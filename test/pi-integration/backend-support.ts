@@ -1,94 +1,21 @@
+export { engineFrame } from "./warm-support.js";
+import type { HandsFrame } from "../../src/execution/protocol.js";
+import { attachWarmFixture, engineFrame, fixtureOutput } from "./warm-support.js";
 /** Explicit local test double for native lifecycle regressions; it establishes no confinement claim. */
 
 import { AssertionError } from "node:assert";
-import { mkdirSync, mkdtempSync, chmodSync } from "node:fs";
+import { mkdtempSync, chmodSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import type { Duplex } from "node:stream";
-import { dirname, join, resolve } from "node:path";
-import { randomUUID } from "node:crypto";
-import type { Context } from "@earendil-works/chord";
-import {
-  createBashTool,
-  DefaultResourceLoader,
-  SettingsManager,
-  formatSkillsForPrompt,
-  type ModelRuntime,
-} from "@earendil-works/pi-coding-agent";
-import type {
-  ExecutionBackend,
-  HandsRequest,
-  DockerHandsConfiguration,
-} from "../../src/execution/index.js";
+import { dirname, join } from "node:path";
+import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
+import type { DockerHandsConfiguration } from "../../src/execution/index.js";
+import { FixtureExecutionBackend } from "./fixture-execution-backend.js";
+export { FixtureExecutionBackend } from "./fixture-execution-backend.js";
 import { recordKernelProfile } from "../../src/execution/profile.js";
 import { PiSessionHost } from "../../src/pi-integration/index.js";
 import type { HostFactory } from "../../src/runtime/index.js";
-import { executeHandsRequest } from "../../src/execution/hands-entry.js";
-
-/** Deliberately injected fixture port, isolated to generated test directories. Installed security proof uses Docker. */
-export class FixtureExecutionBackend implements ExecutionBackend {
-  public readonly id = "generated-fixture";
-  public readonly generation = randomUUID();
-  public readonly shell = true;
-  public readonly resourceProjectionDirectory: string;
-  public readonly resourceProjectionReceipt: string;
-  public constructor(
-    public readonly cwd: string,
-    root = dirname(cwd),
-  ) {
-    this.resourceProjectionDirectory = join(root, "resources");
-    this.resourceProjectionReceipt = join(root, "projection-receipt.json");
-    mkdirSync(this.resourceProjectionDirectory, { recursive: true });
-  }
-
-  public async invoke(request: HandsRequest, context: Context): Promise<unknown> {
-    if (request.kind === "tool" && request.name === "bash") {
-      assertFixtureCommand(request.arguments.command);
-      return createBashTool(this.cwd).execute(
-        request.callId,
-        { command: request.arguments.command },
-        context.abortSignal,
-      );
-    }
-    if (request.kind !== "resources") {
-      return executeHandsRequest(request, this.cwd);
-    }
-    const loader = new DefaultResourceLoader({
-      cwd: this.cwd,
-      agentDir: this.resourceProjectionDirectory,
-      settingsManager: SettingsManager.create(this.cwd, this.resourceProjectionDirectory, {
-        projectTrusted: false,
-      }),
-      noExtensions: true,
-      noPromptTemplates: true,
-      noThemes: true,
-      additionalSkillPaths: [
-        join(this.resourceProjectionDirectory, "skills"),
-        resolve(this.cwd, ".pi/skills"),
-      ],
-    });
-    await loader.reload();
-    return {
-      system: loader.getSystemPrompt() ?? "",
-      append: loader.getAppendSystemPrompt().join("\n\n"),
-      instructions: loader
-        .getAgentsFiles()
-        .agentsFiles.map((file) => file.content)
-        .join("\n\n"),
-      skills: formatSkillsForPrompt(loader.getSkills().skills, "read"),
-    };
-  }
-
-  public close(): Promise<void> {
-    return Promise.resolve();
-  }
-}
-
-function assertFixtureCommand(value: unknown): asserts value is string {
-  if (typeof value !== "string") {
-    throw new AssertionError({ message: "Fixture command must be text" });
-  }
-}
 
 const fixtureRoots = new WeakMap<ModelRuntime, string>();
 
@@ -117,7 +44,8 @@ export function fixtureHostFactory(models: ModelRuntime): HostFactory {
 
 const ID = "a".repeat(64);
 const EXEC = "b".repeat(64);
-interface EngineFixture {
+/** Bounded supporting daemon facts; never evidence of installed kernel containment. */
+export interface EngineFixture {
   daemon: string;
   generation: string;
   running: boolean;
@@ -127,8 +55,12 @@ interface EngineFixture {
   stops: number;
   blocked: boolean;
   onAttachment?: (() => void) | undefined;
+  residentAttachment?: ((socket: Duplex) => boolean) | undefined;
   beforePin?: (() => void) | undefined;
   output: string;
+  resident: boolean;
+  execStarts: number;
+  warmReply?: ((frame: HandsFrame) => HandsFrame) | undefined;
 }
 /** Generated Unix metadata/framing fixture only; it proves no installed kernel confinement. */
 export async function suppliedEngine(): Promise<{
@@ -176,22 +108,30 @@ function engineFixtureFacts(): EngineFixture {
     stops: 0,
     blocked: false,
     output: "bounded result",
+    resident: false,
+    execStarts: 0,
   };
 }
 function ownFixtureSockets(server: ReturnType<typeof createServer>, sockets: Set<Duplex>): void {
   server.on("connection", (socket) => {
     sockets.add(socket);
+    socket.once("error", () => {
+      socket.destroy();
+    });
     socket.once("close", () => {
       sockets.delete(socket);
     });
   });
 }
 function fixtureAttachment(socket: Duplex, facts: EngineFixture): void {
-  socket.once("error", () => {
-    socket.destroy();
-  });
   socket.allowHalfOpen = true;
   socket.write("HTTP/1.1 101 UPGRADED\r\nConnection: Upgrade\r\nUpgrade: tcp\r\n\r\n");
+  if (facts.resident) {
+    if (facts.residentAttachment?.(socket) !== false) {
+      attachWarmFixture(socket, facts);
+    }
+    return;
+  }
   if (facts.blocked) {
     socket.once("end", () => {
       facts.onAttachment?.();
@@ -237,22 +177,20 @@ function engineResponse(
       response.end(JSON.stringify({ ID: facts.daemon, OperatingSystem: "Linux fixture" }));
       return;
     case `/v1.52/containers/${ID}/json`:
-      response.end(
-        JSON.stringify({
-          Id: ID,
-          State: {
-            Running: facts.running,
-            StartedAt: facts.generation,
-            Pid: facts.running ? 42 : 0,
-          },
-        }),
-      );
+      fixtureInspection(response, facts);
       return;
     case `/v1.52/containers/${ID}/exec`:
       captureCommand(request, response, facts);
       return;
     case `/v1.52/exec/${EXEC}/json`:
-      response.end(JSON.stringify({ ContainerID: ID, Running: false, ExitCode: facts.exitCode }));
+      response.end(
+        JSON.stringify({
+          ContainerID: ID,
+          Running: facts.resident && facts.running,
+          Pid: 42,
+          ExitCode: facts.exitCode,
+        }),
+      );
       return;
     default:
       response.writeHead(404).end(JSON.stringify({ message: "HOSTILE_PEER_CANARY" }));
@@ -270,30 +208,13 @@ function captureCommand(
   request.once("end", () => {
     const command: unknown = JSON.parse(input);
     facts.command = command;
+    facts.execStarts += 1;
+    facts.resident = JSON.stringify(command).includes("hands-entry.js");
     facts.input = "";
     const encoded = JSON.stringify(command);
     facts.output = fixtureOutput(encoded);
     response.writeHead(201).end(JSON.stringify({ Id: EXEC }));
   });
-}
-
-/** Exact Docker stream framing for supporting decoder capacity fixtures. */
-export function engineFrame(stream: number, content: string): Buffer {
-  const body = Buffer.from(content);
-  const header = Buffer.alloc(8);
-  header[0] = stream;
-  header.writeUInt32BE(body.length, 4);
-  return Buffer.concat([header, body]);
-}
-
-function fixtureOutput(command: string): string {
-  if (command.includes("process.kill(1")) {
-    return "pinned\n";
-  }
-  if (command.includes("function lifetime()")) {
-    return JSON.stringify({ pidNamespace: "pid:[42]", initStart: "123" });
-  }
-  return "bounded result";
 }
 
 /** Supporting metadata fixture only; installed admission captures the real image/cgroup/tmpfs facts. */
@@ -309,4 +230,17 @@ export function recordFixtureKernel(
     dataDomain: configuration.dataDomain,
     workspaceLimits: configuration.workspaceLimits,
   });
+}
+
+function fixtureInspection(response: ServerResponse, facts: EngineFixture): void {
+  response.end(
+    JSON.stringify({
+      Id: ID,
+      State: {
+        Running: facts.running,
+        StartedAt: facts.generation,
+        Pid: facts.running ? 42 : 0,
+      },
+    }),
+  );
 }

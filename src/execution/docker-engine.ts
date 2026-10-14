@@ -1,18 +1,10 @@
+import { collectHandsAttachment, engineExchange, openEngineAttachment } from "./engine-http.js";
 /** Fixed bounded local Docker Engine operations; provisioning and endpoint selection stay consumer-owned. */
-import { Agent, type ClientRequest } from "node:http";
-import type { Socket } from "node:net";
+import { Agent } from "node:http";
 import { SeptError } from "../durable/index.js";
-import { EngineControlError, type EngineExec } from "./contracts.js";
-import {
-  handsRecord,
-  collectResponse,
-  controlRequest,
-  settleResponse,
-  settleAttachment,
-  joinEngineConnections,
-  engineBody,
-} from "./protocol.js";
-import { consumeHandsProcessStream } from "./hands-processes.js";
+import { EngineControlError, type EngineExec, type DockerHandsConfiguration } from "./contracts.js";
+import { handsRecord } from "./protocol.js";
+import { HandsAttachment } from "./hands-processes.js";
 import {
   engineSocketIdentity,
   engineText,
@@ -27,6 +19,7 @@ export class DockerEngineControl {
   public readonly operatingSystem: string;
   private closed = false;
   private readonly pending = new Set<Promise<unknown>>();
+  private readonly attachments = new Set<HandsAttachment>();
   private readonly abort = new AbortController();
   private readonly agent = new Agent({ keepAlive: true, maxSockets: 1, maxFreeSockets: 1 });
   private constructor(
@@ -41,13 +34,15 @@ export class DockerEngineControl {
   /** Negotiate only the supported local Linux API interval; wrong/malformed daemons refuse opening. */
   public static async open(socketPath: string): Promise<DockerEngineControl> {
     const identity = engineSocketIdentity(socketPath);
-    const version = handsRecord(await exchange(socketPath, undefined, "GET", "/version"));
+    const version = handsRecord(await engineExchange(socketPath, undefined, "GET", "/version"));
     const selected = Math.min(52, apiMinor(version.ApiVersion));
     if (version.Os !== "linux" || selected < Math.max(44, apiMinor(version.MinAPIVersion))) {
       throw new SeptError("Hands Engine API or operating system is unsupported");
     }
     const api = `v1.${String(selected)}`;
-    const information = handsRecord(await exchange(socketPath, undefined, "GET", `/${api}/info`));
+    const information = handsRecord(
+      await engineExchange(socketPath, undefined, "GET", `/${api}/info`),
+    );
     const engine = new DockerEngineControl(socketPath, api, information);
     if (engine.socketIdentity !== identity) {
       await engine.close();
@@ -57,10 +52,7 @@ export class DockerEngineControl {
   }
   private assertSocket(): void {
     if (this.closed) {
-      throw EngineControlError.at("closed-owner", Date.now(), {
-        requestJoined: false,
-        connectionsReleased: true,
-      });
+      throw EngineControlError.at("closed-owner", Date.now(), { connectionsReleased: true });
     }
     if (engineSocketIdentity(this.socketPath) !== this.socketIdentity) {
       throw new SeptError("Hands Engine socket identity changed");
@@ -72,7 +64,7 @@ export class DockerEngineControl {
       throw new SeptError("Hands Engine concurrent control bound exceeded");
     }
     return this.own(
-      exchange(
+      engineExchange(
         this.socketPath,
         this.agent,
         method,
@@ -93,9 +85,45 @@ export class DockerEngineControl {
     await this.qualify();
     return this.json("GET", `/containers/${immutableId(containerId)}/json`);
   }
-  /** Non-TTY full duplex preserves stdin EOF, stdout/stderr separation and actual exit code. */
-  public async exec(containerId: string, execution: EngineExec): Promise<string> {
+  /** Exact trusted exec creation retains a full-duplex attachment without a generic operation deadline. */
+  public attach(containerId: string, execution: EngineExec): Promise<HandsAttachment> {
+    // Register before any Engine request can start, so close cannot miss setup ownership.
+    return this.own(Promise.resolve().then(() => this.startAttachment(containerId, execution)));
+  }
+  private async startAttachment(
+    containerId: string,
+    execution: EngineExec,
+  ): Promise<HandsAttachment> {
     await this.qualify();
+    if (this.attachments.size >= 8) {
+      throw new SeptError("Hands Engine attachment bound exceeded");
+    }
+    const execId = await this.createExec(containerId, execution);
+    await execution.beforeStart?.();
+    this.assertSocket();
+    const attachment = await this.own(
+      openEngineAttachment({
+        socketPath: this.socketPath,
+        path: `/${this.version}/exec/${execId}/start`,
+        execId,
+        containerId,
+        execution,
+        signal: this.abort.signal,
+      }),
+    );
+    if (this.closed) {
+      await attachment.abort();
+      throw EngineControlError.at("closed-owner", Date.now(), {
+        requestJoined: true,
+        attachmentClosed: true,
+        connectionsReleased: true,
+      });
+    }
+    this.attachments.add(attachment);
+    void attachment.joined.then(() => this.attachments.delete(attachment));
+    return attachment;
+  }
+  private async createExec(containerId: string, execution: EngineExec): Promise<string> {
     const created = handsRecord(
       await this.json("POST", `/containers/${immutableId(containerId)}/exec`, {
         AttachStdin: true,
@@ -109,38 +137,81 @@ export class DockerEngineControl {
         Privileged: execution.privileged ?? false,
       }),
     );
-    const execId = immutableId(engineText(created.Id));
-    const started = Date.now();
-    this.assertSocket();
-    const output = await this.own(
-      attachment(
-        this.socketPath,
-        `/${this.version}/exec/${execId}/start`,
-        execution,
-        this.abort.signal,
-      ),
-    );
-    const inspected = handsRecord(await this.json("GET", `/exec/${execId}/json`));
+    return immutableId(engineText(created.Id));
+  }
+  /** Exact daemon exec facts let the serial owner join detached descendants without waiting on inherited pipes. */
+  public async inspectExec(execId: string): Promise<Record<string, unknown>> {
+    return handsRecord(await this.json("GET", `/exec/${immutableId(execId)}/json`));
+  }
+  /** Daemon-created exec and current namespace generation bind the guarded startup receipt. */
+  public async verifyAttachment(
+    attachment: HandsAttachment,
+    configuration: DockerHandsConfiguration,
+  ): Promise<void> {
+    const inspected = handsRecord(await this.json("GET", `/exec/${attachment.execId}/json`));
+    const state = handsRecord(handsRecord(await this.inspect(configuration.containerId)).State);
     if (
-      inspected.ContainerID !== containerId ||
-      inspected.Running !== false ||
-      inspected.ExitCode !== 0
+      inspected.ContainerID !== configuration.containerId ||
+      inspected.Running !== true ||
+      typeof inspected.Pid !== "number" ||
+      inspected.Pid <= 0 ||
+      state.Running !== true ||
+      state.StartedAt !== configuration.generation
     ) {
-      throw EngineControlError.at("exec-exit", started, {
-        code: typeof inspected.ExitCode === "number" ? inspected.ExitCode : null,
-        attachmentClosed: true,
-        requestJoined: true,
-      });
+      throw new SeptError("Hands resident exec or generation identity was refused");
     }
-    return output;
+  }
+  /** Fixed finite control helpers still use EOF/exit; native bodies exclusively use the resident attachment. */
+  public async exec(containerId: string, execution: EngineExec): Promise<string> {
+    const input = execution.input ?? "";
+    if (Buffer.byteLength(input) > 512 * 1024) {
+      throw new SeptError("Hands Engine stdin exceeds its bound");
+    }
+    const attachment = await this.attach(containerId, execution);
+    const started = Date.now();
+    const timer = setTimeout(() => {
+      void attachment.abort(EngineControlError.at("exec-stream", started, { timeout: true }));
+    }, 30_000);
+    try {
+      const output = await collectHandsAttachment(attachment, execution);
+      const inspected = handsRecord(await this.json("GET", `/exec/${attachment.execId}/json`));
+      if (
+        inspected.ContainerID !== containerId ||
+        inspected.Running !== false ||
+        inspected.ExitCode !== 0
+      ) {
+        throw EngineControlError.at("exec-exit", started, {
+          code: typeof inspected.ExitCode === "number" ? inspected.ExitCode : null,
+          attachmentClosed: true,
+          requestJoined: true,
+        });
+      }
+      return output;
+    } finally {
+      clearTimeout(timer);
+      await attachment.abort();
+    }
   }
   /** Release every retained control connection on failed initialization, operator completion or close. */
   public async close(): Promise<void> {
     this.closed = true;
-    const socketsJoined = joinEngineConnections(this.agent);
+    const connections = [
+      ...Object.values(this.agent.sockets),
+      ...Object.values(this.agent.freeSockets),
+    ]
+      .flat()
+      .map((socket) =>
+        socket === undefined || socket.closed
+          ? Promise.resolve()
+          : new Promise<void>((resolve) => socket.once("close", resolve)),
+      );
     this.abort.abort();
     this.agent.destroy();
-    await Promise.allSettled([...this.pending, socketsJoined]);
+    await Promise.allSettled([
+      ...this.pending,
+      ...connections,
+      ...[...this.attachments].map((attachment) => attachment.abort()),
+    ]);
   }
   private own<T>(operation: Promise<T>): Promise<T> {
     this.pending.add(operation);
@@ -150,152 +221,4 @@ export class DockerEngineControl {
     );
     return operation;
   }
-}
-function exchange(
-  socketPath: string,
-  agent: Agent | undefined,
-  method: "GET" | "POST",
-  path: string,
-  body?: unknown,
-  signal?: AbortSignal,
-): Promise<unknown> {
-  return new Promise((resolve, reject) => {
-    const input = engineBody(body);
-    const control = controlRequest(socketPath, path, method, input, "http", agent, signal);
-    const started = Date.now();
-    let failure: EngineControlError | undefined;
-    let output: Buffer | undefined;
-    const fail = (timeout = false, overflow = false, status: number | null = null): void => {
-      failure ??= EngineControlError.at("http", started, { status, timeout, overflow });
-      control.destroy();
-    };
-    const timer = setTimeout(() => {
-      fail(true);
-    }, 30_000);
-    registerResponse(control, fail, (result) => {
-      output = result;
-    });
-    control.once("close", () => {
-      clearTimeout(timer);
-      settleResponse(
-        output,
-        failure?.joined({
-          attachmentClosed: false,
-          connectionsReleased: agent === undefined || signal?.aborted === true,
-        }),
-        resolve,
-        reject,
-      );
-    });
-    control.end(input);
-  });
-}
-function attachment(
-  socketPath: string,
-  path: string,
-  execution: EngineExec,
-  signal: AbortSignal,
-): Promise<string> {
-  if (Buffer.byteLength(execution.input ?? "") > 512 * 1024) {
-    throw new SeptError("Hands Engine stdin exceeds its bound");
-  }
-  const body = JSON.stringify({ Detach: false, Tty: false });
-  return new Promise((resolve, reject) => {
-    const control = controlRequest(socketPath, path, "POST", body, "exec", undefined, signal);
-    beginAttachment(control, execution, signal, resolve, reject);
-    control.end(body);
-  });
-}
-function registerAttachment(
-  control: ClientRequest,
-  execution: EngineExec,
-  fail: (error: Error) => void,
-  settle: (output?: string) => void,
-  signal: AbortSignal,
-  connected: (socket: Socket) => void,
-): void {
-  const started = Date.now();
-  control.once("upgrade", (response, socket, head) => {
-    connected(socket);
-    if (response.statusCode !== 101) {
-      fail(EngineControlError.at("exec-upgrade", started, { status: response.statusCode ?? null }));
-    }
-    consumeHandsProcessStream(socket, head, execution, fail, settle, signal);
-  });
-  control.once("response", (response) => {
-    response.destroy();
-    fail(EngineControlError.at("exec-upgrade", started, { status: response.statusCode ?? null }));
-  });
-  control.once("error", () => {
-    fail(EngineControlError.at(signal.aborted ? "closed-owner" : "exec-connect", started));
-  });
-}
-
-function beginAttachment(
-  control: ClientRequest,
-  execution: EngineExec,
-  signal: AbortSignal,
-  resolve: (value: string) => void,
-  reject: (error: unknown) => void,
-): void {
-  const requestJoined = new Promise<void>((join) => control.once("close", join));
-  let socket: Socket | undefined;
-  let failure: Error | undefined;
-  const fail = (error: Error): void => {
-    failure ??= error;
-    control.destroy();
-    socket?.destroy();
-  };
-  const timer = attachmentTimeout(fail);
-  const settle = (output?: string): void => {
-    clearTimeout(timer);
-    settleAttachment(output, failure, resolve, reject);
-  };
-  registerAttachment(
-    control,
-    execution,
-    fail,
-    (output) => {
-      settleJoined(requestJoined, settle, output);
-    },
-    signal,
-    (connected) => {
-      socket = connected;
-    },
-  );
-  control.once("close", () => {
-    if (socket === undefined) {
-      settleJoined(requestJoined, settle);
-    }
-  });
-}
-
-function registerResponse(
-  control: ClientRequest,
-  fail: (timeout?: boolean, overflow?: boolean, status?: number | null) => void,
-  complete: (result: Buffer) => void,
-): void {
-  control.once("response", (response) => {
-    collectResponse(response, fail, complete);
-  });
-  control.once("error", () => {
-    fail();
-  });
-}
-
-function attachmentTimeout(fail: (error: Error) => void): NodeJS.Timeout {
-  const started = Date.now();
-  return setTimeout(() => {
-    fail(EngineControlError.at("exec-stream", started, { timeout: true }));
-  }, 30_000);
-}
-
-function settleJoined(
-  joined: Promise<void>,
-  settle: (output?: string) => void,
-  output?: string,
-): void {
-  void joined.then(() => {
-    settle(output);
-  });
 }

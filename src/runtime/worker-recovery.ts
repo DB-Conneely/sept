@@ -20,7 +20,7 @@ import {
   checkpointPermissionWait,
   readInvocationAdmission,
 } from "../pi-integration/index.js";
-import { revokeRecordedHandsBinding } from "../execution/index.js";
+import { assertHandsRunProfile, revokeRecordedHandsBinding } from "../execution/index.js";
 import { updateRuntimeSnapshot } from "./runtime-state.js";
 import type { WorkerAdoption } from "./contracts.js";
 
@@ -106,6 +106,7 @@ function permissionWaiting(store: RunStore): boolean {
 }
 /** Crash recovery closes the captured effect namespace before acknowledgement/waiting, never schedules a retry. */
 export async function reconcilePermissionWait(store: RunStore): Promise<void> {
+  assertHandsRunProfile(store);
   const snapshot = store.snapshot();
   const admission = readInvocationAdmission(store);
   if (

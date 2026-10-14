@@ -1,3 +1,14 @@
+import type {
+  HandsCommandStart,
+  HandsCommandExit,
+  HandsCommandHandler,
+} from "./hands-command-contracts.js";
+export type {
+  HandsCommandStart,
+  HandsCommandExit,
+  HandsCommandHandler,
+  HandsCommandExecutor,
+} from "./hands-command-contracts.js";
 /** Defines the trusted supplied hands port. Native Pi still owns tool scheduling and replay. */
 
 import { SeptError, type CapabilityGrant } from "../durable/index.js";
@@ -23,7 +34,7 @@ export interface CustomHand {
 }
 /** One effect or resource request. Principal, cwd and generation are supplied by trusted composition. */
 export type HandsRequest =
-  | { kind: "resources"; workspaceRead?: boolean }
+  | { kind: "resources"; workspaceRead?: boolean; grants?: CapabilityGrant[] }
   | {
       kind: "custom";
       callId: string;
@@ -83,7 +94,7 @@ export interface HandsToolResult {
 
 /** Trusted operator configuration for the one supported Linux reference profile. */
 export interface DockerHandsConfiguration {
-  profile: "docker-linux-v1";
+  profile: "docker-linux-warm-v1";
   /** Explicit OS-protected local Engine endpoint; ambient Docker contexts never select authority. */
   engineSocket: string;
   containerId: string;
@@ -110,55 +121,9 @@ export interface DockerHandsConfiguration {
   readWriteMounts?: { source: string; destination: string }[];
 }
 
-/** Lost transport/identity authority seals native work; unsafe effects remain explicitly uncertain. */
-export class HandsBackendUnavailableError extends SeptError {}
+export { HandsBackendUnavailableError, type HandsLossFacts } from "./hands-loss.js";
 
-/** Sanitized control facts exclude peer payloads, command text, diagnostics and endpoint paths. */
-export interface EngineFailureFacts {
-  stage: string;
-  elapsedMs: number;
-  code: number | null;
-  signal: null;
-  status: number | null;
-  timeout: boolean;
-  overflow: boolean;
-  /** The owning request/attachment has settled; this does not release retained Agent connections. */
-  requestJoined: boolean;
-  attachmentClosed: boolean;
-  connectionsReleased: boolean;
-}
-/** Engine loss retains observable exit facts; an unknown signal is never fabricated from a code. */
-export class EngineControlError extends SeptError {
-  /** Facts start unjoined; only the owning finalizer may attest observed closure. */
-  public static at(
-    stage: string,
-    started: number,
-    details: Partial<EngineFailureFacts> = {},
-  ): EngineControlError {
-    return new EngineControlError({
-      stage,
-      elapsedMs: Date.now() - started,
-      code: null,
-      signal: null,
-      status: null,
-      timeout: false,
-      overflow: false,
-      requestJoined: false,
-      attachmentClosed: false,
-      connectionsReleased: false,
-      ...details,
-    });
-  }
-  /** Called after observed request/socket closure, without confusing retained connections with join. */
-  public joined(
-    closure: Pick<EngineFailureFacts, "attachmentClosed" | "connectionsReleased">,
-  ): EngineControlError {
-    return new EngineControlError({ ...this.facts, requestJoined: true, ...closure });
-  }
-  public constructor(public readonly facts: EngineFailureFacts) {
-    super(`Hands Engine control failed at ${facts.stage}`);
-  }
-}
+export { EngineControlError, type EngineFailureFacts } from "./engine-failure.js";
 
 /** Trusted command composition only; model data cannot select Engine operations or confirmation. */
 export interface EngineExec {
@@ -168,6 +133,10 @@ export interface EngineExec {
   user?: string;
   privileged?: boolean;
   maximum?: number;
+  /** Trusted owner rechecks live admission after registration and immediately before Engine start. */
+  beforeStart?: () => Promise<void>;
+  /** Actual Bash combines stderr into native output; fixed control/custom diagnostics remain drained. */
+  combineOutput?: boolean;
   /** Fixed stop helper must pin its namespace before the final brain-owned generation check. */
   confirm?: () => Promise<void>;
 }
@@ -226,4 +195,121 @@ function parseWorkspaceLimits(value: unknown): { bytes: number; inodes: number }
 
 function finiteWorkspaceLimit(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+}
+
+/** Every control message belongs to one attachment and one serial parent operation; authentication grants nothing. */
+export interface HandsCorrelation {
+  version: 1;
+  generation: string;
+  configuration: string;
+  session: string;
+  sequence: number;
+}
+/** Closed resident protocol; command bytes remain data and cannot select Engine authority. */
+export type HandsFrame = HandsCorrelation &
+  (
+    | {
+        kind: "hello";
+        payload: { challenge: string; pid: number; start: string; guard: 2; network: "denied" };
+      }
+    | { kind: "operation"; payload: HandsRequest }
+    | { kind: "result"; payload: unknown }
+    | { kind: "error"; payload: { stage: "operation" | "authority" | "protocol" | "shutdown" } }
+    | {
+        kind: "effect-check";
+        payload: {
+          effect: number;
+          right: "operation" | "read" | "write" | "resources";
+          path: string;
+        };
+      }
+    | { kind: "ack"; payload: { effect: number; allowed: boolean } }
+    | { kind: "command-start"; payload: HandsCommandStart }
+    | {
+        kind: "command-data";
+        payload: { commandId: number; stream: "stdout" | "stderr"; text: string };
+      }
+    | {
+        kind: "command-exit";
+        payload: HandsCommandExit & { commandId: number };
+      }
+    | { kind: "cancel"; payload: { commandId?: number } }
+  );
+
+/** Correlation binds a validated message to its attachment and serial parent; it never confers a grant. */
+export function assertHandsCorrelation(
+  frame: HandsFrame,
+  expected: HandsCorrelation,
+  sequence: number,
+): void {
+  if (
+    frame.generation !== expected.generation ||
+    frame.configuration !== expected.configuration ||
+    frame.session !== expected.session ||
+    frame.sequence !== sequence
+  ) {
+    throw new SeptError("Hands frame correlation was refused");
+  }
+}
+
+/** Narrow an external JSON object without accepting arrays or null. */
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** Narrow an external JSON object without accepting arrays or null. */
+export function handsRecord(value: unknown): Record<string, unknown> {
+  if (!isRecord(value)) {
+    throw new SeptError("Hands protocol requires an object");
+  }
+  return value;
+}
+
+/** Cancellation is checked afresh after each await and cannot be overridden by an earlier grant. */
+export function assertHandsActive(signal: AbortSignal): void {
+  if (signal.aborted) {
+    throw new SeptError("Hands operation was cancelled");
+  }
+}
+
+/** Parse one bounded Engine JSON response; hostile text never enters the error envelope. */
+export function parseEngineJson(output: Buffer): unknown {
+  try {
+    const value: unknown = output.length === 0 ? null : JSON.parse(output.toString("utf8"));
+    return value;
+  } catch {
+    throw new SeptError("Hands Engine response is malformed");
+  }
+}
+
+/** One serial parent owns its effect acknowledgments and bounded response budget until settlement. */
+export interface HandsPendingOperation {
+  sequence: number;
+  authorize: (frame: Extract<HandsFrame, { kind: "effect-check" }>) => Promise<void>;
+  resolve: (value: unknown) => void;
+  reject: (error: unknown) => void;
+  bytes: number;
+  effect: number;
+  stage: "operation" | "authorizing" | "executing";
+  command?: { id: number; abort: AbortController; joined: Promise<void> };
+  startCommand?: HandsCommandHandler;
+}
+
+/** A serial parent's live authority check; work-visible paths can never create an independent grant. */
+export type HandsEffectCheck = (
+  right: "operation" | "read" | "write" | "resources",
+  path: string,
+) => Promise<void>;
+
+/** A challenge proves the exact guarded attachment; peer startup metadata grants no effect rights. */
+export function authenticateHandsHello(
+  frame: HandsFrame,
+  expected: HandsCorrelation,
+  challenge: string,
+): Extract<HandsFrame, { kind: "hello" }> {
+  assertHandsCorrelation(frame, expected, 0);
+  if (frame.kind !== "hello" || frame.payload.challenge !== challenge || frame.payload.pid <= 1) {
+    throw new SeptError("Hands authentication handshake was refused");
+  }
+  return frame;
 }

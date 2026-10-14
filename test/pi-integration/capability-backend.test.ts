@@ -1,7 +1,7 @@
 /** Checks the supplied port and bounded profile contract; installed Docker proof supplies isolation facts. */
 
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, realpathSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import test from "node:test";
@@ -14,7 +14,6 @@ import {
   validateDockerProfile,
   parseHandsToolResult,
   parseHandsResources,
-  type DockerHandsConfiguration,
   type ExecutionBackend,
   type HandsRequest,
 } from "../../src/execution/index.js";
@@ -27,58 +26,8 @@ import { executeHandsRequest } from "../../src/execution/hands-entry.js";
 import { createDurableCodingTools } from "../../src/pi-integration/durable-tools.js";
 import { publicTaskProjection, publicRunEvent } from "../../src/ingress/index.js";
 import { FixtureExecutionBackend } from "./backend-support.js";
+import { profileFixture } from "./capability-profile-support.js";
 import { fixtureDirectories, fixtureStore } from "./support.js";
-
-const SAFE_HOST_CONFIG = {
-  Init: true,
-  Privileged: false,
-  PidMode: "",
-  IpcMode: "private",
-  UTSMode: "",
-  UsernsMode: "",
-  NetworkMode: "none",
-  ReadonlyRootfs: true,
-  CapDrop: ["ALL"],
-  SecurityOpt: ["no-new-privileges"],
-  Memory: 256 * 1024 * 1024,
-  PidsLimit: 64,
-  NanoCpus: 500_000_000,
-  Tmpfs: { "/tmp": "rw,nosuid,nodev,noexec,size=16777216,mode=1777" },
-};
-
-function profileFixture(): {
-  configuration: DockerHandsConfiguration;
-  inspected: Record<string, unknown>;
-  brain: string;
-} {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "sept-hands-profile-")));
-  for (const name of ["workspace", "resources", "brain"]) {
-    mkdirSync(join(root, name));
-  }
-  const configuration: DockerHandsConfiguration = {
-    profile: "docker-linux-v1",
-    dataDomain: "mutable-file-bind",
-    engineSocket: "/run/docker.sock",
-    containerId: "a".repeat(64),
-    generation: "generation-1",
-    workspace: join(root, "workspace"),
-    resources: join(root, "resources"),
-    shell: false,
-    readOnlyMounts: [],
-  };
-  const inspected = {
-    Id: configuration.containerId,
-    Image: `sha256:${"f".repeat(64)}`,
-    State: { Running: true, StartedAt: configuration.generation },
-    Config: { User: "10002:10002", Env: [], Entrypoint: null, Cmd: ["sleep", "infinity"] },
-    HostConfig: SAFE_HOST_CONFIG,
-    Mounts: [
-      { Source: configuration.workspace, Destination: "/workspace", Type: "bind", RW: true },
-      { Source: configuration.resources, Destination: "/resources", Type: "bind", RW: false },
-    ],
-  };
-  return { configuration, inspected, brain: join(root, "brain") };
-}
 
 void test("hands protocol keeps Pi text/image parity and refuses malformed or oversized content", () => {
   assert.deepEqual(parseHandsRequest({ kind: "resources" }), { kind: "resources" });
@@ -141,21 +90,52 @@ const INVALID_HOST_PROFILES = [
   { Devices: [{ PathOnHost: "/dev/x" }] },
 ];
 
-void test("source provenance accepts 4096 entries and refuses the next before dispatch", () => {
+void test("RO source provenance accepts 4096 entries and refuses the next before dispatch", () => {
   const { configuration, inspected, brain } = profileFixture();
   for (let index = 0; index < 4096; index += 1) {
-    writeFileSync(join(configuration.workspace, `file-${String(index)}`), "bounded");
+    writeFileSync(join(configuration.resources, `file-${String(index)}`), "bounded");
   }
   assert.equal(
     validateDockerProfile(configuration, inspected, configuration.workspace, [brain]),
     "/workspace",
   );
-  writeFileSync(join(configuration.workspace, "overflow"), "PRESERVE");
+  writeFileSync(join(configuration.resources, "overflow"), "PRESERVE");
   assert.throws(
     () => validateDockerProfile(configuration, inspected, configuration.workspace, [brain]),
     /discovery exceeds its bound/,
   );
-  assert.equal(readFileSync(join(configuration.workspace, "overflow"), "utf8"), "PRESERVE");
+  assert.equal(readFileSync(join(configuration.resources, "overflow"), "utf8"), "PRESERVE");
+});
+
+void test("live profile qualification retains mount identity without rediscovering mutable resource descendants", () => {
+  const { configuration, inspected, brain } = profileFixture();
+  validateDockerProfile(configuration, inspected, configuration.workspace, [brain]);
+  for (let index = 0; index < 4097; index += 1) {
+    writeFileSync(join(configuration.resources, `epoch-${String(index)}`), "bounded");
+  }
+  assert.equal(
+    validateDockerProfile(configuration, inspected, configuration.workspace, [brain], {
+      qualification: "live",
+    }),
+    "/workspace",
+  );
+  assert.throws(
+    () => validateDockerProfile(configuration, inspected, configuration.workspace, [brain]),
+    /discovery exceeds its bound/,
+  );
+  assert.throws(
+    () =>
+      validateDockerProfile(
+        configuration,
+        { ...inspected, Mounts: [] },
+        configuration.workspace,
+        [brain],
+        {
+          qualification: "live",
+        },
+      ),
+    SeptError,
+  );
 });
 
 void test("profile validates exact kernel namespace/mount provenance and rejects weaker configurations", () => {
@@ -266,7 +246,7 @@ void test("unsupported native methods refuse without reaching the supplied effec
   });
 });
 
-await test("hands entry uses the existing Pi write body and supplied native file operation", async () => {
+await test("hands entry uses handsReadOptions, executeHandsFile and the existing Pi write body", async () => {
   const directory = mkdtempSync(join(tmpdir(), "sept-hands-body-"));
   const written = await executeHandsRequest(
     {
@@ -274,15 +254,23 @@ await test("hands entry uses the existing Pi write body and supplied native file
       name: "write",
       callId: "body",
       arguments: { path: "artifact.txt", content: "native body" },
+      grants: [{ root: directory, read: true, write: true }],
     },
     directory,
+    () => Promise.resolve(),
   );
   assert.match(JSON.stringify(parseHandsToolResult(written)), /Successfully wrote/);
   assert.equal(readFileSync(join(directory, "artifact.txt"), "utf8"), "native body");
   assert.deepEqual(
     await executeHandsRequest(
-      { kind: "file", method: "readTextFile", path: "artifact.txt" },
+      {
+        kind: "file",
+        method: "readTextFile",
+        path: "artifact.txt",
+        grants: [{ root: directory, read: true, write: true }],
+      },
       directory,
+      () => Promise.resolve(),
     ),
     { ok: true, value: "native body" },
   );

@@ -13,6 +13,7 @@ import {
   loadHandsConfiguration,
   validateDockerConfiguration,
   capabilityBinding,
+  assertHandsRunProfile,
 } from "../execution/index.js";
 import { assertCapabilityExpansion } from "./permissions.js";
 import { wakeRunForOperator } from "../runtime/index.js";
@@ -43,6 +44,7 @@ export async function permissionDecision(
   }
   const selected = permissionRequest(invocation, requests);
   const run = new RunStore(join(root, selected.runId));
+  assertHandsRunProfile(run);
   if (run.snapshot().status !== "waiting") {
     throw new SeptError("Permission decisions require the still-waiting original run");
   }
@@ -97,6 +99,8 @@ async function applyPermissionDecision(
   run: RunStore,
 ): Promise<unknown> {
   if (invocation.action === "deny") {
+    // Old records stay inspectable; incompatible runtime configuration cannot rewrite a decision.
+    loadHandsConfiguration(invocation.options.hands ?? process.env.SEPT_HANDS_CONFIGURATION);
     return requests.decide(selected.id, selected.digest, {
       status: "denied",
       revision: previous.revision,
@@ -198,6 +202,7 @@ export async function resumePermissionRun(
     throw new CliError("Resuming preserves the original task, model and limits");
   }
   const store = new RunStore(join(root, id));
+  assertHandsRunProfile(store);
   if (store.snapshot().status !== "waiting" || store.snapshot().permissionRequestId === undefined) {
     throw new CliError("Explicit local permission retry requires its still-waiting original run");
   }

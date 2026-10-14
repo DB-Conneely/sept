@@ -174,6 +174,11 @@ function prepareProjection(root: string, receipt: string, agentDir: string): voi
   if (directoryEmpty(root)) {
     return;
   }
+  assertOwnedProjection(root, receipt, agentDir);
+  rmSync(join(root, "skills"), { recursive: true, force: true });
+}
+
+function assertOwnedProjection(root: string, receipt: string, agentDir: string): void {
   // A marker in consumer storage is not ownership. Only the private run receipt can
   // authorize refresh, and unknown/edited files are preserved by refusing before mutation.
   if (!existsSync(receipt) || statSync(receipt).size > 128 * 1024) {
@@ -192,7 +197,6 @@ function prepareProjection(root: string, receipt: string, agentDir: string): voi
   ) {
     throw new SeptError("Resource projection ownership differs; existing data was preserved");
   }
-  rmSync(join(root, "skills"), { recursive: true, force: true });
 }
 
 function projectGlobalInstructions(agentDir: string, root: string): void {
@@ -277,6 +281,12 @@ export async function loadDurableSections(
 ): Promise<PromptSection[]> {
   try {
     await projectTrustedResources(agentDir, backend);
+    // Registry/epoch publication follows the private ownership receipt; unknown consumer data refuses intact.
+    assertOwnedProjection(
+      backend.resourceProjectionDirectory,
+      backend.resourceProjectionReceipt,
+      agentDir,
+    );
   } catch (error: unknown) {
     throw new SeptError("Trusted resources could not be projected", { cause: error });
   }

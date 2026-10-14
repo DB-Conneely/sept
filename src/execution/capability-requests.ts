@@ -1,5 +1,6 @@
 /** Exact permission authority translates bounded facts only; the backend owns all effects and timers. */
 import { join } from "node:path";
+import { watch, type FSWatcher } from "node:fs";
 import {
   CapabilityRequestStore,
   CapabilityRequestWaitingError,
@@ -14,7 +15,11 @@ import {
   type HandsRequest,
   type DockerHandsConfiguration,
 } from "./contracts.js";
-import { admitCapabilityRequest, admitApprovedCapabilityRequest } from "./capability-admission.js";
+import {
+  capabilityBinding,
+  admitCapabilityRequest,
+  admitApprovedCapabilityRequest,
+} from "./capability-admission.js";
 /** One live exact-decision owner bound to the installed backend and immutable native run. */
 export class CapabilityRequestAuthority {
   private pendingRequest: string | undefined;
@@ -28,6 +33,11 @@ export class CapabilityRequestAuthority {
     private readonly assertPolicy: () => CapabilityPolicy,
   ) {
     this.requests = new CapabilityRequestStore(join(policyStore.path, ".."));
+  }
+  /** The backend retains/clears this deadline; expiry seals its parent before asynchronous shutdown. */
+  public expirationTimer(request: HandsRequest, expire: () => void): NodeJS.Timeout | undefined {
+    const expiry = this.approvalExpiry(request);
+    return expiry === undefined ? undefined : setTimeout(expire, Math.max(1, expiry - Date.now()));
   }
   /** Explicit block keeps the original native call denied before its unsafe intent is admitted. */
   public beforeTool(
@@ -170,4 +180,47 @@ export class CapabilityRequestAuthority {
       );
     return approved?.decision?.expiresAt;
   }
+}
+
+/** Recheck the whole live record against the parent snapshot; an equal revision cannot legitimize edited authority. */
+export function verifyHandsPolicy(
+  configuration: DockerHandsConfiguration,
+  policyStore: CapabilityPolicyStore,
+  policy: CapabilityPolicy,
+): CapabilityPolicy {
+  try {
+    const current = policyStore.read();
+    if (
+      current === undefined ||
+      current.denied ||
+      // Equal revision cannot legitimize edited authority; captured arguments/rights stay immutable.
+      JSON.stringify(current) !== JSON.stringify(policy) ||
+      JSON.stringify(current.binding) !== JSON.stringify(capabilityBinding(configuration))
+    ) {
+      throw new HandsBackendUnavailableError(
+        "Live capability authority is unavailable; explicit fresh configuration is required",
+      );
+    }
+    return current;
+  } catch (error: unknown) {
+    throw new HandsBackendUnavailableError(
+      "Live capability authority is unavailable; explicit fresh configuration is required",
+      { cause: error },
+    );
+  }
+}
+
+/** Backend owns the returned watcher; invalid authority seals before asynchronous exact-generation stop. */
+export function watchHandsPolicy(
+  policyPath: string,
+  assertPolicy: () => unknown,
+  stop: () => Promise<void>,
+): FSWatcher {
+  return watch(join(policyPath, ".."), () => {
+    try {
+      assertPolicy();
+    } catch {
+      void stop().catch(() => undefined);
+    }
+  });
 }

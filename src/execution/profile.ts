@@ -1,7 +1,7 @@
 /** Validates actual consumer-started Linux containment, not command spelling or promises. */
 
-import { realpathSync, lstatSync, opendirSync, existsSync } from "node:fs";
-import { isAbsolute, join, relative, sep } from "node:path";
+import { realpathSync, existsSync } from "node:fs";
+import { join, relative, sep } from "node:path";
 import { atomicWrite, SeptError } from "../durable/index.js";
 import type { DockerHandsConfiguration, HandsKernelProfile } from "./contracts.js";
 import {
@@ -12,11 +12,7 @@ import {
 export { loadHandsConfiguration } from "./profile-configuration.js";
 import { validateNetworkProfile } from "./network-profile.js";
 import { handsRecord } from "./protocol.js";
-
-function beneath(path: string, root: string): boolean {
-  const child = relative(root, path);
-  return child !== ".." && !child.startsWith(`..${sep}`) && !isAbsolute(child);
-}
+import { beneath, assertSourceTree } from "./profile-sources.js";
 
 function assertPrivateMounts(
   configuration: DockerHandsConfiguration,
@@ -128,63 +124,11 @@ function assertNoAmbientEnvironment(value: unknown): void {
   }
 }
 
-function inspectSourceDirectory(
-  directory: string,
-  root: string,
-  pending: string[],
-  remaining: number,
-): number {
-  const stream = opendirSync(directory);
-  let count = 0;
-  try {
-    for (let entry = stream.readSync(); entry !== null; entry = stream.readSync()) {
-      count += 1;
-      if (count > remaining) {
-        throw new SeptError("Hands mount provenance discovery exceeds its bound");
-      }
-      inspectSourceEntry(join(directory, entry.name), root, pending);
-    }
-    return count;
-  } finally {
-    stream.closeSync();
-  }
-}
-
-function assertSourceTree(root: string): void {
-  const pending = [root];
-  const seen = new Set<string>();
-  let count = 0;
-  while (pending.length > 0) {
-    const directory = pending.pop();
-    if (directory === undefined) {
-      break;
-    }
-    const canonical = realpathSync(directory);
-    if (!beneath(canonical, root)) {
-      throw new SeptError("Hands mount symlink escapes its declared source");
-    }
-    if (seen.has(canonical)) {
-      continue;
-    }
-    seen.add(canonical);
-    count += inspectSourceDirectory(directory, root, pending, 4096 - count);
-  }
-}
-
-function inspectSourceEntry(path: string, root: string, pending: string[]): void {
-  const real = realpathSync(path);
-  if (!beneath(real, root)) {
-    throw new SeptError("Hands mount alias escapes its declared source");
-  }
-  const stat = lstatSync(real);
-  if (stat.isDirectory()) {
-    pending.push(real);
-  } else if (!stat.isFile() || stat.nlink !== 1) {
-    throw new SeptError("Hands mount contains a service channel, special file or hardlink alias");
-  }
-}
-
-function assertMounts(configuration: DockerHandsConfiguration, value: unknown): void {
+function assertMounts(
+  configuration: DockerHandsConfiguration,
+  value: unknown,
+  qualification: "opening" | "live",
+): void {
   if (!Array.isArray(value)) {
     throw new SeptError("Hands mounts are unavailable");
   }
@@ -210,8 +154,21 @@ function assertMounts(configuration: DockerHandsConfiguration, value: unknown): 
     ) {
       throw new SeptError("Hands mount provenance or kernel access differs from configuration");
     }
-    // The scan is bounded provenance preflight; kernel namespaces/mounts enforce effects, not realpath/open claims.
-    assertSourceTree(matching.source);
+    // Opening qualifies data provenance once; live effects retain bounded mount/root identity and anchored owners.
+    assertMountSource(matching, qualification);
+  }
+}
+
+function assertMountSource(
+  mount: {
+    destination: string;
+    writable: boolean;
+    source: string;
+  },
+  qualification: "opening" | "live",
+): void {
+  if (qualification === "opening" && mount.destination !== "/workspace" && !mount.writable) {
+    assertSourceTree(mount.source);
   }
 }
 
@@ -230,6 +187,7 @@ export function validateDockerProfile(
   value: unknown,
   workspace: string,
   brainRoots: readonly string[],
+  options: { qualification: "opening" | "live" } = { qualification: "opening" },
 ): string {
   try {
     const inspected = handsRecord(value);
@@ -254,7 +212,7 @@ export function validateDockerProfile(
       throw new SeptError("Hands entrypoint differs from the supplied idle profile");
     }
     expectValue(JSON.stringify(config.Cmd), JSON.stringify(["sleep", "infinity"]));
-    assertMounts(configuration, inspected.Mounts);
+    assertMounts(configuration, inspected.Mounts, options.qualification);
     return workspaceAlias(workspace, configuration.workspace);
   } catch (error: unknown) {
     if (error instanceof SeptError) {

@@ -1,8 +1,9 @@
+import { guardedCommand } from "./hands-processes.js";
 /** Kernel qualification and exact-generation ownership over the one explicit Engine control port. */
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { acquireStateRootLease, atomicWrite, type RunStore, SeptError } from "../durable/index.js";
-import type { DockerHandsConfiguration, EngineExec, NamespaceLifetime } from "./contracts.js";
+import type { DockerHandsConfiguration, NamespaceLifetime } from "./contracts.js";
 import { DockerEngineControl } from "./docker-engine.js";
 import { handsRecord } from "./protocol.js";
 import { validateNetworkEnforcement } from "./network-enforcement.js";
@@ -17,22 +18,9 @@ import {
 import {
   captureNamespaceLifetime,
   stopCapturedNamespace,
-  guardedCommand,
   validateSealedInputs,
 } from "./hands-processes.js";
 export { qualifyCapabilityEngine } from "./profile-configuration.js";
-/** Exact credential-free cold entry; model data never becomes Engine command/environment selection. */
-export function handsExecution(
-  cwd: string,
-  input: string,
-  rights: { network: boolean },
-): EngineExec {
-  return {
-    cwd,
-    input,
-    command: guardedCommand(["/app/dist/src/execution/hands-entry.js"], rights),
-  };
-}
 /** Read bounded kernel/namespace facts from the already authenticated daemon. */
 export function inspect(
   configuration: DockerHandsConfiguration,
@@ -180,6 +168,7 @@ export async function recordHandsBinding(
   cwd: string,
   engine: DockerEngineControl,
 ): Promise<void> {
+  assertHandsRunProfile(store);
   const path = join(store.runDir, "hands-binding.json");
   const policyPath = join(dirname(store.runDir), "capability-policy.json");
   if (existsSync(path)) {
@@ -211,6 +200,14 @@ export async function recordHandsBinding(
     runId: store.runId,
     lifetime: readNamespaceLifetime(configuration, engine, policyPath),
   });
+}
+
+/** Refuse incompatible captured run authority before recovery, decisions, retry or native state writes. */
+export function assertHandsRunProfile(store: RunStore): void {
+  const path = join(store.runDir, "hands-binding.json");
+  if (existsSync(path) && readBinding(path).profile !== "docker-linux-warm-v1") {
+    throw new SeptError("Previous hands profile is absent or incompatible with the warm runtime");
+  }
 }
 
 /** The dedicated namespace lease is acquired only after kernel qualification, before binding/scheduling. */

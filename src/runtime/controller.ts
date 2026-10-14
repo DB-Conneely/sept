@@ -12,6 +12,7 @@ import {
 } from "../durable/index.js";
 import type { Observability } from "../observability/index.js";
 import { classifyError, NOOP_TELEMETRY } from "../observability/index.js";
+import { assertHandsRunProfile } from "../execution/index.js";
 import { PiSessionHost, type SessionHost } from "../pi-integration/index.js";
 import { RuntimeInvocationLoop } from "./invocation-loop.js";
 import {
@@ -133,6 +134,7 @@ export class CycleController {
     if (snapshot.status !== "active") {
       return;
     }
+    assertHandsRunProfile(this.store);
     reconcileActiveDeadline(this.store);
     await reconcilePermissionWait(this.store);
     this.recordStarted(snapshot);
