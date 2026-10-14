@@ -141,8 +141,8 @@ The image runs as uid/gid `10001`, contains no credentials, sets `SEPT_STATE_DIR
 ## Verification
 
 ```bash
-docker build --no-cache -t sept:c1-confinement .
-SEPT_HANDS_TEST_IMAGE=sept:c1-confinement npm run gate
+docker build --no-cache --iidfile /tmp/sept-warm.iid -t sept:warm-local .
+SEPT_HANDS_TEST_IMAGE="$(cat /tmp/sept-warm.iid)" npm run gate
 npm audit
 ```
 
@@ -150,11 +150,13 @@ The acceptance suite drives the production `PiSessionHost`, installed model/auth
 
 ## Supplied hands
 
-Operators start the dedicated hands namespace separately; SEPT does not provision Docker. The current `docker-linux-v1` execution remains cold and requires an explicit trusted local `engineSocket` and `dataDomain`. The default `private` domain uses the same consumer-seeded finite `/workspace` tmpfs with or without shell rights. Declare `workspaceLimits: { bytes, inodes }`, choose actual finite Docker memory/PID/CPU limits with measured process headroom, and export data before stopping the namespace. `mutable-file-bind` admits anchored individual file effects only, without Bash or native project discovery. Selected inputs used for commands/discovery must be detached regular data sealed recursively with Linux immutable inode flags; a read-only bind alone is insufficient.
+Operators start the dedicated hands namespace separately; SEPT does not provision Docker. The supported `docker-linux-warm-v1` profile requires an explicit trusted local `engineSocket` and `dataDomain`. Brain uses Node core HTTP/streams on that Unix socket; ambient Docker contexts, `DOCKER_HOST` and a Docker CLI do not select authority. The local Linux Engine negotiates API 1.44–1.52 and binds socket/daemon identity to the namespace receipt. The default `private` domain uses the same consumer-seeded finite `/workspace` tmpfs with or without shell rights. Declare `workspaceLimits: { bytes, inodes }`, choose actual finite Docker memory/PID/CPU limits with measured process headroom, and export data before stopping the namespace. `mutable-file-bind` admits anchored individual file effects only, without Bash or native project discovery. Selected inputs used for commands/discovery must be detached regular data sealed recursively with Linux immutable inode flags; a read-only bind alone is insufficient.
 
-Pass the trusted JSON profile using `./sept worker --hands /trusted/hands.json` or `./sept run ... --hands /trusted/hands.json`. The immutable container ID and generation, exact flags, mount layout, limits and recovery behavior are documented in [the profile contract](docs/pi-contract.md#supplied-hands-reference-profile). The profile uses `--init` and fixed `sleep infinity`; completed Bash calls join all descendants before returning. Normal close preserves an idle consumer namespace; cancellation/loss stops and verifies all descendants and requires a fresh supplied generation. Failed verification durably blocks the run instead of claiming cancellation. Missing/unsupported enforcement keeps health/history available and refuses native execution.
+Pass the trusted JSON profile using `./sept worker --hands /trusted/hands.json` or `./sept run ... --hands /trusted/hands.json`. The immutable container ID and generation, exact flags, mount layout, limits and recovery behavior are documented in [the profile contract](docs/pi-contract.md#supplied-hands-reference-profile). The profile uses `--init`, fixed `sleep infinity` and a read-only image. One guarded resident executor at UID10002 retains Pi tool imports and its authenticated Engine exec attachment across serial calls; actual Bash/custom processes use command UID10003 and workspace group10002. The resident stays network denied even when commands have explicit network rights. Completed commands join detached, setsid, forking and socket descendants before returning. Normal close preserves an idle consumer namespace; cancellation/loss stops and verifies all descendants and requires a fresh supplied generation. Failed verification durably blocks the run instead of claiming cancellation. Missing/unsupported enforcement keeps health/history available and refuses native execution.
 
-Installed composition tests own generated consumer containers, seed/export command workspace contents and verify their stopped state. They require the freshly built image identified by `SEPT_HANDS_TEST_IMAGE` (default `sept:c1-confinement`); no alternate production fixture backend is selectable.
+Installed composition tests own generated consumer containers, seed/export private workspace contents and verify their stopped state. They require the freshly built immutable image ID selected by `SEPT_HANDS_TEST_IMAGE` (the fixture fallback remains `sept:c1-confinement`); no alternate production fixture backend is selectable.
+
+The channel accepts at most 512 KiB per request and 4 MiB per result, with FIFO capacity eight and one active operation. Every operation and anchored effect rechecks live parent authority; retained imports never retain a grant. Setup/framing/shutdown deadlines are separate from native Bash and enclosing run budgets. Ordinary native body errors and verified command timeout/overflow may leave the channel usable. Transport/identity loss seals admission and stops the exact generation; typed bounded stage, elapsed, code/signal and closure facts retain uncertainty without copying command diagnostics into operational logs.
 
 ### Local hands permissions
 
@@ -178,7 +180,7 @@ Read and write are independent; edit needs both. File-only operations refuse sym
 
 `./sept permissions revoke --revision <current> --state-dir <root> --agent-dir <agent>` fsyncs denial before stopping and verifying the exact old namespace. Narrowing also stops the dedicated namespace; tmpfs contents may be lost and interrupted writes/commands remain uncertain. Expansion or changed roots/backend requires verified old-owner quiescence and an actual fresh namespace identity/generation, then an explicit worker restart/retry. Changed configuration bytes or root fingerprints alone cannot create a fresh generation. Restart with missing, denied or malformed policy retains history without native scheduling or budget reset; an interrupted active run may remain recorded as active while dormant. Messages refused under known denial are not queued; accepted messages raced by denial retain their exact durable identity without starting effects. No automatic provisioning, permission grants or unsafe replay is performed.
 
-The fixed hands invocation clears ambient environment, disables Node SIGUSR1 inspection and requires a native `PR_SET_DUMPABLE=0` startup acknowledgement before loading any entry or consuming a request. Same-UID commands cannot open the trusted entry's memory or control descriptors. Missing/older images without this guard refuse before effects. The invocation removes its preload and acknowledgement variables before executing commands. Local dead-owner lease reconciliation uses the existing verified owner identity and grace rules; live, foreign or unverifiable owners remain a refusal.
+The fixed hands invocation clears ambient environment, disables Node SIGUSR1 inspection and requires a version-2 native `PR_SET_DUMPABLE=0` guard acknowledgement before loading the resident. Commands use their separate fixed UID and receive no Engine socket, resident control descriptors, Models/task API or credentials. Missing/older guard images refuse before effects. Immutable image helpers and a fixed trusted process join owner protect the resident and current resource epoch from command memory, signal and path access. Local dead-owner lease reconciliation uses the existing verified owner identity and grace rules; live, foreign or unverifiable owners remain a refusal.
 
 ### Exact permission requests and local retry
 
@@ -209,7 +211,7 @@ The single custom tool pins its operator path/hash/replay in native task memo ev
 
 ### Explicit hands network
 
-A connected `docker-linux-v1` hand adds this trusted configuration to its existing identity/mount fields:
+A connected `docker-linux-warm-v1` hand adds this trusted configuration to its existing identity/mount fields:
 
 ```json
 "network": {
