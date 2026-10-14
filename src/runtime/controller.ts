@@ -15,6 +15,7 @@ import { classifyError, NOOP_TELEMETRY } from "../observability/index.js";
 import { assertHandsRunProfile } from "../execution/index.js";
 import { PiSessionHost, type SessionHost } from "../pi-integration/index.js";
 import { RuntimeInvocationLoop } from "./invocation-loop.js";
+import { SessionCleanupError } from "./errors.js";
 import {
   reconcileActiveDeadline,
   RuntimeLimitError,
@@ -56,6 +57,7 @@ function failureCause(
 export class CycleController {
   private host: SessionHost | undefined;
   private abortRequested = false;
+  private cleanupUnverified = false;
 
   private readonly hostFactory: HostFactory;
 
@@ -185,6 +187,12 @@ export class CycleController {
   }
 
   private recordFailure(error: unknown): void {
+    if (error instanceof SessionCleanupError) {
+      // Latch before persistence: even a failed block publication cannot certify cancellation.
+      this.cleanupUnverified = true;
+      this.recordCleanupFailure(error);
+      return;
+    }
     const message = error instanceof Error ? error.message : String(error);
     const current = this.store.snapshot();
     const terminalCause = failureCause(error);
@@ -301,7 +309,7 @@ export class CycleController {
     let joined = false;
     try {
       await this.closeHost();
-      joined = true;
+      joined = !this.cleanupUnverified;
     } catch (error: unknown) {
       this.recordCleanupFailure(error);
       throw error;

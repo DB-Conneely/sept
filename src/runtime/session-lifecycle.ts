@@ -9,6 +9,7 @@ import type { DurableHandover, Manifest, RunSnapshot, RunStore } from "../durabl
 import type { Observability } from "../observability/index.js";
 import { findSuccessorSession, type SessionHost } from "../pi-integration/index.js";
 import type { HostFactory } from "./controller.js";
+import { SessionCleanupError } from "./errors.js";
 import { enforceEpochLimit, updateRuntimeSnapshot } from "./runtime-state.js";
 
 /** Result of opening/reconciling one native session against durable runtime state. */
@@ -51,12 +52,12 @@ export class RuntimeSessionLifecycle {
       const runnable = await this.reconcile(host, manifest, snapshot, recovering);
       return { host, successorHandover, runnable };
     } catch (error: unknown) {
-      // Ownership has not reached the controller; close here without masking the publication failure.
+      // Ownership has not reached the controller; transfer failed joining with both private causes.
       try {
         await host.close();
       } catch (closeError: unknown) {
         this.telemetry.log("pi.session.closed", { "sept.outcome": "failure" }, "warn");
-        void closeError;
+        throw new SessionCleanupError(error, closeError);
       }
       throw error;
     }
