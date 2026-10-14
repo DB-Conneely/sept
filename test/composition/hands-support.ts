@@ -101,6 +101,12 @@ function containerArguments(
   return arguments_;
 }
 
+function publicResourceDirectory(path: string): void {
+  mkdirSync(path, { mode: 0o755 });
+  // This fresh fixture root must remain traversable under restrictive inherited umask.
+  chmodSync(path, 0o755);
+}
+
 /** Start one generated fixture namespace and explicitly seed/export the bounded command workspace. */
 export function supplyHands(
   workspacePath: string,
@@ -110,7 +116,7 @@ export function supplyHands(
   const workspace = realpathSync(workspacePath);
   const root = dirname(workspace);
   const resources = join(root, `hands-resources-${randomUUID()}`);
-  mkdirSync(resources, { mode: 0o755 });
+  publicResourceDirectory(resources);
   accessibleDirectory(workspace);
   const containerId = docker(containerArguments(resources, network));
   let generation: string | undefined;

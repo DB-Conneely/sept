@@ -58,11 +58,26 @@ function directoryEmpty(directory: string): boolean {
   }
 }
 
+function projectionDirectory(path: string): void {
+  const first = mkdirSync(path, { recursive: true, mode: 0o755 });
+  if (first === undefined) {
+    return;
+  }
+  // Only directories this producer just created are normalized, never existing ancestors.
+  for (let created = path; ; created = dirname(created)) {
+    chmodSync(created, 0o755);
+    if (created === first) {
+      break;
+    }
+  }
+}
+
 function readableText(path: string, text: string): void {
-  mkdirSync(dirname(path), { recursive: true, mode: 0o755 });
+  projectionDirectory(dirname(path));
   const temporary = join(dirname(path), `.${randomUUID()}.tmp`);
   try {
     writeFileSync(temporary, text, { flag: "wx", mode: 0o644 });
+    chmodSync(temporary, 0o644);
     syncFile(temporary);
     renameSync(temporary, path);
     syncFile(dirname(path));
@@ -83,7 +98,7 @@ function syncFile(path: string): void {
 }
 
 function copyResource(source: string, destination: string): void {
-  mkdirSync(dirname(destination), { recursive: true, mode: 0o755 });
+  projectionDirectory(dirname(destination));
   const temporary = join(dirname(destination), `.${randomUUID()}.tmp`);
   try {
     copyFileSync(source, temporary, constants.COPYFILE_EXCL);
@@ -240,7 +255,13 @@ function projectSkills(
 
 async function projectTrustedResources(agentDir: string, backend: ExecutionBackend): Promise<void> {
   const root = backend.resourceProjectionDirectory;
+  const owner = lstatSync(root);
+  // Public projection modes may change only after private ownership validation, never on aliases/foreign roots.
+  if (!owner.isDirectory() || owner.uid !== process.getuid?.()) {
+    throw new SeptError("Resource projection root is not producer-owned");
+  }
   prepareProjection(root, backend.resourceProjectionReceipt, agentDir);
+  chmodSync(root, 0o755);
   const loader = new DefaultResourceLoader({
     // Only operator-owned resource discovery is permitted in brain. Workspace/ancestors are hands-owned.
     cwd: agentDir,

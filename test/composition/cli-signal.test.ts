@@ -4,7 +4,15 @@
  */
 
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, readdirSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { createServer, type Server, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -71,6 +79,36 @@ async function gracefulFixture(): Promise<GracefulFixture> {
   };
 }
 
+async function waitForProvider(
+  fixture: Pick<GracefulFixture, "child" | "requested" | "state">,
+  runId: string,
+  timeoutMs = 45_000,
+): Promise<void> {
+  const startup = { requested: false };
+  void fixture.requested.then(() => {
+    startup.requested = true;
+  });
+  const deadline = Date.now() + timeoutMs;
+  while (!startup.requested) {
+    if (fixture.child.child.exitCode !== null || fixture.child.child.signalCode !== null) {
+      throw new CompositionFixtureError("worker exited before provider startup");
+    }
+    const path = join(fixture.state, runId, "state.json");
+    if (existsSync(path)) {
+      const state = parseRecord(readFileSync(path, "utf8"), "startup state");
+      if (["failed", "blocked", "cancelled", "complete"].includes(String(state.status))) {
+        throw new CompositionFixtureError("task terminated before provider startup");
+      }
+    }
+    if (Date.now() >= deadline) {
+      throw new CompositionFixtureError("provider startup deadline exceeded");
+    }
+    await new Promise<void>((resolvePromise) => {
+      setTimeout(resolvePromise, 20);
+    });
+  }
+}
+
 async function startThenSignal(
   fixture: GracefulFixture,
 ): Promise<{ exited: ReturnType<typeof waitForExit> }> {
@@ -88,7 +126,8 @@ async function startThenSignal(
     }),
   });
   assert.equal(response.status, 202);
-  await fixture.requested;
+  const runId = stringField(await responseRecord(response), "runId");
+  await waitForProvider(fixture, runId);
   const exited = waitForExit(fixture.child.child);
   fixture.child.child.kill("SIGTERM");
   await new Promise<void>((resolvePromise) => {
@@ -125,8 +164,12 @@ async function gracefulSignalScenario(): Promise<void> {
   try {
     await settleGracefully(fixture);
   } finally {
-    await stopInstalled(fixture.child.child);
-    await closeServer(fixture.provider);
+    try {
+      await stopInstalled(fixture.child.child);
+    } finally {
+      fixture.provider.closeAllConnections();
+      await closeServer(fixture.provider);
+    }
   }
 }
 
@@ -188,7 +231,7 @@ async function requestCancellation(fixture: CancellationFixture): Promise<string
     }),
   });
   const runId = stringField(await responseRecord(task, "task admission"), "runId");
-  await fixture.requested;
+  await waitForProvider(fixture, runId);
   const cancel = await fetch(`${base}/v1/tasks/${runId}/cancel`, {
     method: "POST",
     headers: { Authorization: `Bearer ${fixture.token}` },
@@ -223,8 +266,12 @@ async function cancellationScenario(): Promise<void> {
   try {
     await verifyCancellation(fixture, await requestCancellation(fixture));
   } finally {
-    await stopInstalled(fixture.child.child);
-    await closeServer(fixture.provider);
+    try {
+      await stopInstalled(fixture.child.child);
+    } finally {
+      fixture.provider.closeAllConnections();
+      await closeServer(fixture.provider);
+    }
   }
 }
 
@@ -232,3 +279,32 @@ void test(
   "installed worker cancellation aborts active production Pi model work after durable intent",
   cancellationScenario,
 );
+
+await test("installed startup failure and absent provider are bounded and sanitized", async () => {
+  const fixture = await gracefulFixture();
+  try {
+    await fixture.child.address;
+    await assert.rejects(waitForProvider(fixture, "not-admitted", 5), {
+      name: "CompositionFixtureError",
+      message: "provider startup deadline exceeded",
+    });
+    const skill = join(fixture.agent, "skills", "broken");
+    mkdirSync(skill, { recursive: true });
+    writeFileSync(
+      join(skill, "SKILL.md"),
+      "---\nname: broken\ndescription: startup guard\n---\nBODY",
+    );
+    symlinkSync(join(fixture.state, "worker.lease"), join(skill, "escape.txt"));
+    await assert.rejects(startThenSignal(fixture), {
+      name: "CompositionFixtureError",
+      message: "task terminated before provider startup",
+    });
+  } finally {
+    try {
+      await stopInstalled(fixture.child.child);
+    } finally {
+      fixture.provider.closeAllConnections();
+      await closeServer(fixture.provider);
+    }
+  }
+});
