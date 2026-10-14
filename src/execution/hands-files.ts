@@ -35,7 +35,7 @@ function boundedRead(descriptor: number, maximum: number): Buffer {
 
 function createDirectory(path: string): void {
   try {
-    mkdirSync(path);
+    mkdirSync(path, { mode: 0o2770 });
   } catch (error: unknown) {
     if (!(error instanceof Error && "code" in error && error.code === "EEXIST")) {
       throw error;
@@ -114,7 +114,7 @@ export class HandsFiles {
       const descriptor = openSync(
         `/proc/self/fd/${String(parent.descriptor)}/${parent.name}`,
         flags | constants.O_NOFOLLOW | constants.O_NONBLOCK,
-        0o600,
+        0o660,
       );
       const stat = fstatSync(descriptor);
       if (!stat.isFile() || stat.nlink !== 1 || stat.size > HANDS_FILE_BYTES) {

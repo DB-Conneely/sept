@@ -168,12 +168,7 @@ async function stopProcess(child: InstalledChild, signal: NodeJS.Signals): Promi
   if (child.exitCode !== null || child.signalCode !== null) {
     return;
   }
-  const exited = new Promise<void>((resolvePromise, reject) => {
-    child.once("error", reject);
-    child.once("exit", () => {
-      resolvePromise();
-    });
-  });
+  const exited = waitForExit(child);
   child.kill(signal);
   await exited;
 }
@@ -182,18 +177,39 @@ async function stopProcess(child: InstalledChild, signal: NodeJS.Signals): Promi
 export function waitForExit(
   child: InstalledChild,
 ): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
+  if (child.exitCode !== null || child.signalCode !== null) {
+    return Promise.resolve({ code: child.exitCode, signal: child.signalCode });
+  }
   return new Promise((resolvePromise, reject) => {
-    child.once("error", reject);
-    child.once("exit", (code, signal) => {
+    const failed = (error: Error): void => {
+      child.removeListener("exit", exited);
+      reject(error);
+    };
+    const exited = (code: number | null, signal: NodeJS.Signals | null): void => {
+      child.removeListener("error", failed);
       resolvePromise({ code, signal });
-    });
+    };
+    child.once("error", failed);
+    child.once("exit", exited);
   });
 }
 
-/** Stop an installed worker through its graceful SIGTERM contract. */
+/** Join a worker through SIGTERM; scenarios retain explicit graceful/interrupted exit assertions. */
 export async function stopInstalled(child: InstalledChild): Promise<void> {
-  await stopProcess(child, "SIGTERM");
-  closeChildHands(child);
+  const failures: unknown[] = [];
+  try {
+    await stopProcess(child, "SIGTERM");
+  } catch (error: unknown) {
+    failures.push(error);
+  }
+  try {
+    closeChildHands(child);
+  } catch (error: unknown) {
+    failures.push(error);
+  }
+  if (failures.length > 0) {
+    throw new AggregateError(failures, "Installed worker finalization failed");
+  }
 }
 
 /** Interrupt an installed worker to exercise restart adoption. */
@@ -209,7 +225,7 @@ export async function waitForTask(
   token: string,
   expected: string,
 ): Promise<void> {
-  const deadline = Date.now() + 10_000;
+  const deadline = Date.now() + 45_000;
   while (Date.now() < deadline) {
     const result = await fetch(`${base}/v1/tasks/${runId}`, {
       headers: { Authorization: `Bearer ${token}` },

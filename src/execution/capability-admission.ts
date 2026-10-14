@@ -8,7 +8,9 @@ import {
   type CapabilityConfiguration,
   type CapabilityGrant,
   type CapabilityPolicy,
+  type CapabilityPolicyStore,
 } from "../durable/index.js";
+import { engineSocketIdentity } from "./profile-configuration.js";
 import type { CodingToolName, DockerHandsConfiguration, HandsRequest } from "./contracts.js";
 
 /** Bind exact supplied roots as well as namespace generation; root replacement invalidates authority. */
@@ -28,7 +30,13 @@ export function capabilityBinding(configuration: DockerHandsConfiguration): Capa
       containerId: configuration.containerId,
       generation: configuration.generation,
       fingerprint: createHash("sha256")
-        .update(JSON.stringify({ configuration, identities }))
+        .update(
+          JSON.stringify({
+            configuration,
+            identities,
+            engineSocket: engineSocketIdentity(configuration.engineSocket),
+          }),
+        )
         .digest("hex"),
     };
   } catch (error: unknown) {
@@ -61,6 +69,7 @@ function assertExecution(
       effective.selected.some((entry) => entry.root === mount.destination && entry.read),
     );
     if (
+      configuration.dataDomain !== "private" ||
       !configuration.shell ||
       !effective.workspace.read ||
       !effective.workspace.write ||
@@ -77,6 +86,9 @@ function namespaceReadable(
   policy: CapabilityConfiguration,
   configuration: DockerHandsConfiguration | undefined,
 ): boolean {
+  if (configuration?.dataDomain === "mutable-file-bind") {
+    return false;
+  }
   const mounted =
     configuration === undefined
       ? policy.selected.map((entry) => ({ destination: entry.root }))
@@ -89,13 +101,13 @@ function namespaceReadable(
   );
 }
 
-/** Full covers only the supplied domain. Unsupported network and command/right combinations refuse. */
+/** Full covers only the supplied domain. Network remains a separately selected operator right. */
 export function validateCapabilities(
   input: CapabilityConfiguration,
   configuration: DockerHandsConfiguration,
 ): CapabilityConfiguration {
-  if (input.network) {
-    throw new SeptError("The supplied docker-linux-v1 profile supports network none only");
+  if (input.network && configuration.network === undefined) {
+    throw new SeptError("Network grant requires a supplied enforced network namespace");
   }
   const mounts = suppliedMounts(configuration);
   const effective =
@@ -160,9 +172,7 @@ export function capabilityTools(
     "read",
     "write",
     "edit",
-    "grep",
-    "find",
-    "ls",
+    ...(configuration?.dataDomain === "mutable-file-bind" ? [] : (["grep", "find", "ls"] as const)),
     ...(configuration?.shell ? (["bash"] as const) : []),
   ];
 }
@@ -188,7 +198,7 @@ export function admitCapabilityRequest(
     if (!policy.execute) {
       throw new SeptError("Shell capability is absent");
     }
-    return { ...request, grants };
+    return admitExecutionRequest(policy, request, grants);
   }
   assertPathRights(request, cwd, grants);
   if (
@@ -248,6 +258,9 @@ export function admitApprovedCapabilityRequest(
       ...policy,
       mode: "full_access",
       execute: (request.kind === "tool" && request.name === "bash") || request.kind === "custom",
+      network:
+        (request.kind === "tool" || request.kind === "custom") &&
+        request.arguments.network === true,
     },
     configuration,
   );
@@ -257,4 +270,36 @@ export function admitApprovedCapabilityRequest(
     cwd,
     configuration,
   );
+}
+
+function admitExecutionRequest(
+  policy: CapabilityPolicy,
+  request: Extract<HandsRequest, { kind: "tool" | "custom" }>,
+  grants: CapabilityGrant[],
+): HandsRequest {
+  const requestedNetwork = request.arguments.network;
+  if (requestedNetwork !== undefined && typeof requestedNetwork !== "boolean") {
+    throw new SeptError("Network intent must be boolean");
+  }
+  if (requestedNetwork === true && !policy.network) {
+    throw new SeptError("Network capability is absent");
+  }
+  return { ...request, grants };
+}
+
+/** Opening admission binds live policy before any Engine-owned native effect. */
+export function openingPolicy(
+  configuration: DockerHandsConfiguration,
+  store: CapabilityPolicyStore,
+): CapabilityPolicy {
+  const policy = store.read();
+  if (
+    policy === undefined ||
+    policy.denied ||
+    JSON.stringify(policy.binding) !== JSON.stringify(capabilityBinding(configuration))
+  ) {
+    throw new SeptError("Capability policy is absent, denied or bound to another namespace");
+  }
+  validateCapabilities(policy, configuration);
+  return policy;
 }

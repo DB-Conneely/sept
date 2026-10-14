@@ -1,11 +1,16 @@
 /** Validates actual consumer-started Linux containment, not command spelling or promises. */
 
-import { realpathSync, lstatSync, opendirSync } from "node:fs";
+import { realpathSync, lstatSync, opendirSync, existsSync } from "node:fs";
 import { isAbsolute, join, relative, sep } from "node:path";
-import { SeptError } from "../durable/index.js";
-import type { DockerHandsConfiguration } from "./contracts.js";
-import { configuredText } from "./profile-configuration.js";
+import { atomicWrite, SeptError } from "../durable/index.js";
+import type { DockerHandsConfiguration, HandsKernelProfile } from "./contracts.js";
+import {
+  configuredText,
+  namespaceLifetimePath,
+  readBoundedHandsRecord,
+} from "./profile-configuration.js";
 export { loadHandsConfiguration } from "./profile-configuration.js";
+import { validateNetworkProfile } from "./network-profile.js";
 import { handsRecord } from "./protocol.js";
 
 function beneath(path: string, root: string): boolean {
@@ -56,31 +61,38 @@ function assertPrivileges(host: Record<string, unknown>): void {
   }
 }
 
-function boundedResource(value: unknown, maximum: number): void {
-  if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0 || value > maximum) {
+function boundedResource(value: unknown): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) {
     throw new SeptError("Hands resource limit is unsupported");
   }
+  return value;
 }
 
-function assertIsolation(host: Record<string, unknown>, shell: boolean): void {
+function assertIsolation(
+  host: Record<string, unknown>,
+  configuration: DockerHandsConfiguration,
+): void {
   expectValue(host.Init, true);
   expectValue(host.Privileged, false);
   expectValue(host.PidMode, "");
   expectValue(host.IpcMode, "private");
   expectValue(host.UTSMode, "");
   expectValue(host.UsernsMode, "");
-  expectValue(host.NetworkMode, "none");
   expectValue(host.ReadonlyRootfs, true);
   assertPrivileges(host);
-  boundedResource(host.Memory, 512 * 1024 * 1024);
-  boundedResource(host.PidsLimit, 64);
-  boundedResource(host.NanoCpus, 1_000_000_000);
+  const memory = boundedResource(host.Memory);
+  boundedResource(host.PidsLimit);
+  boundedResource(host.NanoCpus);
   const scratch = handsRecord(host.Tmpfs);
-  expectValue(Object.keys(scratch).length, shell ? 2 : 1);
-  if (shell) {
+  expectValue(Object.keys(scratch).length, configuration.dataDomain === "private" ? 2 : 1);
+  if (configuration.dataDomain === "private") {
+    const limits = configuration.workspaceLimits;
+    if (limits === undefined || limits.bytes + 16777216 >= memory) {
+      throw new SeptError("Private workspace and scratch leave no process memory headroom");
+    }
     expectValue(
       scratch["/workspace"],
-      "rw,nosuid,nodev,noexec,size=67108864,nr_inodes=4096,mode=0700,uid=10002,gid=10002",
+      `rw,nosuid,nodev,noexec,size=${String(limits.bytes)},nr_inodes=${String(limits.inodes)},mode=2770,uid=10002,gid=10002`,
     );
   }
   expectValue(scratch["/tmp"], "rw,nosuid,nodev,noexec,size=16777216,mode=1777");
@@ -177,7 +189,7 @@ function assertMounts(configuration: DockerHandsConfiguration, value: unknown): 
     throw new SeptError("Hands mounts are unavailable");
   }
   const expected = [
-    ...(configuration.shell
+    ...(configuration.dataDomain === "private"
       ? []
       : [{ source: configuration.workspace, destination: "/workspace", writable: true }]),
     { source: configuration.resources, destination: "/resources", writable: false },
@@ -231,7 +243,8 @@ export function validateDockerProfile(
     ) {
       throw new SeptError("Hands backend identity or generation is unavailable");
     }
-    assertIsolation(handsRecord(inspected.HostConfig), configuration.shell);
+    assertIsolation(handsRecord(inspected.HostConfig), configuration);
+    validateNetworkProfile(configuration, inspected);
     assertPrivateMounts(
       configuration,
       brainRoots.map((root) => realpathSync(root)),
@@ -249,4 +262,58 @@ export function validateDockerProfile(
     }
     throw new SeptError("Hands namespace provenance is unavailable", { cause: error });
   }
+}
+
+/** Kernel caps are supplied through Docker, never fixture maxima or new resource configuration knobs. */
+export function kernelProfile(
+  configuration: DockerHandsConfiguration,
+  value: unknown,
+): HandsKernelProfile {
+  const inspected = handsRecord(value);
+  const host = handsRecord(inspected.HostConfig);
+  const image = configuredText(inspected.Image);
+  if (!/^sha256:[a-f0-9]{64}$/.test(image)) {
+    throw new SeptError("Hands image identity is unavailable");
+  }
+  return {
+    image,
+    memory: boundedResource(host.Memory),
+    pids: boundedResource(host.PidsLimit),
+    nanoCpus: boundedResource(host.NanoCpus),
+    dataDomain: configuration.dataDomain,
+    workspaceLimits: configuration.workspaceLimits,
+  };
+}
+function kernelReceiptPath(configuration: DockerHandsConfiguration, policyPath: string): string {
+  return join(namespaceLifetimePath(policyPath, configuration), "..", "kernel.json");
+}
+/** A generation's admitted image/caps/data receipt is immutable; replacement requires fresh authority. */
+export function recordKernelProfile(
+  configuration: DockerHandsConfiguration,
+  policyPath: string,
+  kernel: HandsKernelProfile,
+): void {
+  const path = kernelReceiptPath(configuration, policyPath);
+  const receipt = { version: 1, ...kernel };
+  if (existsSync(path)) {
+    assertKernelReceipt(path, receipt);
+    return;
+  }
+  atomicWrite(path, receipt);
+}
+function assertKernelReceipt(path: string, expected: Record<string, unknown>): void {
+  if (JSON.stringify(readBoundedHandsRecord(path)) !== JSON.stringify(expected)) {
+    throw new SeptError("Hands image, kernel caps or data-domain receipt changed");
+  }
+}
+/** Live Engine caps must equal opening kernel facts; same-generation Docker update cannot widen authority. */
+export function verifyKernelBinding(
+  configuration: DockerHandsConfiguration,
+  value: unknown,
+  policyPath: string,
+): void {
+  assertKernelReceipt(kernelReceiptPath(configuration, policyPath), {
+    version: 1,
+    ...kernelProfile(configuration, value),
+  });
 }

@@ -116,19 +116,22 @@ async function approvePermission(
   selected: import("../durable/index.js").CapabilityRequest,
   run: RunStore,
 ): Promise<unknown> {
-  const seconds = Number(invocation.options.expires ?? "300");
-  if (!Number.isInteger(seconds) || seconds < 1 || seconds > 3600) {
-    throw new SeptError("Approval expiry must be between 1 and 3600 seconds");
-  }
+  const seconds = approvalSeconds(invocation.options.expires);
   const configuration = loadHandsConfiguration(
     invocation.options.hands ?? process.env.SEPT_HANDS_CONFIGURATION,
   );
-  await validateDockerConfiguration(configuration, [agentDir, root], run.manifest().workspace);
+  await validateDockerConfiguration(
+    configuration,
+    [agentDir, root],
+    run.manifest().workspace,
+    undefined,
+    { policyPath: policy.path, initialize: false },
+  );
   const binding = capabilityBinding(configuration);
   if (duplicateApproval(selected, previous, binding)) {
     return selected;
   }
-  await assertCapabilityExpansion(previous, previous, true, root, binding);
+  await assertCapabilityExpansion(previous, previous, true, root, binding, configuration);
   // Policy activation first: a crash before the exact decision leaves no usable grant.
   if (run.snapshot().status !== "waiting") {
     throw new SeptError("Original request was cancelled before approval activation");
@@ -145,6 +148,13 @@ async function approvePermission(
   });
 }
 
+function approvalSeconds(value: string | undefined): number {
+  const seconds = Number(value ?? "300");
+  if (!Number.isInteger(seconds) || seconds < 1 || seconds > 3600) {
+    throw new SeptError("Approval expiry must be between 1 and 3600 seconds");
+  }
+  return seconds;
+}
 function duplicateApproval(
   selected: import("../durable/index.js").CapabilityRequest,
   previous: CapabilityPolicy,
@@ -171,7 +181,11 @@ function duplicateApproval(
 }
 
 /** Installed direct explicit retry shares accepted input/wake and never resets original limits. */
-export function resumePermissionRun(context: CliInvocation, root: string): RunStore | undefined {
+export async function resumePermissionRun(
+  context: CliInvocation,
+  root: string,
+  agentDir: string,
+): Promise<RunStore | undefined> {
   const id = context.options.resume;
   if (id === undefined) {
     return undefined;
@@ -187,9 +201,37 @@ export function resumePermissionRun(context: CliInvocation, root: string): RunSt
   if (store.snapshot().status !== "waiting" || store.snapshot().permissionRequestId === undefined) {
     throw new CliError("Explicit local permission retry requires its still-waiting original run");
   }
+  await validateRetryConfiguration(context, root, agentDir, store);
   const message = store.enqueueMessage(context.options.message);
   wakeRunForOperator(store, message.id);
   return store;
+}
+
+async function validateRetryConfiguration(
+  context: CliInvocation,
+  root: string,
+  agentDir: string,
+  store: RunStore,
+): Promise<void> {
+  const configuration = loadHandsConfiguration(
+    context.options.hands ?? process.env.SEPT_HANDS_CONFIGURATION,
+  );
+  const policy = new CapabilityPolicyStore(root);
+  await validateDockerConfiguration(
+    configuration,
+    [agentDir, root],
+    store.manifest().workspace,
+    undefined,
+    { policyPath: policy.path, initialize: false },
+  );
+  const current = policy.read();
+  if (
+    current === undefined ||
+    current.denied ||
+    JSON.stringify(current.binding) !== JSON.stringify(capabilityBinding(configuration))
+  ) {
+    throw new CliError("Explicit retry requires its current validated capability binding");
+  }
 }
 
 /** Local direct admission keeps drained state and every other resident run outside the selected retry. */

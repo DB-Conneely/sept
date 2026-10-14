@@ -24,7 +24,9 @@ export {
 
 /** Local operator composition uses the same bounded transport and exact-generation cleanup owner. */
 export {
+  initializeCapabilityEngine,
   validateDockerConfiguration,
   revokeDockerBinding,
+  revokeRecordedHandsBinding,
   reconcileDockerBinding,
 } from "./docker-control.js";

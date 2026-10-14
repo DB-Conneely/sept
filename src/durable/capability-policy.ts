@@ -24,7 +24,7 @@ export interface CapabilityRights {
 export interface CapabilityGrant extends CapabilityRights {
   root: string;
 }
-/** Operator input. Network requests unsupported by the shipped profile are refused before activation. */
+/** Operator input. Network is an independent explicit right, never implied by a permission mode. */
 export interface CapabilityConfiguration {
   mode: "full_access" | "scoped" | "request_approval";
   workspace: CapabilityRights;
@@ -123,7 +123,7 @@ function policy(value: unknown): CapabilityPolicy {
     [],
     "capability policy",
   );
-  if (input.version !== 1 || input.network === true) {
+  if (input.version !== 1) {
     throw new SeptError("Capability policy version is unsupported");
   }
   return {

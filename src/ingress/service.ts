@@ -62,6 +62,15 @@ export class SeptService {
     });
   }
 
+  /** Trusted bound listener fact is available before restart adoption; task/model input cannot choose it. */
+  public boundEndpoint(): { address: string; port: number } | undefined {
+    const endpoint = this.server.address();
+    if (endpoint === null || typeof endpoint === "string") {
+      return undefined;
+    }
+    return { address: endpoint.address, port: endpoint.port };
+  }
+
   /** Bind before adopting durable work, then expose readiness only after all facades exist. */
   public async start(): Promise<{ host: string; port: number }> {
     assertCompatibleStateRoot(this.options.stateRoot, this.observability);

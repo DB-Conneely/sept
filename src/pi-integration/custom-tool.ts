@@ -50,7 +50,10 @@ export async function customPermissionGate(
     kind: "custom",
     callId: call.id,
     taskKey: taskIdentity(api),
-    arguments: { text },
+    arguments: {
+      text,
+      ...networkIntentArguments(call.arguments.network),
+    },
   });
   return block === undefined ? undefined : { block };
 }
@@ -69,7 +72,12 @@ export function createCustomHandTools(
       name: "custom_hand",
       description: "Run the single operator-registered hand with bounded text input",
       parameters: Type.Object(
-        { text: Type.String({ maxLength: 256 }) },
+        {
+          network: Type.Optional(
+            Type.Boolean({ description: "Explicit network intent; default false" }),
+          ),
+          text: Type.String({ maxLength: 256 }),
+        },
         { additionalProperties: false },
       ),
       replay: hand.replay,
@@ -83,7 +91,7 @@ async function executeCustom(
   backend: ExecutionBackend,
   hand: RegisteredHand,
   onFailure: (error: unknown) => void,
-  args: { text: string },
+  args: { text: string; network?: boolean },
   api: ToolExecutionApi,
   context: Context,
 ) {
@@ -124,4 +132,11 @@ function customFailure(error: unknown, context: Context, onFailure: (error: unkn
     onFailure(error);
   }
   throw error;
+}
+
+function networkIntentArguments(value: unknown): { network?: boolean } {
+  if (value !== undefined && typeof value !== "boolean") {
+    throw new SeptError("Custom hand network intent must be boolean");
+  }
+  return value === undefined ? {} : { network: value };
 }

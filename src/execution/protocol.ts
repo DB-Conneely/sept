@@ -1,6 +1,8 @@
+import { request, type Agent, type ClientRequest, type IncomingMessage } from "node:http";
 /** Validates the bounded hands transport once at each side; hostile results never become authority. */
 
 import type { ModelImageResizeOptions } from "@earendil-works/pi-ai";
+import { EngineControlError } from "./contracts.js";
 import { SeptError } from "../durable/index.js";
 import type {
   CodingToolName,
@@ -184,15 +186,149 @@ function customRegistration(value: unknown): CustomHand {
 
 function customRequest(input: Record<string, unknown>): HandsRequest {
   const args = handsRecord(input.arguments);
-  if (Object.keys(args).some((key) => key !== "text")) {
+  if (
+    Object.keys(args).some((key) => key !== "text" && key !== "network") ||
+    (args.network !== undefined && typeof args.network !== "boolean")
+  ) {
     throw new SeptError("Custom hand arguments are malformed");
   }
   return {
     kind: "custom",
     callId: text(input.callId, 256),
     ...(input.taskKey === undefined ? {} : { taskKey: text(input.taskKey, 64) }),
-    arguments: { text: text(args.text, 1024) },
+    arguments: {
+      text: text(args.text, 1024),
+      ...(args.network === undefined ? {} : { network: args.network }),
+    },
     ...(input.hand === undefined ? {} : { hand: customRegistration(input.hand) }),
     ...(input.grants === undefined ? {} : { grants: grants(input.grants) }),
   };
+}
+
+/** Parse one bounded Engine JSON response; hostile text never enters the error envelope. */
+export function parseEngineJson(output: Buffer): unknown {
+  try {
+    const value: unknown = output.length === 0 ? null : JSON.parse(output.toString("utf8"));
+    return value;
+  } catch {
+    throw new SeptError("Hands Engine response is malformed");
+  }
+}
+
+/** Bound HTTP metadata before decoding; only safe status facts reach the control owner. */
+export function collectResponse(
+  response: IncomingMessage,
+  fail: (timeout?: boolean, overflow?: boolean, status?: number | null) => void,
+  complete: (output: Buffer) => void,
+): void {
+  if (![200, 201, 204].includes(response.statusCode ?? 0)) {
+    fail(false, false, response.statusCode ?? null);
+    return;
+  }
+  const chunks: Buffer[] = [];
+  let bytes = 0;
+  response.on("data", (chunk: Buffer) => {
+    bytes += chunk.length;
+    if (bytes > 256 * 1024) {
+      fail(false, true);
+    } else {
+      chunks.push(chunk);
+    }
+  });
+  response.once("error", () => {
+    fail();
+  });
+  response.once("end", () => {
+    complete(Buffer.concat(chunks));
+  });
+}
+
+/** Fixed bounded Node HTTP exchange; the caller supplies authenticated Unix authority and cancellation. */
+export function controlRequest(
+  socketPath: string,
+  path: string,
+  method: "GET" | "POST",
+  input: string,
+  kind: "http" | "exec",
+  agent?: Agent,
+  signal?: AbortSignal,
+): ClientRequest {
+  const headers: Record<string, string | number> = {
+    "Content-Type": "application/json",
+    "Content-Length": Buffer.byteLength(input),
+  };
+  if (kind === "exec") {
+    headers.Connection = "Upgrade";
+    headers.Upgrade = "tcp";
+  }
+  return request({
+    socketPath,
+    path,
+    method,
+    agent: agent ?? false,
+    maxHeaderSize: 8192,
+    headers,
+    signal,
+  });
+}
+
+/** Join metadata decoding only after the owning request has closed. */
+export function settleResponse(
+  output: Buffer | undefined,
+  failure: EngineControlError | undefined,
+  resolve: (value: unknown) => void,
+  reject: (error: unknown) => void,
+): void {
+  if (failure !== undefined || output === undefined) {
+    reject(failure ?? new SeptError("Hands Engine response was lost"));
+    return;
+  }
+  try {
+    resolve(parseEngineJson(output));
+  } catch (error: unknown) {
+    reject(error);
+  }
+}
+
+/** Observe all Agent socket closure before its owner releases control authority. */
+export async function joinEngineConnections(agent: Agent): Promise<void> {
+  await Promise.all(
+    [...Object.values(agent.sockets), ...Object.values(agent.freeSockets)].flat().map((socket) => {
+      if (socket === undefined || socket.closed) {
+        return Promise.resolve();
+      }
+      return new Promise<void>((resolve) => socket.once("close", resolve));
+    }),
+  );
+}
+/** Settle only joined upgraded control; peer diagnostics never enter its bounded failure facts. */
+export function settleAttachment(
+  output: string | undefined,
+  failure: Error | undefined,
+  resolve: (output: string) => void,
+  reject: (error: unknown) => void,
+): void {
+  if (failure !== undefined || output === undefined) {
+    reject(
+      failure instanceof EngineControlError
+        ? failure.joined({ attachmentClosed: true, connectionsReleased: true })
+        : (failure ??
+            EngineControlError.at("exec-lost", Date.now(), {
+              requestJoined: true,
+              attachmentClosed: true,
+              connectionsReleased: true,
+            })),
+    );
+  } else {
+    resolve(output);
+  }
+}
+
+/** Metadata and exec-create bodies are bounded before the Node request is made externally active. */
+export function engineBody(body: unknown): string {
+  const input = body === undefined ? "" : JSON.stringify(body);
+  if (Buffer.byteLength(input) > 512 * 1024) {
+    throw new SeptError("Hands Engine request exceeds its bound");
+  }
+  return input;
 }

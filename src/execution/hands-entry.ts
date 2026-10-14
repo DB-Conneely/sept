@@ -226,9 +226,11 @@ export async function executeHandsRequest(request: HandsRequest, cwd: string): P
 
 async function entry(): Promise<void> {
   // Reject silent loader failure before request consumption. Children inherit no loader/marker authority.
-  if (process.env.SEPT_HANDS_PROCESS_GUARD !== "1") {
+  if (process.env.SEPT_HANDS_PROCESS_GUARD !== "2") {
     throw new SeptError("Hands process control guard is unavailable");
   }
+  delete process.env.SEPT_HANDS_NETWORK;
+  delete process.env.SEPT_HANDS_NETWORK_GUARD;
   delete process.env.SEPT_HANDS_PROCESS_GUARD;
   delete process.env.LD_PRELOAD;
   let input = "";

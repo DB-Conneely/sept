@@ -113,15 +113,19 @@ void test("independent rights omit tools and every direct/replayed effect checks
     false,
   );
 });
+const uniformReadConfiguration = {
+  profile: "docker-linux-v1" as const,
+  dataDomain: "private" as const,
+  workspaceLimits: { bytes: 134217728, inodes: 32768 },
+  engineSocket: "/run/docker.sock",
+  ...binding,
+  workspace: "/private",
+  resources: "/projection",
+  shell: false,
+  readOnlyMounts: [{ source: "/selected-private", destination: "/selected/reference" }],
+};
+
 void test("uniform read permits native searches; missing mounted read refuses search/project resources and network", () => {
-  const configuration = {
-    profile: "docker-linux-v1" as const,
-    ...binding,
-    workspace: "/private",
-    resources: "/projection",
-    shell: false,
-    readOnlyMounts: [{ source: "/selected-private", destination: "/selected/reference" }],
-  };
   const policy = {
     ...defaultCapabilities(),
     version: 1 as const,
@@ -129,9 +133,9 @@ void test("uniform read permits native searches; missing mounted read refuses se
     denied: false,
     binding,
   };
-  assert.deepEqual(capabilityTools(policy, configuration), ["read", "write", "edit"]);
+  assert.deepEqual(capabilityTools(policy, uniformReadConfiguration), ["read", "write", "edit"]);
   assert.deepEqual(
-    admitCapabilityRequest(policy, { kind: "resources" }, "/workspace", configuration),
+    admitCapabilityRequest(policy, { kind: "resources" }, "/workspace", uniformReadConfiguration),
     { kind: "resources", workspaceRead: false },
   );
   assert.throws(
@@ -140,16 +144,16 @@ void test("uniform read permits native searches; missing mounted read refuses se
         policy,
         { kind: "tool", name: "grep", callId: "grep", arguments: { pattern: "secret", path: "." } },
         "/workspace",
-        configuration,
+        uniformReadConfiguration,
       ),
     SeptError,
   );
   assert.throws(
-    () => validateCapabilities({ ...policy, network: true }, configuration),
-    /network none/,
+    () => validateCapabilities({ ...policy, network: true }, uniformReadConfiguration),
+    /enforced network namespace/,
   );
   assert.throws(
-    () => validateCapabilities({ ...policy, execute: true }, configuration),
+    () => validateCapabilities({ ...policy, execute: true }, uniformReadConfiguration),
     /bounded RW workspace/,
   );
 });
@@ -194,3 +198,63 @@ void test("exhausted revision refuses revoke before changing a valid authority r
   assert.equal(store.read()?.revision, last.revision);
   assert.equal(store.read()?.denied, false);
 });
+
+void test("durable network grant survives restart and explicit revoke", () => {
+  const root = mkdtempSync(join(tmpdir(), "sept-network-policy-"));
+  const store = new CapabilityPolicyStore(root);
+  store.initialize({ ...defaultCapabilities(), network: true }, binding);
+  assert.equal(new CapabilityPolicyStore(root).read()?.network, true);
+  assert.equal(store.revoke(1).denied, true);
+});
+
+void test("mutable bind compatibility admits individual files while commands/discovery/resource traversal refuse", () => {
+  const configuration = { ...uniformReadConfiguration, dataDomain: "mutable-file-bind" as const };
+  const policy = {
+    ...defaultCapabilities(),
+    version: 1 as const,
+    revision: 1,
+    denied: false,
+    binding,
+    selected: [{ root: "/selected/reference", read: true, write: false }],
+  };
+  assert.deepEqual(capabilityTools(policy, configuration), ["read", "write", "edit"]);
+  assertMutableRequestTools(policy, configuration);
+  assert.deepEqual(
+    admitCapabilityRequest(policy, { kind: "resources" }, "/workspace", configuration),
+    { kind: "resources", workspaceRead: false },
+  );
+  assert.equal(
+    admitCapabilityRequest(
+      policy,
+      { kind: "file", method: "readTextFile", path: "one" },
+      "/workspace",
+      configuration,
+    ).kind,
+    "file",
+  );
+  assert.throws(
+    () => validateCapabilities({ ...policy, execute: true }, { ...configuration, shell: true }),
+    SeptError,
+  );
+  assert.throws(
+    () =>
+      admitCapabilityRequest(
+        policy,
+        { kind: "tool", name: "ls", callId: "scan", arguments: {} },
+        "/workspace",
+        configuration,
+      ),
+    SeptError,
+  );
+});
+
+function assertMutableRequestTools(
+  policy: Parameters<typeof capabilityTools>[0],
+  configuration: Parameters<typeof validateCapabilities>[1],
+): void {
+  assert.deepEqual(capabilityTools({ ...policy, mode: "request_approval" }, configuration), [
+    "read",
+    "write",
+    "edit",
+  ]);
+}

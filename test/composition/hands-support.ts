@@ -1,5 +1,11 @@
 /** Consumer-owned Docker fixtures for actual installed CLI proofs; production never provisions hands. */
 
+import {
+  loadHandsConfiguration,
+  type DockerHandsConfiguration,
+} from "../../src/execution/index.js";
+import { networkFirewall } from "../../src/execution/network-profile.js";
+import { handsRecord } from "../../src/execution/protocol.js";
 import assert from "node:assert/strict";
 import { spawnSync, type ChildProcess } from "node:child_process";
 import {
@@ -18,7 +24,6 @@ export interface SuppliedHands {
   path: string;
   containerId: string;
   workspace: string;
-  shell: boolean;
   exportWorkspace(): void;
   close(): void;
 }
@@ -31,17 +36,25 @@ function docker(arguments_: string[], input?: Buffer): string {
     maxBuffer: 1024 * 1024,
     env: { PATH: process.env.PATH, HOME: process.env.HOME },
   });
-  assert.equal(result.status, 0, `Docker fixture control failed: ${arguments_[0] ?? "unknown"}`);
+  assertFixtureExit(result, `Docker fixture control failed: ${arguments_[0] ?? "unknown"}`);
   return result.stdout.trim();
 }
 
+function assertFixtureExit(
+  result: { status: number | null; signal: NodeJS.Signals | null },
+  message = "Fixture process failed",
+): void {
+  const actual = { code: result.status, signal: result.signal };
+  assert.deepEqual(actual, { code: 0, signal: null }, message);
+}
+
 function accessibleDirectory(path: string): void {
-  chmodSync(path, 0o777);
+  chmodSync(path, 0o2770);
   for (const entry of readdirSync(path, { withFileTypes: true })) {
     if (entry.isDirectory()) {
       accessibleDirectory(join(path, entry.name));
     } else if (entry.isFile()) {
-      chmodSync(join(path, entry.name), 0o666);
+      chmodSync(join(path, entry.name), 0o660);
     }
   }
 }
@@ -54,110 +67,110 @@ const CONTAINMENT_ARGUMENTS = [
   "--user",
   "10002:10002",
   "--read-only",
-  "--network",
-  "none",
   "--cap-drop",
   "ALL",
   "--security-opt",
   "no-new-privileges",
   "--pids-limit",
-  "64",
+  "128",
   "--memory",
-  "512m",
+  "1g",
   "--cpus",
-  "1",
+  "2",
   "--tmpfs",
   "/tmp:rw,nosuid,nodev,noexec,size=16777216,mode=1777",
 ];
 
-function containerArguments(workspace: string, resources: string, shell: boolean): string[] {
+function containerArguments(
+  resources: string,
+  network: DockerHandsConfiguration["network"],
+): string[] {
   const arguments_ = [
     ...CONTAINMENT_ARGUMENTS,
+    "--network",
+    network?.networkId ?? "none",
+    ...(network?.dnsServers.flatMap((server) => ["--dns", server]) ?? []),
     "--mount",
     `type=bind,src=${resources},dst=/resources,readonly`,
   ];
-  if (shell) {
-    arguments_.push(
-      "--tmpfs",
-      "/workspace:rw,nosuid,nodev,noexec,size=67108864,nr_inodes=4096,mode=0700,uid=10002,gid=10002",
-    );
-  } else {
-    arguments_.push("--mount", `type=bind,src=${workspace},dst=/workspace`);
-  }
+  arguments_.push(
+    "--tmpfs",
+    "/workspace:rw,nosuid,nodev,noexec,size=134217728,nr_inodes=32768,mode=2770,uid=10002,gid=10002",
+  );
   arguments_.push(process.env.SEPT_HANDS_TEST_IMAGE ?? "sept:c1-confinement", "sleep", "infinity");
   return arguments_;
 }
 
 /** Start one generated fixture namespace and explicitly seed/export the bounded command workspace. */
-export function supplyHands(workspacePath: string, shell = false): SuppliedHands {
+export function supplyHands(
+  workspacePath: string,
+  shell = false,
+  network?: DockerHandsConfiguration["network"],
+): SuppliedHands {
   const workspace = realpathSync(workspacePath);
   const root = dirname(workspace);
   const resources = join(root, `hands-resources-${randomUUID()}`);
   mkdirSync(resources, { mode: 0o755 });
   accessibleDirectory(workspace);
-  const containerId = docker(containerArguments(workspace, resources, shell));
+  const containerId = docker(containerArguments(resources, network));
+  let generation: string | undefined;
   try {
-    if (shell) {
-      const archive = spawnSync("tar", ["-C", workspace, "-cf", "-", "."], {
-        maxBuffer: 8 * 1024 * 1024,
-        env: { PATH: process.env.PATH, HOME: process.env.HOME, COPYFILE_DISABLE: "1" },
-      });
-      assert.equal(archive.status, 0);
-      docker(
-        ["exec", "-i", containerId, "tar", "-C", "/workspace", "--no-same-owner", "-xf", "-"],
-        archive.stdout,
-      );
-    }
-    const generation = docker(["inspect", "--format", "{{.State.StartedAt}}", containerId]);
+    generation = docker(["inspect", "--format", "{{.State.StartedAt}}", containerId]);
+    seedWorkspace(containerId, workspace);
     const path = join(root, "hands-configuration.json");
-    writeFileSync(
-      path,
-      JSON.stringify({
-        profile: "docker-linux-v1",
-        containerId,
-        generation,
-        workspace,
-        resources,
-        shell,
-        readOnlyMounts: [],
-      }),
-      { mode: 0o600 },
-    );
-    return handsFixture(path, containerId, workspace, shell);
+    const configuration = {
+      profile: "docker-linux-v1",
+      engineSocket: new URL(
+        docker(["context", "inspect", "--format", "{{.Endpoints.docker.Host}}"]),
+      ).pathname,
+      containerId,
+      generation,
+      workspace,
+      dataDomain: "private",
+      workspaceLimits: { bytes: 134217728, inodes: 32768 },
+      resources,
+      shell,
+      ...(network === undefined ? {} : { network }),
+      readOnlyMounts: [],
+    };
+    writeFileSync(path, JSON.stringify(configuration), { mode: 0o600 });
+    supplyNetwork(path);
+    return handsFixture(path, containerId, generation, workspace);
   } catch (error: unknown) {
-    docker(["kill", containerId]);
-    throw error;
+    const result = finalizeHands(containerId, generation);
+    result.failures.unshift(error);
+    throw new AggregateError(result.failures, "Hands fixture initialization failed");
   }
 }
 
+const EXTRACTION_OPTIONS = ["--no-same-owner", "--same-permissions", "-xf", "-"];
+
 function exportCommandWorkspace(containerId: string, workspace: string): void {
-  const archive = spawnSync(
-    "docker",
-    ["exec", containerId, "tar", "-C", "/workspace", "-cf", "-", "."],
-    {
-      maxBuffer: 8 * 1024 * 1024,
-      timeout: 30_000,
-      env: { PATH: process.env.PATH, HOME: process.env.HOME },
-    },
-  );
-  assert.equal(archive.status, 0);
-  const extracted = spawnSync("tar", ["-C", workspace, "--no-same-owner", "-xf", "-"], {
+  const arguments_ = ["exec", containerId, "tar", "-C", "/workspace", "-cf", "-", "."];
+  const archive = spawnSync("docker", arguments_, {
+    maxBuffer: 8 * 1024 * 1024,
+    timeout: 30_000,
+    env: { PATH: process.env.PATH, HOME: process.env.HOME },
+  });
+  assertFixtureExit(archive);
+  const extracted = spawnSync("tar", ["-C", workspace, ...EXTRACTION_OPTIONS], {
     input: archive.stdout,
     timeout: 30_000,
     env: { PATH: process.env.PATH, HOME: process.env.HOME },
   });
-  assert.equal(extracted.status, 0);
+  assertFixtureExit(extracted);
 }
 
 function handsFixture(
   path: string,
   containerId: string,
+  generation: string,
   workspace: string,
-  shell: boolean,
 ): SuppliedHands {
   let closed = false;
   const exportWorkspace = (): void => {
-    if (shell && docker(["inspect", "--format", "{{.State.Running}}", containerId]) === "true") {
+    assert.equal(docker(["inspect", "--format", "{{.State.StartedAt}}", containerId]), generation);
+    if (docker(["inspect", "--format", "{{.State.Running}}", containerId]) === "true") {
       exportCommandWorkspace(containerId, workspace);
     }
   };
@@ -165,23 +178,51 @@ function handsFixture(
     path,
     containerId,
     workspace,
-    shell,
     exportWorkspace,
     close: () => {
       if (closed) {
         return;
       }
-      exportWorkspace();
-      if (docker(["inspect", "--format", "{{.State.Running}}", containerId]) === "true") {
-        docker(["kill", containerId]);
+      const result = finalizeHands(containerId, generation, exportWorkspace);
+      closed = result.stopped;
+      if (result.failures.length > 0) {
+        throw new AggregateError(result.failures, "Hands fixture finalization failed");
       }
-      assert.equal(
-        docker(["inspect", "--format", "{{.State.Running}}:{{.State.Pid}}", containerId]),
-        "false:0",
-      );
-      closed = true;
     },
   };
+}
+
+function finalizeHands(
+  containerId: string,
+  generation: string | undefined,
+  exportWorkspace?: () => void,
+) {
+  // Export is useful evidence, but its failure must never retain namespace authority.
+  const failures: unknown[] = [];
+  let stopped = false;
+  try {
+    exportWorkspace?.();
+  } catch (error: unknown) {
+    failures.push(error);
+  }
+  try {
+    // A consumer restart must not let an old fixture stop the replacement generation.
+    assert.equal(docker(["inspect", "--format", "{{.State.StartedAt}}", containerId]), generation);
+    if (docker(["inspect", "--format", "{{.State.Running}}", containerId]) === "true") {
+      docker(["kill", containerId]);
+    }
+  } catch (error: unknown) {
+    failures.push(error);
+  }
+  try {
+    assert.equal(docker(["inspect", "--format", "{{.State.StartedAt}}", containerId]), generation);
+    const state = docker(["inspect", "--format", "{{.State.Running}}:{{.State.Pid}}", containerId]);
+    assert.equal(state, "false:0");
+    stopped = true;
+  } catch (error: unknown) {
+    failures.push(error);
+  }
+  return { failures, stopped };
 }
 
 const childHands = new WeakMap<ChildProcess, SuppliedHands>();
@@ -241,4 +282,40 @@ export function activateHandsPolicy(hands: SuppliedHands, state: string, agent: 
     { encoding: "utf8", env: { ...process.env, OTEL_SDK_DISABLED: "true" } },
   );
   assert.equal(set.status, 0, set.stderr);
+}
+
+function supplyNetwork(path: string): void {
+  const configuration = loadHandsConfiguration(path);
+  if (configuration.network === undefined) {
+    return;
+  }
+  const inspected = handsRecord(
+    JSON.parse(docker(["inspect", "--format", "{{json .}}", configuration.containerId])),
+  );
+  for (const family of ["ipv4", "ipv6"] as const) {
+    docker(
+      [
+        "exec",
+        "--privileged",
+        "--user",
+        "0:0",
+        "-i",
+        configuration.containerId,
+        family === "ipv4" ? "/usr/sbin/iptables-restore" : "/usr/sbin/ip6tables-restore",
+      ],
+      Buffer.from(networkFirewall(configuration, inspected, family)),
+    );
+  }
+}
+
+function seedWorkspace(containerId: string, workspace: string): void {
+  const archive = spawnSync("tar", ["-C", workspace, "-cf", "-", "."], {
+    maxBuffer: 8 * 1024 * 1024,
+    env: { PATH: process.env.PATH, HOME: process.env.HOME, COPYFILE_DISABLE: "1" },
+  });
+  assertFixtureExit(archive);
+  docker(
+    ["exec", "-i", containerId, "tar", "-C", "/workspace", ...EXTRACTION_OPTIONS],
+    archive.stdout,
+  );
 }

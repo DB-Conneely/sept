@@ -15,6 +15,7 @@ import {
   capabilityGrants,
   defaultCapabilities,
   DockerExecutionBackend,
+  initializeCapabilityEngine,
   validateDockerConfiguration,
   revokeDockerBinding,
   reconcileDockerBinding,
@@ -39,7 +40,11 @@ function localConfiguration(path: string | undefined): CapabilityConfiguration {
   }
 }
 function expands(previous: CapabilityPolicy, next: CapabilityConfiguration): boolean {
-  if (previous.denied || (next.execute && !previous.execute)) {
+  if (
+    previous.denied ||
+    (next.execute && !previous.execute) ||
+    (next.network && !previous.network)
+  ) {
     return true;
   }
   const grants = capabilityGrants(previous);
@@ -84,6 +89,7 @@ export async function assertCapabilityExpansion(
   changed: boolean,
   root: string,
   next: import("../durable/index.js").CapabilityBinding,
+  configuration: DockerHandsConfiguration,
 ): Promise<void> {
   if (!changed && !expands(previous, effective)) {
     return;
@@ -97,7 +103,9 @@ export async function assertCapabilityExpansion(
   }
   const release = acquireStateRootLease(leaseRoot);
   try {
-    await reconcileDockerBinding(previous.binding, next);
+    await reconcileDockerBinding(previous.binding, configuration, {
+      policyPath: join(root, "capability-policy.json"),
+    });
   } finally {
     release();
   }
@@ -117,16 +125,19 @@ async function setPermissions(
     inputConfiguration(invocation, configuration),
     configuration,
   );
-  await validateDockerConfiguration(configuration, [agentDir, root]);
+  await validateDockerConfiguration(configuration, [agentDir, root], undefined, undefined, {
+    policyPath: store.path,
+    initialize: previous === undefined,
+  });
   const binding = capabilityBinding(configuration);
   const changed =
     previous !== undefined && JSON.stringify(previous.binding) !== JSON.stringify(binding);
   if (previous !== undefined) {
-    await assertCapabilityExpansion(previous, effective, changed, root, binding);
+    await assertCapabilityExpansion(previous, effective, changed, root, binding, configuration);
   }
   const activated = store.activate(effective, binding, revision(invocation.options));
   if (previous !== undefined && !changed) {
-    await revokeDockerBinding(previous.binding);
+    await revokeDockerBinding(previous.binding, configuration, { policyPath: store.path });
   }
   return {
     revision: activated.revision,
@@ -163,14 +174,28 @@ export async function runPermissions(
     throw new SeptError("Capability revision changed; inspect and retry");
   }
   if (invocation.action === "revoke") {
-    const denied = store.revoke(expected);
-    await revokeDockerBinding(denied.binding);
-    return { revision: denied.revision, denied: true, stopped: true };
+    return revokePermissions(invocation, store, expected);
   }
   if (invocation.action !== "set") {
     throw new SeptError("Usage: sept permissions show|set|revoke --state-dir <path>");
   }
   return setPermissions(invocation, root, agentDir, store, previous);
+}
+
+async function revokePermissions(
+  invocation: CliInvocation,
+  store: CapabilityPolicyStore,
+  expected: number,
+): Promise<unknown> {
+  const denied = store.revoke(expected);
+  const configuration = loadHandsConfiguration(
+    invocation.options.hands ?? process.env.SEPT_HANDS_CONFIGURATION,
+  );
+  if (JSON.stringify(denied.binding) !== JSON.stringify(capabilityBinding(configuration))) {
+    throw new SeptError("Revocation configuration does not match persisted capability authority");
+  }
+  await revokeDockerBinding(denied.binding, configuration, { policyPath: store.path });
+  return { revision: denied.revision, denied: true, stopped: true };
 }
 
 function newStateRoot(root: string): boolean {
@@ -186,10 +211,10 @@ function newStateRoot(root: string): boolean {
 }
 
 /** New supplied state gets safe default; unreadable old policy stays dormant and is never replaced. */
-export function initializeCapabilities(
+export async function initializeCapabilities(
   options: Record<string, string>,
   root: string,
-): CapabilityPolicyStore {
+): Promise<CapabilityPolicyStore> {
   const store = new CapabilityPolicyStore(root);
   try {
     if (store.read() !== undefined || !newStateRoot(root)) {
@@ -200,7 +225,14 @@ export function initializeCapabilities(
   }
   const path = options.hands ?? process.env.SEPT_HANDS_CONFIGURATION;
   if (path !== undefined) {
-    store.initialize(defaultCapabilities(), capabilityBinding(loadHandsConfiguration(path)));
+    try {
+      const configuration = loadHandsConfiguration(path);
+      await initializeCapabilityEngine(configuration, store.path);
+      store.initialize(defaultCapabilities(), capabilityBinding(configuration));
+    } catch {
+      // Missing Engine authority leaves scheduling dormant; authenticated health/history still bind.
+      return store;
+    }
   }
   return store;
 }
@@ -219,6 +251,7 @@ export function assertCapabilityAdmission(store: CapabilityPolicyStore): void {
 export function capabilityHostFactory(
   root: string,
   configurationPath: string | undefined,
+  controlEndpoint?: () => { address: string; port: number } | undefined,
 ): HostFactory {
   return async (manifest, store, agentDir, existing, telemetry) => {
     const configuration = loadHandsConfiguration(configurationPath);
@@ -227,6 +260,7 @@ export function capabilityHostFactory(
       store,
       [agentDir, root],
       new CapabilityPolicyStore(root),
+      controlEndpoint?.(),
     );
     return PiSessionHost.create(manifest, store, agentDir, existing, telemetry, {
       executionBackend: backend,

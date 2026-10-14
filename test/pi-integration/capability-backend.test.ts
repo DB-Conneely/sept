@@ -57,6 +57,8 @@ function profileFixture(): {
   }
   const configuration: DockerHandsConfiguration = {
     profile: "docker-linux-v1",
+    dataDomain: "mutable-file-bind",
+    engineSocket: "/run/docker.sock",
     containerId: "a".repeat(64),
     generation: "generation-1",
     workspace: join(root, "workspace"),
@@ -66,6 +68,7 @@ function profileFixture(): {
   };
   const inspected = {
     Id: configuration.containerId,
+    Image: `sha256:${"f".repeat(64)}`,
     State: { Running: true, StartedAt: configuration.generation },
     Config: { User: "10002:10002", Env: [], Entrypoint: null, Cmd: ["sleep", "infinity"] },
     HostConfig: SAFE_HOST_CONFIG,

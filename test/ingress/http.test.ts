@@ -31,6 +31,9 @@ import {
   validateOperatorMessage,
 } from "../../src/ingress/validation.js";
 import { WebhookRouter } from "../../src/ingress/webhook-router.js";
+import { SeptService } from "../../src/ingress/index.js";
+import { testModelAccess } from "../support/model-access.js";
+import { controllerFixture, FakeHost, complete } from "../runtime/support.js";
 
 void test("HTTP parsers enforce exact bounded primitive contracts", () => {
   assert.deepEqual(selectionBody({ provider: "ready", model: "alpha" }), {
@@ -80,4 +83,42 @@ void test("route telemetry admits only canonical installed model paths", () => {
   assert.equal(routeTemplate("GET", "/v1/model-access/providers"), "/v1/model-access/providers");
   assert.equal(routeTemplate("GET", "/v1/model-access/models"), "/v1/model-access/models");
   assert.equal(routeTemplate("PUT", "/v1/model-access/models"), "unmatched");
+});
+
+void test("actual ephemeral control endpoint is available before restart adoption", async () => {
+  const { root } = controllerFixture();
+  let observed: { address: string; port: number } | undefined;
+  const service: SeptService = new SeptService({
+    stateRoot: join(root, "runs"),
+    agentDir: "/pi",
+    token: "fixture",
+    port: 0,
+    piVersion: "1.1.0",
+    workspaceRoot: root,
+    modelAccessService: await testModelAccess(),
+    hostFactory: () => {
+      observed = service.boundEndpoint();
+      return Promise.resolve(
+        new FakeHost([
+          { text: JSON.stringify(complete), steered: false, contextTokens: 10, contextWindow: 100 },
+        ]),
+      );
+    },
+  });
+  assert.equal(service.boundEndpoint(), undefined);
+  try {
+    const address = await service.start();
+    const deadline = Date.now() + 5000;
+    while (observed === undefined && Date.now() < deadline) {
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, 10);
+      });
+    }
+    assert.ok(observed);
+    assert.equal(observed.port, address.port);
+    assert.notEqual(observed.port, 0);
+  } finally {
+    await service.stop();
+  }
+  assert.equal(service.boundEndpoint(), undefined);
 });

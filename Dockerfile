@@ -29,15 +29,21 @@ COPY src ./src
 COPY test ./test
 COPY scripts ./scripts
 RUN cc -shared -fPIC -O2 -Wall -Wextra -Werror -o /app/hands-guard.so src/execution/hands-guard.c \
+    && cc -DHANDS_GUARD_CHECK -O2 -Wall -Wextra -Werror -o /app/hands-guard-check src/execution/hands-guard.c \
     && npm run build && npm prune --omit=dev
 
 FROM node:22-bookworm-slim
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends bash ca-certificates git ripgrep \
+    && apt-get install -y --no-install-recommends bash ca-certificates git ripgrep iptables \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 10001 sept \
     && useradd --uid 10001 --gid 10001 --create-home sept \
+    && groupadd --gid 10002 sept-workspace \
+    && useradd --uid 10002 --gid 10002 --create-home --home-dir /home/sept-hands sept-hands \
+    && useradd --uid 10003 --gid 10002 --no-create-home sept-command \
+    && chmod 0700 /home/sept-hands \
+    && mkdir -p /home/sept-hands/.pi/agent/bin \
     && mkdir -p /app /pi-agent /state /workspace \
     && chown -R 10001:10001 /pi-agent /state /workspace
 
@@ -49,6 +55,7 @@ COPY --from=build --chown=10001:10001 /app/package.json /app/package-lock.json .
 COPY --from=build --chown=10001:10001 /app/node_modules ./node_modules
 COPY --from=build --chown=10001:10001 /app/dist ./dist
 COPY --from=build /app/hands-guard.so /app/hands-guard.so
+COPY --from=build /app/hands-guard-check /app/hands-guard-check
 
 ENV NODE_ENV=production \
     HOME=/home/sept \

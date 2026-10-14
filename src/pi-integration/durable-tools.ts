@@ -22,6 +22,7 @@ import {
 } from "../execution/index.js";
 import type { Context } from "@earendil-works/chord";
 import { CapabilityRequestWaitingError, SeptError } from "../durable/index.js";
+import { Type } from "@earendil-works/pi-ai";
 import type {
   ToolCall,
   ModelImageResizeOptions,
@@ -165,7 +166,7 @@ export function createDurableCodingTools(
       durableTool(createWriteTool(workspace), "unsafe", backend, undefined, onFailure),
       durableTool(createEditTool(workspace), "unsafe", backend, undefined, onFailure),
       ...(backend.shell
-        ? [durableTool(createBashTool(workspace), "unsafe", backend, undefined, onFailure)]
+        ? [durableTool(networkBashTool(workspace), "unsafe", backend, undefined, onFailure)]
         : []),
       durableTool(createGrepTool(workspace), "safe", backend, undefined, onFailure),
       durableTool(createFindTool(workspace), "safe", backend, undefined, onFailure),
@@ -252,4 +253,19 @@ function nativeCallIdentity(api: Pick<HookApi, "taskId" | "conversationId">): st
   return createHash("sha256")
     .update(JSON.stringify([api.conversationId, api.taskId]))
     .digest("hex");
+}
+
+function networkBashTool(workspace: string) {
+  const native = createBashTool(workspace);
+  return {
+    ...native,
+    parameters: Type.Object({
+      ...native.parameters.properties,
+      network: Type.Optional(
+        Type.Boolean({
+          description: "Explicitly request network access for this exact command; default false",
+        }),
+      ),
+    }),
+  };
 }

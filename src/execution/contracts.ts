@@ -29,7 +29,7 @@ export type HandsRequest =
       callId: string;
       /** Trusted native task identity makes original denied calls inert across later invocations. */
       taskKey?: string;
-      arguments: { text: string };
+      arguments: { text: string; network?: boolean };
       hand?: CustomHand;
       grants?: CapabilityGrant[];
     }
@@ -84,11 +84,25 @@ export interface HandsToolResult {
 /** Trusted operator configuration for the one supported Linux reference profile. */
 export interface DockerHandsConfiguration {
   profile: "docker-linux-v1";
+  /** Explicit OS-protected local Engine endpoint; ambient Docker contexts never select authority. */
+  engineSocket: string;
   containerId: string;
   generation: string;
   workspace: string;
+  /** Private data is one consumer-seeded tmpfs; mutable binds admit individual anchored file effects only. */
+  dataDomain: "private" | "mutable-file-bind";
+  /** Required for private data; exact kernel byte/inode limits are bound to the namespace generation. */
+  workspaceLimits?: { bytes: number; inodes: number };
   resources: string;
   shell: boolean;
+  /** Complete reachable brain/control/metadata inventory; exact kernel exclusions are checked per effect. */
+  network?: {
+    networkId: string;
+    protectedAddresses: string[];
+    dnsServers: string[];
+    /** Complete protected service ports are required when DNS shares an excluded address. */
+    protectedEndpoints?: { address: string; port: number }[];
+  };
   readOnlyMounts: { source: string; destination: string }[];
   /** Optional single custom hand, never repository/native brain extension code. */
   customHand?: CustomHand;
@@ -98,3 +112,118 @@ export interface DockerHandsConfiguration {
 
 /** Lost transport/identity authority seals native work; unsafe effects remain explicitly uncertain. */
 export class HandsBackendUnavailableError extends SeptError {}
+
+/** Sanitized control facts exclude peer payloads, command text, diagnostics and endpoint paths. */
+export interface EngineFailureFacts {
+  stage: string;
+  elapsedMs: number;
+  code: number | null;
+  signal: null;
+  status: number | null;
+  timeout: boolean;
+  overflow: boolean;
+  /** The owning request/attachment has settled; this does not release retained Agent connections. */
+  requestJoined: boolean;
+  attachmentClosed: boolean;
+  connectionsReleased: boolean;
+}
+/** Engine loss retains observable exit facts; an unknown signal is never fabricated from a code. */
+export class EngineControlError extends SeptError {
+  /** Facts start unjoined; only the owning finalizer may attest observed closure. */
+  public static at(
+    stage: string,
+    started: number,
+    details: Partial<EngineFailureFacts> = {},
+  ): EngineControlError {
+    return new EngineControlError({
+      stage,
+      elapsedMs: Date.now() - started,
+      code: null,
+      signal: null,
+      status: null,
+      timeout: false,
+      overflow: false,
+      requestJoined: false,
+      attachmentClosed: false,
+      connectionsReleased: false,
+      ...details,
+    });
+  }
+  /** Called after observed request/socket closure, without confusing retained connections with join. */
+  public joined(
+    closure: Pick<EngineFailureFacts, "attachmentClosed" | "connectionsReleased">,
+  ): EngineControlError {
+    return new EngineControlError({ ...this.facts, requestJoined: true, ...closure });
+  }
+  public constructor(public readonly facts: EngineFailureFacts) {
+    super(`Hands Engine control failed at ${facts.stage}`);
+  }
+}
+
+/** Trusted command composition only; model data cannot select Engine operations or confirmation. */
+export interface EngineExec {
+  command: string[];
+  input?: string;
+  cwd?: string;
+  user?: string;
+  privileged?: boolean;
+  maximum?: number;
+  /** Fixed stop helper must pin its namespace before the final brain-owned generation check. */
+  confirm?: () => Promise<void>;
+}
+/** Kernel lifetime facts are private generation metadata, never task-selected authority. */
+export interface NamespaceLifetime {
+  pidNamespace: string;
+  initStart: string;
+}
+
+/** Exact consumer-selected kernel facts; changing any fact invalidates generation authority. */
+export interface HandsKernelProfile {
+  image: string;
+  memory: number;
+  pids: number;
+  nanoCpus: number;
+  dataDomain: DockerHandsConfiguration["dataDomain"];
+  workspaceLimits: DockerHandsConfiguration["workspaceLimits"];
+}
+
+/** Validate explicit consumer data-domain and finite bounds once at the trusted configuration boundary. */
+export function parseHandsDataDomain(
+  input: Record<string, unknown>,
+): Pick<DockerHandsConfiguration, "dataDomain" | "workspaceLimits"> {
+  if (input.dataDomain === "mutable-file-bind") {
+    if (input.shell || input.workspaceLimits !== undefined) {
+      throw new SeptError("Mutable file binds support individual file effects without commands");
+    }
+    return { dataDomain: input.dataDomain };
+  }
+  if (input.dataDomain !== "private") {
+    throw new SeptError("An explicit supported hands data domain is required");
+  }
+  if (Array.isArray(input.readWriteMounts) && input.readWriteMounts.length > 0) {
+    throw new SeptError("Private workspace cannot expose writable host binds");
+  }
+  return {
+    dataDomain: input.dataDomain,
+    workspaceLimits: parseWorkspaceLimits(input.workspaceLimits),
+  };
+}
+function parseWorkspaceLimits(value: unknown): { bytes: number; inodes: number } {
+  if (typeof value !== "object" || value === null || !("bytes" in value) || !("inodes" in value)) {
+    throw new SeptError("Private workspace requires finite bytes/inodes");
+  }
+  const { bytes, inodes } = value;
+  if (
+    !finiteWorkspaceLimit(bytes) ||
+    bytes % 4096 !== 0 ||
+    !finiteWorkspaceLimit(inodes) ||
+    Object.keys(value).length !== 2
+  ) {
+    throw new SeptError("Private workspace requires finite page-aligned bytes/inodes");
+  }
+  return { bytes, inodes };
+}
+
+function finiteWorkspaceLimit(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+}

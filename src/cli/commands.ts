@@ -147,13 +147,14 @@ function registerWorkerStop(service: SeptService, telemetry: Observability): voi
 }
 
 async function runWorker(context: CommandContext): Promise<void> {
-  const policy = initializeCapabilities(context.options, stateRoot(context.options));
+  const policy = await initializeCapabilities(context.options, stateRoot(context.options));
   const workspaceRoot = resolve(
     context.options["workspace-root"] ?? process.env.SEPT_WORKSPACE_ROOT ?? process.cwd(),
   );
   const host = context.options.host;
   const port = integer(context.options.port);
-  const service = new SeptService({
+  // The factory is invoked only after service.start binds, including restart adoption with port 0.
+  const service: SeptService = new SeptService({
     stateRoot: stateRoot(context.options),
     agentDir: context.agentDir,
     workspaceRoot,
@@ -161,6 +162,7 @@ async function runWorker(context: CommandContext): Promise<void> {
     hostFactory: capabilityHostFactory(
       stateRoot(context.options),
       context.options.hands ?? process.env.SEPT_HANDS_CONFIGURATION,
+      () => service.boundEndpoint(),
     ),
     capabilityAdmission: () => {
       assertCapabilityAdmission(policy);
@@ -245,11 +247,13 @@ async function executeDirectRun(context: CommandContext, store: RunStore): Promi
 async function runDirect(context: CommandContext): Promise<void> {
   const root = stateRoot(context.options);
   assertCompatibleStateRoot(root, context.telemetry);
-  assertCapabilityAdmission(initializeCapabilities(context.options, stateRoot(context.options)));
+  assertCapabilityAdmission(
+    await initializeCapabilities(context.options, stateRoot(context.options)),
+  );
   const releaseRoot = acquireStateRootLease(root);
   try {
     assertLocalRunSlot(root, context.options.resume);
-    const resumed = resumePermissionRun(context, root);
+    const resumed = await resumePermissionRun(context, root, context.agentDir);
     await executeDirectRun(context, resumed ?? (await createDirectRun(context, root)));
   } finally {
     releaseRoot();

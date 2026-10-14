@@ -20,7 +20,7 @@ import {
   checkpointPermissionWait,
   readInvocationAdmission,
 } from "../pi-integration/index.js";
-import { revokeDockerBinding } from "../execution/index.js";
+import { revokeRecordedHandsBinding } from "../execution/index.js";
 import { updateRuntimeSnapshot } from "./runtime-state.js";
 import type { WorkerAdoption } from "./contracts.js";
 
@@ -121,7 +121,7 @@ export async function reconcilePermissionWait(store: RunStore): Promise<void> {
   if (pending === undefined) {
     return;
   }
-  await revokeDockerBinding(pending.binding);
+  await revokeRecordedHandsBinding(store, pending.binding);
   if (store.snapshot().status !== "active") {
     return;
   }

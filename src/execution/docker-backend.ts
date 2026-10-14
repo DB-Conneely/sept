@@ -1,10 +1,9 @@
 /** Bridges one supplied Docker Linux namespace to native Pi; Docker provisioning remains consumer-owned. */
 
-import { mkdirSync, watch, type FSWatcher } from "node:fs";
+import { watch, type FSWatcher } from "node:fs";
 import { join } from "node:path";
 import type { Context } from "@earendil-works/chord";
 import {
-  acquireStateRootLease,
   SeptError,
   type RunStore,
   CapabilityPolicyStore,
@@ -14,33 +13,21 @@ import {
 import { HandsBackendUnavailableError } from "./contracts.js";
 import type { DockerHandsConfiguration, ExecutionBackend, HandsRequest } from "./contracts.js";
 import { HANDS_REQUEST_BYTES, parseHandsRequest } from "./protocol.js";
-import { capabilityBinding, capabilityTools } from "./capability-admission.js";
+import { capabilityBinding, capabilityTools, openingPolicy } from "./capability-admission.js";
 import {
-  dockerArguments,
-  runDocker,
+  acquireHandsLease,
+  handsExecution,
   inspect,
   revokeDockerBinding,
   recordHandsBinding,
   validateDockerConfiguration,
 } from "./docker-control.js";
+import { validateDockerProfile, verifyKernelBinding } from "./profile.js";
+import { validateNetworkEnforcement } from "./network-enforcement.js";
+import { DockerEngineControl } from "./docker-engine.js";
+import { validateSealedInputs } from "./hands-processes.js";
 import { handsProjectionReceipt } from "./profile-configuration.js";
 import { CapabilityRequestAuthority } from "./capability-requests.js";
-import { validateDockerProfile } from "./profile.js";
-
-function openingPolicy(
-  configuration: DockerHandsConfiguration,
-  store: CapabilityPolicyStore,
-): CapabilityPolicy {
-  const policy = store.read();
-  if (
-    policy === undefined ||
-    policy.denied ||
-    JSON.stringify(policy.binding) !== JSON.stringify(capabilityBinding(configuration))
-  ) {
-    throw new SeptError("Capability policy is absent, denied or bound to another namespace");
-  }
-  return policy;
-}
 
 /** Owns bounded control calls, cancellation, and namespace lease for one resident run. */
 export class DockerExecutionBackend implements ExecutionBackend {
@@ -60,14 +47,15 @@ export class DockerExecutionBackend implements ExecutionBackend {
 
   private constructor(
     private readonly configuration: DockerHandsConfiguration,
+    private readonly engine: DockerEngineControl,
     public readonly cwd: string,
     private readonly workspace: string,
     private readonly brainRoots: readonly string[],
     private readonly release: () => void,
-    projectionReceipt: string,
     private readonly policyStore: CapabilityPolicyStore,
     private readonly policy: CapabilityPolicy,
     store: RunStore,
+    private readonly controlEndpoint?: { address: string; port: number },
   ) {
     this.id = `docker:${configuration.containerId}`;
     this.generation = configuration.generation;
@@ -91,7 +79,10 @@ export class DockerExecutionBackend implements ExecutionBackend {
       }
     });
     this.resourceProjectionDirectory = configuration.resources;
-    this.resourceProjectionReceipt = projectionReceipt;
+    this.resourceProjectionReceipt = handsProjectionReceipt(
+      configuration.resources,
+      brainRoots[1] ?? store.runDir,
+    );
   }
 
   /** Validate actual containment before resources or native scheduling, retaining one exclusive lease. */
@@ -100,32 +91,38 @@ export class DockerExecutionBackend implements ExecutionBackend {
     store: RunStore,
     brainRoots: readonly string[],
     policyStore: CapabilityPolicyStore,
+    controlEndpoint?: { address: string; port: number },
   ): Promise<DockerExecutionBackend> {
     const policy = openingPolicy(configuration, policyStore);
     const workspace = store.manifest().workspace;
-    const cwd = await validateDockerConfiguration(configuration, brainRoots, workspace);
-    const leaseRoot = join(
-      brainRoots[1] ?? store.runDir,
-      ".hands-leases",
-      configuration.containerId,
-    );
-    mkdirSync(leaseRoot, { recursive: true });
-    const release = acquireStateRootLease(leaseRoot);
+    const engine = await DockerEngineControl.open(configuration.engineSocket);
+    let release: (() => void) | undefined;
     try {
-      await recordHandsBinding(store, configuration, cwd);
+      const cwd = await validateDockerConfiguration(
+        configuration,
+        brainRoots,
+        workspace,
+        controlEndpoint,
+        { policyPath: policyStore.path, initialize: false },
+        engine,
+      );
+      release = acquireHandsLease(configuration, store, brainRoots);
+      await recordHandsBinding(store, configuration, cwd, engine);
       return new DockerExecutionBackend(
         configuration,
+        engine,
         cwd,
         workspace,
         brainRoots,
         release,
-        handsProjectionReceipt(configuration.resources, brainRoots[1] ?? store.runDir),
         policyStore,
         policy,
         store,
+        controlEndpoint,
       );
     } catch (error: unknown) {
-      release();
+      await engine.close();
+      release?.();
       throw error;
     }
   }
@@ -187,14 +184,22 @@ export class DockerExecutionBackend implements ExecutionBackend {
   }
 
   private async dispatch(context: Context, input: string): Promise<unknown> {
+    const request = parseHandsRequest(JSON.parse(input));
     this.assertAvailable(context);
     await this.validateLive(context);
     this.assertPolicy();
-    this.permissions.authorize(parseHandsRequest(JSON.parse(input)));
-    const raw = await runDocker(dockerArguments(this.configuration, this.cwd), input);
+    this.permissions.authorize(request);
+    const raw = await this.engine.exec(
+      this.configuration.containerId,
+      handsExecution(this.cwd, input, {
+        network:
+          (request.kind === "tool" || request.kind === "custom") &&
+          request.arguments.network === true,
+      }),
+    );
     this.assertAvailable(context);
     this.assertPolicy();
-    this.permissions.authorize(parseHandsRequest(JSON.parse(input)));
+    this.permissions.authorize(request);
     const value: unknown = JSON.parse(raw);
     return value;
   }
@@ -263,11 +268,15 @@ export class DockerExecutionBackend implements ExecutionBackend {
   }
 
   private async validateLive(context: Context): Promise<void> {
-    validateDockerProfile(
+    const inspected = await inspect(this.configuration, this.engine);
+    validateDockerProfile(this.configuration, inspected, this.workspace, this.brainRoots);
+    verifyKernelBinding(this.configuration, inspected, this.policyStore.path);
+    await validateSealedInputs(this.configuration, this.engine);
+    await validateNetworkEnforcement(
       this.configuration,
-      await inspect(this.configuration),
-      this.workspace,
-      this.brainRoots,
+      inspected,
+      this.controlEndpoint,
+      this.engine,
     );
     if (this.unavailable || context.abortSignal?.aborted) {
       throw new SeptError("Hands execution was cancelled before dispatch");
@@ -282,10 +291,15 @@ export class DockerExecutionBackend implements ExecutionBackend {
   }
 
   private async stopAndVerify(): Promise<void> {
-    await revokeDockerBinding({
-      containerId: this.configuration.containerId,
-      generation: this.generation,
-    });
+    await revokeDockerBinding(
+      {
+        containerId: this.configuration.containerId,
+        generation: this.generation,
+      },
+      this.configuration,
+      { policyPath: this.policyStore.path },
+      this.engine,
+    );
   }
 
   /** Close every owned transport before releasing authority; the consumer owns restart/removal. */
@@ -304,6 +318,7 @@ export class DockerExecutionBackend implements ExecutionBackend {
         await Promise.all(this.joins);
       }
     } finally {
+      await this.engine.close();
       this.release();
     }
   }
