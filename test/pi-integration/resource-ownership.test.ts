@@ -2,6 +2,7 @@
 import assert from "node:assert/strict";
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
   writeFileSync,
   readFileSync,
@@ -15,6 +16,10 @@ import { loadDurableSections } from "../../src/pi-integration/durable-resources.
 import { publicTaskProjection } from "../../src/ingress/index.js";
 import { FixtureExecutionBackend } from "./backend-support.js";
 import { fixtureDirectories, fixtureStore } from "./support.js";
+
+const CURATED_SKILL = "---\nname: nested\ndescription: curated marker\n---\nBODY";
+const SECOND_SKILL =
+  "---\nname: projection-extra\ndescription: second trusted operator fixture\n---\nEXTRA";
 
 await test("a consumer marker cannot grant deletion of pre-existing skill data", async () => {
   const directories = fixtureDirectories("sept-projection-preservation-");
@@ -56,9 +61,8 @@ function inputOwnership(path: string) {
 }
 
 function assertProjectionModes(root: string): void {
-  const aliases = readdirSync(join(root, "skills"));
-  assert.equal(aliases.length, 1);
-  const projected = join(root, "skills", String(aliases[0]));
+  const projected = projectedSkill(root, CURATED_SKILL);
+  assert.notEqual(projectedSkill(root, SECOND_SKILL), projected);
   for (const path of [
     root,
     join(root, "skills"),
@@ -79,6 +83,29 @@ function assertProjectionModes(root: string): void {
   assert.equal(readFileSync(join(projected, "alias.txt"), "utf8"), "NESTED-CURATED-CONTENT");
 }
 
+function projectedSkill(root: string, contents: string): string {
+  const matching = readdirSync(join(root, "skills"))
+    .map((alias) => join(root, "skills", alias))
+    .filter((path) => {
+      const skill = join(path, "SKILL.md");
+      return existsSync(skill) && readFileSync(skill, "utf8") === contents;
+    });
+  assert.equal(matching.length, 1);
+  const projected = matching[0];
+  assert.ok(projected);
+  return projected;
+}
+
+function createCuratedSkills(agent: string): string {
+  const skill = join(agent, "skills", "nested");
+  mkdirSync(join(skill, "deep", "more"), { recursive: true, mode: 0o700 });
+  writeFileSync(join(skill, "SKILL.md"), CURATED_SKILL, { mode: 0o600 });
+  const extra = join(agent, "skills", "projection-extra");
+  mkdirSync(extra, { recursive: true, mode: 0o700 });
+  writeFileSync(join(extra, "SKILL.md"), SECOND_SKILL, { mode: 0o600 });
+  return skill;
+}
+
 await test("curated nested text is readable under 022 and 077 without widening private inputs", async () => {
   // This file runs its async resource scenarios sequentially; restore the process mask even on refusal.
   for (const mask of [0o022, 0o077]) {
@@ -87,13 +114,7 @@ await test("curated nested text is readable under 022 and 077 without widening p
       const directories = fixtureDirectories("sept-projection-umask-");
       const backend = new FixtureExecutionBackend(directories.workspace);
       const store = fixtureStore(directories, "fixture", "resource modes");
-      const skill = join(directories.agentDir, "skills", "nested");
-      mkdirSync(join(skill, "deep", "more"), { recursive: true, mode: 0o700 });
-      writeFileSync(
-        join(skill, "SKILL.md"),
-        "---\nname: nested\ndescription: curated marker\n---\nBODY",
-        { mode: 0o600 },
-      );
+      const skill = createCuratedSkills(directories.agentDir);
       const input = join(skill, "deep", "more", "text.txt");
       writeFileSync(input, "NESTED-CURATED-CONTENT", { mode: 0o600 });
       symlinkSync("deep/more/text.txt", join(skill, "alias.txt"));
