@@ -1,0 +1,40 @@
+{
+  "schema": 1,
+  "upstream": {
+    "name": "@earendil-works/pi-coding-agent",
+    "version": "1.1.0",
+    "registryUrl": "https://registry.npmjs.org/@earendil-works/pi-coding-agent/-/pi-coding-agent-1.1.0.tgz",
+    "integrity": "sha512-SeEi/4hdcHNgA9UWlefZl7ZZpm3dzi2OoxNjDHsBJ9o298LNOtbL4DGKgitlEj6uCTccvtw6f2hlCkTPVJ2RXg==",
+    "repository": "https://github.com/earendil-works/pi",
+    "revision": "abe508e1b89912adde45528136c3221eb69acdd7",
+    "licenseUrl": "https://raw.githubusercontent.com/earendil-works/pi/abe508e1b89912adde45528136c3221eb69acdd7/LICENSE",
+    "licenseSha256": "0457f5bcec3b3b211605dfb5d1a49042fd638f3686a410fe099c24a25af13c48",
+    "archiveContainsLicense": false
+  },
+  "patch": {
+    "revision": "sept-native-search-v1",
+    "sha256": "7efdd78ad2e315f1f4376ab4d8546f0d63ef6675a50eb585a12c3d2ba7d421a6"
+  },
+  "files": {
+    "dist/core/tools/find.d.ts": {
+      "originalSha256": "8e675dc76b8824936f0814ab2939c9dedbeadaa3cd6eca3e6754f22f7ba45cb7",
+      "effectiveSha256": "1577a0c5642b1567ff9882f97a6b834bd19060794db4c833534a264fa11e7af0"
+    },
+    "dist/core/tools/find.js": {
+      "originalSha256": "cbb5e3a76e962899f833452ff26670c1fdbf333e7efdecb9953b07f6ebd14ed7",
+      "effectiveSha256": "c8c9af104907188844b94b83cb1999815015de128b68ba9428f4ab0354bf0d50"
+    },
+    "dist/core/tools/grep.d.ts": {
+      "originalSha256": "cb1b7103658fca88fcc381b1e5f0f42e0e17d900b686c0843fe767a597ac5660",
+      "effectiveSha256": "1a1579e49ce3dfa9cc690e33b47b29044ffd391c2d7bb97382d1c49d9daae37e"
+    },
+    "dist/core/tools/grep.js": {
+      "originalSha256": "641ae520a88c7eb86406d9a18880f31412cb41cdc15a7ee3e1da5de62979ca7c",
+      "effectiveSha256": "7476cba5a7c60a4d60db1599aa7127605837e18487c3513fa56bff180ddd9a9a"
+    }
+  },
+  "overlay": {
+    "sha256": "45a00319c3141ee24606671a974226bf3db29fb557ff86ff2b64e8431e3d7936",
+    "sha512": "6a0af2339d02313e6f2ef3d259c70eed7b2549fd8e1084fe233a9bd6e97829c252b0b3451257f81b3bbce2e00ee4af2e4ac152e92fa1198ea3c1d9c372e3a625"
+  }
+}

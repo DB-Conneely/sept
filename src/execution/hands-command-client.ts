@@ -7,7 +7,7 @@ import type {
   HandsFrame,
 } from "./contracts.js";
 
-/** One parent permits one actual Bash/custom process and awaits its verified joined exit. */
+/** One parent permits one Bash, custom or fixed search process and awaits its verified joined exit. */
 export class ResidentHandsCommand {
   private pending:
     | {

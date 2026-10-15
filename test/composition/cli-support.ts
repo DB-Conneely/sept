@@ -118,22 +118,38 @@ export function installedWorker(
   environment: NodeJS.ProcessEnv = {},
 ): InstalledWorker {
   const hands = workerHands(agent, environment);
-  if (hands !== undefined) {
-    activateHandsPolicy(hands, state, agent);
+  let child: InstalledChild;
+  try {
+    if (hands !== undefined) {
+      activateHandsPolicy(hands, state, agent);
+    }
+    child = spawn(resolve("sept"), workerArguments(state, agent, workspaceRoot), {
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        SEPT_TOKEN: token,
+        OTEL_SDK_DISABLED: "true",
+        SEPT_LOG_LEVEL: "silent",
+        ...environment,
+        ...(hands === undefined ? {} : { SEPT_HANDS_CONFIGURATION: hands.path }),
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    ownHands(child, hands);
+  } catch (error: unknown) {
+    const failures: unknown[] = [error];
+    // Until child ownership transfers, setup retains the supplied namespace even if policy refuses.
+    try {
+      hands?.close();
+    } catch (cleanupError: unknown) {
+      failures.push(cleanupError);
+    }
+    throw new AggregateError(failures, "Installed worker initialization failed");
   }
-  const child = spawn(resolve("sept"), workerArguments(state, agent, workspaceRoot), {
-    cwd: process.cwd(),
-    env: {
-      ...process.env,
-      SEPT_TOKEN: token,
-      OTEL_SDK_DISABLED: "true",
-      SEPT_LOG_LEVEL: "silent",
-      ...environment,
-      ...(hands === undefined ? {} : { SEPT_HANDS_CONFIGURATION: hands.path }),
-    },
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  ownHands(child, hands);
+  return captureInstalledWorker(child);
+}
+
+function captureInstalledWorker(child: InstalledChild): InstalledWorker {
   let stdout = "";
   let stderr = "";
   child.stdout.setEncoding("utf8").on("data", (value: string) => {

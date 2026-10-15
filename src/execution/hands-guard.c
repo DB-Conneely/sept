@@ -4,7 +4,6 @@
 #include <dirent.h>
 #include <fcntl.h>
 #include <linux/fs.h>
-#include <linux/landlock.h>
 #include <stdio.h>
 #include <sys/ioctl.h>
 #include <sys/stat.h>
@@ -71,89 +70,6 @@ static void protect_hands_entry(void) {
 }
 
 #ifdef HANDS_GUARD_CHECK
-/* Native image-owned helpers may read only data and their immutable runtime. Kernel checks
-   apply to the resolved inode, including explicit file and ignore-file symlinks into proc/control. */
-static void helper_read_rule(int ruleset, const char *path, int required, unsigned long long access) {
-    int fd = open(path, O_PATH | O_CLOEXEC);
-    if (fd < 0) {
-        if (!required && errno == ENOENT) return;
-        _exit(126);
-    }
-    struct landlock_path_beneath_attr rule = {
-        .allowed_access = access,
-        .parent_fd = fd,
-    };
-    if (syscall(__NR_landlock_add_rule, ruleset, LANDLOCK_RULE_PATH_BENEATH, &rule, 0) != 0 || close(fd) != 0) _exit(126);
-}
-static int private_capture_name(const char *name) {
-    return strncmp(name, "sept-hands-epoch-", 17) == 0 || strncmp(name, "sept-hands-mime-", 16) == 0;
-}
-static void helper_scratch_rules(int ruleset) {
-    /* READ_DIR alone exposes no file bytes. Fixed exclusions below keep private capture
-       names out of native enumeration; only nonprivate scratch inodes receive READ_FILE. */
-    helper_read_rule(ruleset, "/tmp", 1, LANDLOCK_ACCESS_FS_READ_DIR);
-    DIR *directory = opendir("/tmp");
-    if (directory == NULL) _exit(126);
-    struct dirent *entry;
-    unsigned int count = 0;
-    errno = 0;
-    while ((entry = readdir(directory)) != NULL) {
-        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0 || private_capture_name(entry->d_name)) continue;
-        if (++count > 4096) _exit(126);
-        int descriptor = openat(dirfd(directory), entry->d_name, O_PATH | O_NOFOLLOW | O_CLOEXEC);
-        struct stat identity;
-        if (descriptor < 0 || fstat(descriptor, &identity) != 0) _exit(126);
-        if (!S_ISDIR(identity.st_mode) && (!S_ISREG(identity.st_mode) || identity.st_nlink != 1)) {
-            if (close(descriptor) != 0) _exit(126);
-            continue;
-        }
-        unsigned long long access = LANDLOCK_ACCESS_FS_READ_FILE;
-        if (S_ISDIR(identity.st_mode)) access |= LANDLOCK_ACCESS_FS_READ_DIR;
-        struct landlock_path_beneath_attr rule = { .allowed_access = access, .parent_fd = descriptor };
-        if (syscall(__NR_landlock_add_rule, ruleset, LANDLOCK_RULE_PATH_BENEATH, &rule, 0) != 0 || close(descriptor) != 0) _exit(126);
-        errno = 0;
-    }
-    if (errno != 0 || closedir(directory) != 0) _exit(126);
-}
-static void execute_discovery_helper(char **argv, const char *name) {
-    struct landlock_ruleset_attr rules = {
-        .handled_access_fs = LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_READ_DIR,
-    };
-    int ruleset = syscall(__NR_landlock_create_ruleset, &rules, sizeof(rules), 0);
-    if (ruleset < 0) _exit(126);
-    const char *required[] = { "/workspace", "/resources", "/usr", "/lib", "/etc", "/app" };
-    unsigned long long access = LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_READ_DIR;
-    for (size_t index = 0; index < sizeof(required) / sizeof(required[0]); index++) helper_read_rule(ruleset, required[index], 1, access);
-    helper_read_rule(ruleset, "/lib64", 0, access);
-    helper_read_rule(ruleset, "/selected", 0, access);
-    helper_scratch_rules(ruleset);
-    if (syscall(__NR_landlock_restrict_self, ruleset, 0) != 0 || close(ruleset) != 0) _exit(126);
-    char *arguments[128];
-    unsigned int count = 0;
-    arguments[count++] = argv[0];
-    const int grep = strcmp(name, "rg") == 0;
-    unsigned int original_count = 0;
-    while (argv[original_count] != NULL) {
-        if (++original_count >= 128) _exit(126);
-    }
-    const int scratch_root = original_count > 1 && strcmp(argv[original_count - 1], "/tmp") == 0;
-    for (unsigned int index = 1; argv[index] != NULL; index++) {
-        if (scratch_root && strcmp(argv[index], "--") == 0) {
-            if (count > 122) _exit(126);
-            /* Whole-scratch discovery hides reserved captures. Public workspace names retain native parity.
-               Last rules win; native user globs cannot undo exclusions in the scratch root. */
-            arguments[count++] = grep ? "--glob" : "--exclude";
-            arguments[count++] = grep ? "!sept-hands-epoch-*" : "sept-hands-epoch-*";
-            arguments[count++] = grep ? "--glob" : "--exclude";
-            arguments[count++] = grep ? "!sept-hands-mime-*" : "sept-hands-mime-*";
-        }
-        if (count >= 127) _exit(126);
-        arguments[count++] = argv[index];
-    }
-    arguments[count] = NULL;
-    execv(grep ? "/app/hands-rg" : "/app/hands-fd", arguments);
-    _exit(126);
-}
 /* Only kernel-sealed regular data is admitted for complete command/discovery traversal. */
 static void sealed_inode(int fd, dev_t device, unsigned int depth, unsigned int *count);
 static void sealed_directory(int fd, dev_t device, unsigned int depth, unsigned int *count) {
@@ -183,9 +99,6 @@ static void sealed_inode(int fd, dev_t device, unsigned int depth, unsigned int 
     }
 }
 int main(int argc, char **argv) {
-    const char *name = strrchr(argv[0], '/');
-    name = name == NULL ? argv[0] : name + 1;
-    if (strcmp(name, "rg") == 0 || strcmp(name, "fd") == 0) execute_discovery_helper(argv, name);
     if (argc != 3 || strcmp(argv[1], "--sealed") != 0 ||
         strncmp(argv[2], "/selected/", 10) != 0 || strchr(argv[2] + 10, '/') != NULL) return 126;
     int root = open(argv[2], O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);

@@ -1,42 +1,49 @@
-/* The Engine selects this immutable entry and fixed command UID. No inherited control descriptors survive. */
+/* The Engine selects this immutable entry and fixed command UID; DAC protects resident bytes. */
 #define _GNU_SOURCE
 #include <sys/syscall.h>
 #include <unistd.h>
 #include <string.h>
-#include <fcntl.h>
-#include <linux/landlock.h>
-#include <sys/prctl.h>
-#include <errno.h>
-static void allow_read(int ruleset, const char *path, int required) {
-    int descriptor = open(path, O_PATH | O_CLOEXEC);
-    if (descriptor < 0) {
-        if (!required && errno == ENOENT) return;
-        _exit(126);
+
+static int command_identity(void) {
+    gid_t groups[1];
+    int count = getgroups(1, groups);
+    return getuid() == 10003 && geteuid() == 10003 &&
+        getgid() == 10002 && getegid() == 10002 &&
+        count >= 0 && (count == 0 || groups[0] == 10002);
+}
+
+static void execute_helper(int argc, char **argv, int grep) {
+    char *binary = grep ? "/usr/local/libexec/sept/rg" : "/usr/local/libexec/sept/fd";
+    char *arguments[128];
+    unsigned int count = 0;
+    arguments[count++] = binary;
+    /* Parent authority already checked native argv. Insert after user globs so they cannot
+       restore private capture names in whole-scratch searches; pattern text may itself be --. */
+    int scratch_root = strcmp(argv[argc - 1], "/tmp") == 0;
+    for (int index = 2; index < argc; index++) {
+        if (scratch_root && index == argc - 3) {
+            arguments[count++] = grep ? "--glob" : "--exclude";
+            arguments[count++] = grep ? "!sept-hands-epoch-*" : "sept-hands-epoch-*";
+            arguments[count++] = grep ? "--glob" : "--exclude";
+            arguments[count++] = grep ? "!sept-hands-mime-*" : "sept-hands-mime-*";
+        }
+        arguments[count++] = argv[index];
     }
-    struct landlock_path_beneath_attr rule = {
-        .allowed_access = LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_READ_DIR,
-        .parent_fd = descriptor,
-    };
-    if (syscall(SYS_landlock_add_rule, ruleset, LANDLOCK_RULE_PATH_BENEATH, &rule, 0) != 0 || close(descriptor) != 0) _exit(126);
+    arguments[count] = NULL;
+    execv(binary, arguments);
 }
-static void private_process_view(void) {
-    /* The real command may traverse granted data/runtime, never the resident's imports, proc or HOME/control view. */
-    struct landlock_ruleset_attr rules = { .handled_access_fs = LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_READ_DIR };
-    int ruleset = syscall(SYS_landlock_create_ruleset, &rules, sizeof(rules), 0);
-    if (ruleset < 0) _exit(126);
-    const char *required[] = { "/workspace", "/resources", "/tmp", "/usr", "/lib", "/etc", "/dev" };
-    for (unsigned int index = 0; index < sizeof(required) / sizeof(required[0]); index++) allow_read(ruleset, required[index], 1);
-    allow_read(ruleset, "/lib64", 0);
-    allow_read(ruleset, "/selected", 0);
-    if (syscall(SYS_landlock_restrict_self, ruleset, 0) != 0 || close(ruleset) != 0) _exit(126);
-}
+
 int main(int argc, char **argv) {
-    if (getuid() != 10003 || getgid() != 10002 || argc != 3 ||
+    if (!command_identity() || argc < 3 || argc > 122 ||
         syscall(SYS_close_range, 3U, ~0U, 0U) != 0) return 126;
-    private_process_view();
-    if (strcmp(argv[1], "bash") == 0) {
+    /* SIGCONT crosses UID boundaries within a session. Separate every command from the resident. */
+    if (setsid() < 0 && getsid(0) != getpid()) return 126;
+    if (strcmp(argv[1], "rg") == 0 || strcmp(argv[1], "fd") == 0) {
+        if (argc < 5 || strcmp(argv[argc - 3], "--") != 0) return 126;
+        execute_helper(argc, argv, strcmp(argv[1], "rg") == 0);
+    } else if (argc == 3 && strcmp(argv[1], "bash") == 0) {
         execl("/bin/bash", "bash", "--noprofile", "--norc", "-c", argv[2], (char *)NULL);
-    } else if (strcmp(argv[1], "custom") == 0) {
+    } else if (argc == 3 && strcmp(argv[1], "custom") == 0) {
         execl("/usr/local/bin/node", "node", "--disable-sigusr1", "--input-type=module", "--eval", argv[2], (char *)NULL);
     }
     return 126;
