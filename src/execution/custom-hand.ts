@@ -27,8 +27,10 @@ export async function executeCustomHand(
   let output = "";
   const exit = await command(
     { program: "custom", command: code.toString("utf8"), input: request.arguments.text, cwd },
-    (chunk) => {
-      output += chunk.toString("utf8");
+    (chunk, stream) => {
+      if (stream === "stdout") {
+        output += chunk.toString("utf8");
+      }
     },
     signal,
   );

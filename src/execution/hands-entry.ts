@@ -101,7 +101,9 @@ async function bashTool(
       exec: async (bytes, directory, options) => {
         const exit = await command(
           { program: "bash", command: bytes, input: "", cwd: directory },
-          options.onData,
+          (chunk) => {
+            options.onData(chunk);
+          },
           options.signal,
         );
         if (exit.termination !== "exit") {
@@ -162,10 +164,12 @@ export async function executeHandsRequest(
       : [{ alias: bodies.epoch.alias, descriptor: bodies.epoch.descriptor }],
   );
   bodies.files = files;
+  bodies.command = command;
   try {
     return await dispatchBody(request, cwd, authorize, signal, bodies, command);
   } finally {
     bodies.files = undefined;
+    bodies.command = undefined;
     files.close();
     if (retained === undefined) {
       closeHandsResourceEpoch(bodies.epoch);

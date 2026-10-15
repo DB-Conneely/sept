@@ -8,6 +8,8 @@ export type {
   HandsCommandExit,
   HandsCommandHandler,
   HandsCommandExecutor,
+  HandsCommandInput,
+  HandsCommandStream,
 } from "./hands-command-contracts.js";
 /** Defines the trusted supplied hands port. Native Pi still owns tool scheduling and replay. */
 
@@ -135,8 +137,8 @@ export interface EngineExec {
   maximum?: number;
   /** Trusted owner rechecks live admission after registration and immediately before Engine start. */
   beforeStart?: () => Promise<void>;
-  /** Actual Bash combines stderr into native output; fixed control/custom diagnostics remain drained. */
-  combineOutput?: boolean;
+  /** Actual commands retain stream tags; fixed resident/control diagnostics remain bounded and drained. */
+  commandOutput?: boolean;
   /** Fixed stop helper must pin its namespace before the final brain-owned generation check. */
   confirm?: () => Promise<void>;
 }

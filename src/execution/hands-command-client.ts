@@ -1,12 +1,17 @@
 /** Resident-only native process seam; raw command output never writes the RPC descriptor. */
 import { SeptError } from "../durable/index.js";
-import type { HandsCommandExecutor, HandsCommandExit, HandsFrame } from "./contracts.js";
+import type {
+  HandsCommandExecutor,
+  HandsCommandExit,
+  HandsCommandStream,
+  HandsFrame,
+} from "./contracts.js";
 
 /** One parent permits one actual Bash/custom process and awaits its verified joined exit. */
 export class ResidentHandsCommand {
   private pending:
     | {
-        onData: (data: Buffer) => void;
+        onData: (data: Buffer, stream: HandsCommandStream) => void;
         resolve: (exit: HandsCommandExit) => void;
         reject: (error: Error) => void;
       }
@@ -48,7 +53,7 @@ export class ResidentHandsCommand {
       throw new SeptError("Hands command correlation was refused");
     }
     if (frame.kind === "command-data") {
-      pending.onData(Buffer.from(frame.payload.text));
+      pending.onData(Buffer.from(frame.payload.text), frame.payload.stream);
     } else {
       pending.resolve(frame.payload);
     }

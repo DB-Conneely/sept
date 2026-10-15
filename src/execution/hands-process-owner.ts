@@ -4,11 +4,14 @@ import { SeptError } from "../durable/index.js";
 import type { DockerEngineControl } from "./docker-engine.js";
 import type { HandsAttachment } from "./hands-processes.js";
 import { captureNamespaceLifetime } from "./hands-processes.js";
-import { handsRecord } from "./protocol.js";
+export { parseProcessIdentity } from "./protocol.js";
+import { commandExecutable, CLEAN_COMMAND_ENV } from "./hands-command-authority.js";
+import { handsRecord, parseProcessIdentity } from "./protocol.js";
 import type {
   DockerHandsConfiguration,
   HandsCommandExit,
   HandsCommandStart,
+  HandsCommandStream,
   NamespaceLifetime,
 } from "./contracts.js";
 
@@ -27,16 +30,11 @@ interface CommandState {
   termination: HandsCommandExit["termination"];
   stop: AbortController;
   bytes: number;
+  stdoutBytes: number;
   attachmentClosed: boolean;
   joined?: Promise<void>;
+  collecting?: Promise<void>;
 }
-const CLEAN_COMMAND_ENV = [
-  "/usr/bin/env",
-  "-i",
-  "PATH=/usr/local/bin:/usr/bin:/bin",
-  "HOME=/tmp",
-  "TMPDIR=/tmp",
-];
 
 /** Fixed image-owned privileged census/join is the sole cross-UID signal authority. */
 export class HandsProcessOwner {
@@ -71,13 +69,14 @@ export class HandsProcessOwner {
   public async execute(
     command: HandsCommandStart,
     options: CommandOptions,
-    output: (text: string) => Promise<void>,
+    output: (text: string, stream: HandsCommandStream) => Promise<void>,
   ): Promise<HandsCommandExit> {
     const state: CommandState = {
       attachment: undefined,
       termination: "exit",
       stop: new AbortController(),
       bytes: 0,
+      stdoutBytes: 0,
       attachmentClosed: false,
     };
     const abort = (): void => {
@@ -99,11 +98,18 @@ export class HandsProcessOwner {
     } finally {
       clearTimeout(timer);
       options.signal.removeEventListener("abort", abort);
-      // Cleanup failure propagates to the backend's exact-generation stop; it is never an ordinary successful exit.
+      await this.finalizeCommand(state);
+    }
+  }
+  private async finalizeCommand(state: CommandState): Promise<void> {
+    // Cleanup failure propagates to the backend's exact-generation stop; it is never an ordinary successful exit.
+    try {
+      await (state.joined ?? this.join());
+    } finally {
       try {
-        await (state.joined ?? this.join());
-      } finally {
         await state.attachment?.abort();
+      } finally {
+        await state.collecting;
       }
     }
   }
@@ -116,7 +122,7 @@ export class HandsProcessOwner {
       command: commandExecutable(command, options.network),
       cwd: command.cwd,
       user: "10003:10002",
-      combineOutput: command.program === "bash",
+      commandOutput: true,
       beforeStart: async () => {
         await options.authorize();
         if (options.signal.aborted || state.stop.signal.aborted) {
@@ -134,18 +140,19 @@ export class HandsProcessOwner {
   private async runCommand(
     command: HandsCommandStart,
     state: CommandState,
-    output: (text: string) => Promise<void>,
+    output: (text: string, stream: HandsCommandStream) => Promise<void>,
   ): Promise<HandsCommandExit> {
     const attachment = state.attachment;
     if (attachment === undefined) {
       throw new SeptError("Hands command attachment is absent");
     }
     const collecting = this.streamCommand(command, state, attachment, output);
+    state.collecting = collecting;
     // Stream failure wakes the polling owner; retain its rejection until all mandatory cleanup has joined.
     void collecting.catch(() => {
       this.interrupt(state, "overflow");
     });
-    await attachment.end(command.input);
+    await attachment.end("input" in command ? command.input : "");
     await this.waitCommand(attachment, state);
     // Root exit is insufficient: Engine siblings/setsid descendants can still hold pipes and sockets.
     state.joined = this.join();
@@ -196,27 +203,47 @@ export class HandsProcessOwner {
     command: HandsCommandStart,
     state: CommandState,
     attachment: HandsAttachment,
-    output: (text: string) => Promise<void>,
+    output: (text: string, stream: HandsCommandStream) => Promise<void>,
   ): Promise<void> {
-    const decoder = new StringDecoder("utf8");
-    for await (const chunk of attachment.stdout) {
-      if (!Buffer.isBuffer(chunk)) {
+    const decoders = { stdout: new StringDecoder("utf8"), stderr: new StringDecoder("utf8") };
+    const emit = (text: string, stream: HandsCommandStream): Promise<void> =>
+      output(text, command.program === "bash" ? "stdout" : stream);
+    const chunks: AsyncIterable<unknown> = attachment.output;
+    for await (const raw of chunks) {
+      const chunk = handsRecord(raw);
+      if (
+        !Buffer.isBuffer(chunk.data) ||
+        (chunk.stream !== "stdout" && chunk.stream !== "stderr")
+      ) {
         throw new SeptError("Hands command output is not bytes");
       }
-      state.bytes += chunk.length;
-      const maximum = command.program === "custom" ? 4096 : 4 * 1024 * 1024;
-      if (state.bytes > maximum) {
+      if (!this.admitOutput(command, state, chunk.data, chunk.stream)) {
         this.interrupt(state, "overflow");
         continue;
       }
-      for (let offset = 0; offset < chunk.length; offset += 65536) {
-        await output(decoder.write(chunk.subarray(offset, offset + 65536)));
+      for (let offset = 0; offset < chunk.data.length; offset += 65536) {
+        const text = decoders[chunk.stream].write(chunk.data.subarray(offset, offset + 65536));
+        await emit(text, chunk.stream);
       }
     }
-    const trailing = decoder.end();
-    if (trailing.length > 0) {
-      await output(trailing);
+    for (const stream of ["stdout", "stderr"] as const) {
+      const trailing = decoders[stream].end();
+      if (trailing.length > 0) {
+        await emit(trailing, stream);
+      }
     }
+  }
+  private admitOutput(
+    command: HandsCommandStart,
+    state: CommandState,
+    bytes: Buffer,
+    stream: HandsCommandStream,
+  ): boolean {
+    state.bytes += bytes.length;
+    state.stdoutBytes += stream === "stdout" ? bytes.length : 0;
+    return (
+      state.bytes <= 4 * 1024 * 1024 && (command.program !== "custom" || state.stdoutBytes <= 4096)
+    );
   }
   /** Exempt only pinned PID+start lifetimes and this completed fixed helper; no PID ancestry/group assumptions. */
   public async join(): Promise<void> {
@@ -249,22 +276,6 @@ export class HandsProcessOwner {
     }
   }
 }
-/** Strict bounded lifetime codec; caller-selected PID groups and permanent command exemptions are absent. */
-export function parseProcessIdentity(value: unknown): ProcessIdentity {
-  const input = handsRecord(value);
-  if (
-    Object.keys(input).length !== 2 ||
-    typeof input.pid !== "number" ||
-    !Number.isSafeInteger(input.pid) ||
-    input.pid <= 1 ||
-    input.pid > 2147483647 ||
-    typeof input.start !== "string" ||
-    !/^\d{1,20}$/.test(input.start)
-  ) {
-    throw new SeptError("Hands process lifetime is malformed");
-  }
-  return { pid: input.pid, start: input.start };
-}
 function processControl(
   mode: "--capture" | "--join",
   lifetime: NamespaceLifetime,
@@ -282,15 +293,6 @@ function processControl(
     String(resident.pid),
     resident.start,
     ...(idle === undefined ? [] : [String(idle.pid), idle.start]),
-  ];
-}
-function commandExecutable(command: HandsCommandStart, network: boolean): string[] {
-  return [
-    ...CLEAN_COMMAND_ENV,
-    `SEPT_HANDS_NETWORK=${network ? "1" : "0"}`,
-    "/app/hands-command",
-    command.program,
-    command.command,
   ];
 }
 function commandPause(signal: AbortSignal): Promise<void> {

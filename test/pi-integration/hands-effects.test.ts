@@ -1,5 +1,6 @@
 /** Supporting current-parent file authority regressions; installed resident effects are proved separately. */
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import {
   closeSync,
   constants,
@@ -84,6 +85,41 @@ await test("executeHandsRequest has no undefined-grant effect fallback and refre
   );
   assert.equal(readFileSync(join(root, "artifact"), "utf8"), "shared");
   assert.equal(bodies.files, undefined);
+  assert.equal(bodies.command, undefined);
+});
+await test("executeHandsRequest custom output stays stdout-only and retires active command binding", async () => {
+  const root = mkdtempSync(join(tmpdir(), "sept-custom-streams-"));
+  const path = join(root, "hand.mjs");
+  const code = "process.stdout.write('body-owned')";
+  writeFileSync(path, code);
+  const bodies = createHandsBodies(root);
+  try {
+    const result = await executeHandsRequest(
+      {
+        kind: "custom",
+        callId: "custom",
+        arguments: { text: "input" },
+        hand: { path, sha256: createHash("sha256").update(code).digest("hex"), replay: "safe" },
+        grants: [{ root, read: true, write: false }],
+      },
+      root,
+      allow,
+      undefined,
+      bodies,
+      (command, output) => {
+        assert.equal(bodies.command !== undefined, true);
+        assert.equal("input" in command ? command.input : undefined, "input");
+        output(Buffer.from("RESULT"), "stdout");
+        output(Buffer.from("DIAGNOSTIC_CANARY"), "stderr");
+        return Promise.resolve({ code: 0, signal: null, termination: "exit" });
+      },
+    );
+    assert.deepEqual(result, { content: [{ type: "text", text: "RESULT" }] });
+    assert.equal(bodies.command, undefined);
+    assert.equal(bodies.files, undefined);
+  } finally {
+    rmSync(root, { recursive: true });
+  }
 });
 
 void test("assertHandsEffect consumes only parent-bound paths and independent rights", () => {

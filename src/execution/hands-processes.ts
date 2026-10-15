@@ -143,9 +143,10 @@ export async function validateSealedInputs(
   }
 }
 
-/** One exact non-TTY exec socket; stdout is framed bytes, stderr is bounded and discarded. */
+/** One exact non-TTY exec socket; commands retain bounded tagged bytes, control stderr is drained. */
 export class HandsAttachment {
   public readonly stdout = new PassThrough({ highWaterMark: 65536 });
+  public readonly output = new PassThrough({ objectMode: true, highWaterMark: 1 });
   public readonly joined: Promise<void>;
   private readonly decoder: EngineStreamDecoder;
   private failure: Error | undefined;
@@ -164,16 +165,7 @@ export class HandsAttachment {
     const confirmation = pinnedConfirmation(socket, execution, (error) => {
       this.fail(error);
     });
-    this.decoder = new EngineStreamDecoder(HANDS_RESPONSE_BYTES + 65536, (chunk, stream) => {
-      if (stream === 2 && execution.combineOutput !== true) {
-        return;
-      }
-      confirmation.observe(chunk);
-      if (!this.stdout.write(chunk)) {
-        socket.pause();
-      }
-    });
-    this.stdout.on("drain", () => socket.resume());
+    this.decoder = this.outputDecoder(execution, confirmation.observe);
     socket.allowHalfOpen = true;
     const abort = (): void => {
       this.fail(EngineControlError.at("closed-owner", Date.now()));
@@ -183,6 +175,7 @@ export class HandsAttachment {
       clearTimeout(this.timer);
       signal.removeEventListener("abort", abort);
       this.stdout.end();
+      this.output.end();
       await requestJoined;
       await confirmation.join();
     });
@@ -191,6 +184,25 @@ export class HandsAttachment {
     if (signal.aborted) {
       abort();
     }
+  }
+  private outputDecoder(
+    execution: EngineExec,
+    confirm: (chunk: Buffer) => void,
+  ): EngineStreamDecoder {
+    this.stdout.on("drain", () => this.socket.resume());
+    this.output.on("drain", () => this.socket.resume());
+    return new EngineStreamDecoder(HANDS_RESPONSE_BYTES + 65536, (chunk, stream) => {
+      if (execution.commandOutput === true) {
+        if (!this.output.write({ data: chunk, stream: stream === 1 ? "stdout" : "stderr" })) {
+          this.socket.pause();
+        }
+      } else if (stream === 1) {
+        confirm(chunk);
+        if (!this.stdout.write(chunk)) {
+          this.socket.pause();
+        }
+      }
+    });
   }
   private observeSocket(): void {
     this.socket.on("data", (chunk: Buffer) => {

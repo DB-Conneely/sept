@@ -8,7 +8,13 @@ import { handsRecord, EngineControlError } from "./contracts.js";
 export { handsRecord } from "./contracts.js";
 export type { HandsFrame, HandsCorrelation } from "./contracts.js";
 import { SeptError } from "../durable/index.js";
-import type { HandsResources, HandsToolResult, HandsFrame, HandsCorrelation } from "./contracts.js";
+import type {
+  HandsResources,
+  HandsToolResult,
+  HandsFrame,
+  HandsCorrelation,
+  HandsCommandStart,
+} from "./contracts.js";
 
 /** Transport bounds cover resized image attachments without unbounded buffering. */
 export const HANDS_REQUEST_BYTES = 512 * 1024;
@@ -114,7 +120,47 @@ export function parseHandsFrame(value: unknown): HandsFrame {
   if (input.kind === "result") {
     return { ...correlation, kind: input.kind, payload: input.payload };
   }
+  if (input.kind === "command-start") {
+    return { ...correlation, kind: input.kind, payload: parseCommand(input.payload) };
+  }
   return parseControlFrame(correlation, input.kind, handsRecord(input.payload));
+}
+function commandText(value: unknown, maximum = HANDS_REQUEST_BYTES): string {
+  const checked = text(value, maximum);
+  if (checked.includes("\0")) {
+    throw new SeptError("Hands command contains a NUL");
+  }
+  return checked;
+}
+function parseCommand(value: unknown): HandsCommandStart {
+  const input = handsRecord(value);
+  if (input.commandId !== 1 || Buffer.byteLength(JSON.stringify(input)) > HANDS_REQUEST_BYTES) {
+    throw new SeptError("Hands command identity or size was refused");
+  }
+  const cwd = commandText(input.cwd, 4096);
+  if (input.program === "rg" || input.program === "fd") {
+    exact(input, ["commandId", "program", "argv", "cwd"]);
+    if (!Array.isArray(input.argv) || input.argv.length > 120) {
+      throw new SeptError("Hands helper argv exceeds its bound");
+    }
+    return {
+      commandId: 1,
+      program: input.program,
+      argv: input.argv.map((argument: unknown) => commandText(argument)),
+      cwd,
+    };
+  }
+  exact(input, ["commandId", "program", "command", "input", "cwd"]);
+  if (input.program !== "bash" && input.program !== "custom") {
+    throw new SeptError("Hands command program was refused");
+  }
+  return {
+    commandId: 1,
+    program: input.program,
+    command: commandText(input.command),
+    input: commandText(input.input, 1024),
+    cwd,
+  };
 }
 function oneOf(...choices: readonly unknown[]): (value: unknown) => unknown {
   return (value) => {
@@ -147,13 +193,6 @@ const CONTROL_PAYLOADS = {
     path: (value: unknown) => text(value, 4096),
   },
   ack: { effect: ordinal, allowed: oneOf(true, false) },
-  "command-start": {
-    commandId: ordinal,
-    program: oneOf("bash", "custom"),
-    command: text,
-    input: (value: unknown) => text(value, 1024),
-    cwd: (value: unknown) => text(value, 4096),
-  },
   "command-data": {
     commandId: ordinal,
     stream: oneOf("stdout", "stderr"),
@@ -233,3 +272,20 @@ export async function collectEngineMetadata(
 }
 
 export { HandsFrameDecoder } from "./hands-frame-decoder.js";
+
+/** Strict bounded lifetime codec; caller-selected PID groups and permanent command exemptions are absent. */
+export function parseProcessIdentity(value: unknown): { pid: number; start: string } {
+  const input = handsRecord(value);
+  if (
+    Object.keys(input).length !== 2 ||
+    typeof input.pid !== "number" ||
+    !Number.isSafeInteger(input.pid) ||
+    input.pid <= 1 ||
+    input.pid > 2147483647 ||
+    typeof input.start !== "string" ||
+    !/^\d{1,20}$/.test(input.start)
+  ) {
+    throw new SeptError("Hands process lifetime is malformed");
+  }
+  return { pid: input.pid, start: input.start };
+}

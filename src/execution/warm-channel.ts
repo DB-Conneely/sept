@@ -233,7 +233,7 @@ export class WarmHandsChannel {
     const joined = Promise.resolve().then(async () => {
       const exit = await start(
         frame.payload,
-        async (text) => {
+        async (text, stream) => {
           if (this.pending !== pending || this.failure !== undefined) {
             throw new SeptError("Hands command output parent was lost");
           }
@@ -241,7 +241,7 @@ export class WarmHandsChannel {
             encodeHandsFrame({
               ...frame,
               kind: "command-data",
-              payload: { commandId: 1, stream: "stdout", text },
+              payload: { commandId: 1, stream, text },
             }),
           );
         },

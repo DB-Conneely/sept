@@ -1,11 +1,21 @@
 /** Native discovery bodies retain only immutable schemas; operation-local anchored callbacks are rebound each call. */
-import { createGrepTool, createFindTool, createLsTool } from "@earendil-works/pi-coding-agent";
+import {
+  createGrepTool,
+  createFindTool,
+  createLsTool,
+  type GrepToolOptions,
+  type FindToolOptions,
+} from "@earendil-works/pi-coding-agent";
 import { SeptError } from "../durable/index.js";
 import type { HandsFiles } from "./hands-files.js";
 import type { HandsResourceEpoch } from "./hands-resources.js";
 import { posix } from "node:path";
-import type { HandsRequest } from "./contracts.js";
+import type { HandsCommandExecutor, HandsRequest } from "./contracts.js";
 import { handsPathMissing } from "./hands-paths.js";
+import { spawnHandsNativeChild, type HandsNativeSpawnOption } from "./hands-native-child.js";
+
+type HandsGrepOptions = GrepToolOptions & HandsNativeSpawnOption;
+type HandsFindOptions = FindToolOptions & HandsNativeSpawnOption;
 
 /** Validate native find's ancestor .git metadata in the same acknowledged uniformly readable private domain. */
 export async function validateHandsFind(
@@ -49,6 +59,7 @@ export interface HandsBodies {
   ls: ReturnType<typeof createLsTool>;
   files: HandsFiles | undefined;
   epoch: HandsResourceEpoch | undefined;
+  command: HandsCommandExecutor | undefined;
 }
 
 /** Missing operation binding is a refusal, never an ambient filesystem fallback. */
@@ -59,19 +70,25 @@ export function requireHandsFiles(bodies: HandsBodies): HandsFiles {
   return bodies.files;
 }
 
-/** Keep existing Pi rg/fd bodies; image-owned helper wrappers separately enforce read-domain confinement. */
+/** Keep native Pi bodies; the image-only optional spawn contract refuses missing active command authority. */
 export function createHandsBodies(cwd: string): HandsBodies {
   const files = (): HandsFiles => requireHandsFiles(bodies);
+  const spawn: NonNullable<HandsNativeSpawnOption["spawn"]> = (path, argv, options) =>
+    spawnHandsNativeChild(bodies.command, cwd, path, argv, options);
+  const grepOptions: HandsGrepOptions = {
+    spawn,
+    operations: {
+      isDirectory: async (path) => (await files().stat(path)).isDirectory(),
+      readFile: async (path) => (await files().read(path)).toString("utf8"),
+    },
+  };
+  const findOptions: HandsFindOptions = { spawn };
   const bodies: HandsBodies = {
     files: undefined,
     epoch: undefined,
-    grep: createGrepTool(cwd, {
-      operations: {
-        isDirectory: async (path) => (await files().stat(path)).isDirectory(),
-        readFile: async (path) => (await files().read(path)).toString("utf8"),
-      },
-    }),
-    find: createFindTool(cwd),
+    command: undefined,
+    grep: createGrepTool(cwd, grepOptions),
+    find: createFindTool(cwd, findOptions),
     ls: createLsTool(cwd, {
       operations: {
         exists: async (path) => {

@@ -58,6 +58,8 @@ export interface EngineFixture {
   residentAttachment?: ((socket: Duplex) => boolean) | undefined;
   beforePin?: (() => void) | undefined;
   output: string;
+  /** Exact stream fragments for UTF-8/aggregate boundary regressions on the existing command attachment. */
+  commandChunks?: Buffer[];
   resident: boolean;
   execStarts: number;
   warmReply?: ((frame: HandsFrame) => HandsFrame) | undefined;
@@ -155,10 +157,7 @@ function fixtureAttachment(socket: Duplex, facts: EngineFixture): void {
       socket.end();
       return;
     }
-    const output = Buffer.concat([
-      engineFrame(2, "HOSTILE_STDERR_CANARY"),
-      engineFrame(1, facts.output),
-    ]);
+    const output = fixtureCommandOutput(facts);
     socket.write(output.subarray(0, 3));
     socket.end(output.subarray(3));
   });
@@ -242,5 +241,14 @@ function fixtureInspection(response: ServerResponse, facts: EngineFixture): void
         Pid: facts.running ? 42 : 0,
       },
     }),
+  );
+}
+
+function fixtureCommandOutput(facts: EngineFixture): Buffer {
+  const fragments = JSON.stringify(facts.command).includes("/hands-command")
+    ? facts.commandChunks
+    : undefined;
+  return Buffer.concat(
+    fragments ?? [engineFrame(2, "HOSTILE_STDERR_CANARY"), engineFrame(1, facts.output)],
   );
 }

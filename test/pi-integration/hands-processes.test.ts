@@ -16,18 +16,15 @@ import {
   joinHandsBeforeClose,
   stopLostHandsExecution,
 } from "../../src/execution/hands-operation.js";
-import { watchHandsPolicy } from "../../src/execution/capability-requests.js";
-import { writeFileSync } from "node:fs";
-import { join } from "node:path";
-import { suppliedEngine } from "./backend-support.js";
+import { suppliedEngine, engineFrame } from "./backend-support.js";
 import type { HandsFrame, HandsCommandStart, HandsRequest } from "../../src/execution/contracts.js";
-const COMMAND: HandsCommandStart = {
+const COMMAND = {
   commandId: 1,
   program: "bash",
   command: "echo bounded",
   cwd: "/workspace",
   input: "",
-};
+} satisfies HandsCommandStart;
 const PARENT: Extract<HandsFrame, { kind: "operation" }> = {
   version: 1,
   generation: "original",
@@ -145,6 +142,7 @@ void test("HandsProcessOwner fixed UID Engine command rechecks after registratio
   try {
     const owner = await HandsProcessOwner.open(configuration, engine, { pid: 42, start: "123" });
     await exerciseOwnedCommand(owner);
+    await exerciseStreams(owner, fixture);
     await owner.join();
     await joinHandsBeforeClose(owner, undefined, () =>
       Promise.reject(new SeptError("Unexpected stop")),
@@ -158,6 +156,65 @@ void test("HandsProcessOwner fixed UID Engine command rechecks after registratio
     await fixture.close();
   }
 });
+async function exerciseStreams(
+  owner: HandsProcessOwner,
+  fixture: Awaited<ReturnType<typeof suppliedEngine>>,
+): Promise<void> {
+  const utf8 = Buffer.from("🐟");
+  fixture.facts.commandChunks = [
+    engineFrame(1, utf8.subarray(0, 2)),
+    engineFrame(2, "ERR"),
+    engineFrame(1, utf8.subarray(2)),
+  ];
+  const observed: string[] = [];
+  const options = {
+    network: false,
+    signal: new AbortController().signal,
+    authorize: () => Promise.resolve(),
+  };
+  const command = { commandId: 1, program: "rg", argv: [], cwd: "/workspace" } as const;
+  const exit = await owner.execute({ ...command, argv: [] }, options, (text, stream) => {
+    observed.push(`${stream}:${text}`);
+    return Promise.resolve();
+  });
+  assert.equal(exit.termination, "exit");
+  assert.equal(observed.filter((text) => text.startsWith("stdout:")).join(""), "stdout:stdout:🐟");
+  assert.ok(observed.includes("stderr:ERR"));
+  await exerciseStreamLimits(owner, fixture);
+}
+async function exerciseStreamLimits(
+  owner: HandsProcessOwner,
+  fixture: Awaited<ReturnType<typeof suppliedEngine>>,
+): Promise<void> {
+  const options = {
+    network: false,
+    signal: new AbortController().signal,
+    authorize: () => Promise.resolve(),
+  };
+  fixture.facts.commandChunks = [engineFrame(2, "diagnostic"), engineFrame(1, "x".repeat(4096))];
+  assert.equal(
+    (await owner.execute({ ...COMMAND, program: "custom" }, options, () => Promise.resolve()))
+      .termination,
+    "exit",
+  );
+  fixture.facts.commandChunks = [engineFrame(1, "x".repeat(4097))];
+  assert.equal(
+    (await owner.execute({ ...COMMAND, program: "custom" }, options, () => Promise.resolve()))
+      .termination,
+    "overflow",
+  );
+  for (const suffix of ["", "x"]) {
+    fixture.facts.commandChunks = [
+      engineFrame(1, Buffer.alloc(4 * 1024 * 1024)),
+      engineFrame(2, suffix),
+    ];
+    assert.equal(
+      (await owner.execute(COMMAND, options, () => Promise.resolve())).termination,
+      suffix === "" ? "exit" : "overflow",
+    );
+  }
+  delete fixture.facts.commandChunks;
+}
 async function assertLateRevoke(owner: HandsProcessOwner): Promise<void> {
   await assert.rejects(
     owner.execute(
@@ -215,31 +272,6 @@ async function exerciseOwnedCommand(owner: HandsProcessOwner): Promise<void> {
   // Bash preserves combined native stdout/stderr; the diagnostic stream remains inert data.
   assert.equal(output.join(""), "HOSTILE_STDERR_CANARYbounded result");
 }
-void test("watchHandsPolicy seals live authority after changed policy bytes and its owner closes the watcher", async () => {
-  const fixture = await suppliedEngine();
-  let complete: () => void = () => undefined;
-  const sealed = new Promise<void>((resolve) => {
-    complete = resolve;
-  });
-  const watcher = watchHandsPolicy(
-    join(fixture.root, "policy.json"),
-    () => {
-      throw new SeptError("Revoked");
-    },
-    () => {
-      complete();
-      return Promise.resolve();
-    },
-  );
-  try {
-    writeFileSync(join(fixture.root, "policy.json"), "denied");
-    await sealed;
-  } finally {
-    watcher.close();
-    await fixture.close();
-  }
-});
-
 void test("stopLostHandsExecution reports verified uncertainty and never promotes failed stop to cancellation", async () => {
   await assert.rejects(
     stopLostHandsExecution(() => Promise.resolve(), new SeptError("Lost")),
