@@ -117,6 +117,8 @@ export interface DockerHandsConfiguration {
     protectedEndpoints?: { address: string; port: number }[];
   };
   readOnlyMounts: { source: string; destination: string }[];
+  /** Read-only roots baked into the exact admitted image; no host source or runtime seeding. */
+  imageSelected?: { alias: string }[];
   /** Optional single custom hand, never repository/native brain extension code. */
   customHand?: CustomHand;
   /** Persistent RW selected mounts are supported only without arbitrary execution. */
@@ -150,6 +152,7 @@ export interface NamespaceLifetime {
 
 /** Exact consumer-selected kernel facts; changing any fact invalidates generation authority. */
 export interface HandsKernelProfile {
+  isolationRevision: "uid-dac-fixed-helper-v1";
   image: string;
   memory: number;
   pids: number;

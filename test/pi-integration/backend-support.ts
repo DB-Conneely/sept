@@ -222,6 +222,7 @@ export function recordFixtureKernel(
   policyPath: string,
 ): void {
   recordKernelProfile(configuration, policyPath, {
+    isolationRevision: "uid-dac-fixed-helper-v1",
     image: `sha256:${"f".repeat(64)}`,
     memory: 1073741824,
     pids: 128,

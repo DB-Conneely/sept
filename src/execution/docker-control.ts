@@ -1,4 +1,4 @@
-import { guardedCommand } from "./hands-processes.js";
+import { guardedCommand } from "./hands-guarded-command.js";
 /** Kernel qualification and exact-generation ownership over the one explicit Engine control port. */
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -15,11 +15,8 @@ import {
   readNamespaceLifetime,
   namespaceLifetimePath,
 } from "./profile-configuration.js";
-import {
-  captureNamespaceLifetime,
-  stopCapturedNamespace,
-  validateSealedInputs,
-} from "./hands-processes.js";
+import { captureNamespaceLifetime, stopCapturedNamespace } from "./hands-processes.js";
+import { validateSelectedInputs, HANDS_IMAGE_ISOLATION_PROBE } from "./hands-selected-inputs.js";
 export { qualifyCapabilityEngine } from "./profile-configuration.js";
 /** Read bounded kernel/namespace facts from the already authenticated daemon. */
 export function inspect(
@@ -59,11 +56,8 @@ export async function validateDockerConfiguration(
     await validateNetworkEnforcement(configuration, inspected, controlEndpoint, engine);
     await qualifyKernelProfile(configuration, inspected, engine);
     if (authority !== undefined) {
-      recordKernelProfile(
-        configuration,
-        authority.policyPath,
-        kernelProfile(configuration, inspected),
-      );
+      const kernel = kernelProfile(configuration, inspected);
+      recordKernelProfile(configuration, authority.policyPath, kernel);
       const lifetime = await captureNamespaceLifetime(configuration, engine);
       recordNamespaceLifetime(configuration, engine, authority.policyPath, lifetime);
     }
@@ -81,6 +75,7 @@ export async function qualifyKernelProfile(
   engine: DockerEngineControl,
 ): Promise<void> {
   const expected = kernelProfile(configuration, inspected);
+  await qualifyImageIsolation(configuration, engine);
   const script = `const fs = require('node:fs');
 const expected = JSON.parse(process.argv[1]);
 const read = name => fs.readFileSync('/sys/fs/cgroup/' + name, 'utf8').trim();
@@ -99,7 +94,25 @@ process.stdout.write('qualified');`;
   if (result !== "qualified") {
     throw new SeptError("Hands actual cgroup/tmpfs capacity is unsupported");
   }
-  await validateSealedInputs(configuration, engine);
+  await validateSelectedInputs(configuration, engine);
+}
+
+async function qualifyImageIsolation(
+  configuration: DockerHandsConfiguration,
+  engine: DockerEngineControl,
+): Promise<void> {
+  const isolation = await engine.exec(configuration.containerId, {
+    command: guardedCommand([
+      "--experimental-import-meta-resolve",
+      "--input-type=module",
+      "--eval",
+      HANDS_IMAGE_ISOLATION_PROBE,
+    ]),
+    maximum: 1024,
+  });
+  if (isolation !== "isolated") {
+    throw new SeptError("Hands image isolation or pinned native bodies are unsupported");
+  }
 }
 
 /** Stop and verify only exact persisted authority; a replaced generation is never touched, even if stopped. */

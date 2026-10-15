@@ -40,6 +40,7 @@ export function profileFixture(): {
     resources: join(root, "resources"),
     shell: false,
     readOnlyMounts: [],
+    imageSelected: [],
   };
   const inspected = {
     Id: configuration.containerId,

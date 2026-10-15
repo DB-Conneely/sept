@@ -32,7 +32,7 @@ export function capabilityBinding(configuration: DockerHandsConfiguration): Capa
       fingerprint: createHash("sha256")
         .update(
           JSON.stringify({
-            configuration,
+            configuration: { ...configuration, imageSelected: configuration.imageSelected ?? [] },
             identities,
             engineSocket: engineSocketIdentity(configuration.engineSocket),
           }),
@@ -57,6 +57,10 @@ function suppliedMounts(configuration: DockerHandsConfiguration) {
   return [
     ...configuration.readOnlyMounts.map((entry) => ({ ...entry, writable: false })),
     ...(configuration.readWriteMounts ?? []).map((entry) => ({ ...entry, writable: true })),
+    ...(configuration.imageSelected ?? []).map((entry) => ({
+      destination: `/selected/${entry.alias}`,
+      writable: false,
+    })),
   ];
 }
 function assertExecution(

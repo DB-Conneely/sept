@@ -52,6 +52,7 @@ void test("single operator custom registration cannot select RW/brain paths or o
   );
   assert.throws(() => parseCustomHand({ ...valid, replay: "automatic" }, mounts, true), SeptError);
   assert.throws(() => parseCustomHand({ ...valid, policy: "full" }, mounts, true), SeptError);
+  assert.deepEqual(parseCustomHand(valid, [], true, [{ alias: "hand" }]), valid);
 });
 void test("native environment identities retain task/call plus exact effect content across replay", async () => {
   const directories = fixtureDirectories("sept-native-effect-id-");

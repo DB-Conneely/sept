@@ -132,6 +132,7 @@ function assertMounts(
   if (!Array.isArray(value)) {
     throw new SeptError("Hands mounts are unavailable");
   }
+  assertImageMounts(configuration, value);
   const expected = [
     ...(configuration.dataDomain === "private"
       ? []
@@ -156,6 +157,19 @@ function assertMounts(
     }
     // Opening qualifies data provenance once; live effects retain bounded mount/root identity and anchored owners.
     assertMountSource(matching, qualification);
+  }
+}
+
+function assertImageMounts(configuration: DockerHandsConfiguration, mounts: unknown[]): void {
+  // Image snapshots cannot acquire a substituted ancestor, root, or descendant mount at any effect.
+  for (const raw of mounts) {
+    const destination = configuredText(handsRecord(raw).Destination);
+    for (const { alias } of configuration.imageSelected ?? []) {
+      const root = `/selected/${alias}`;
+      if (beneath(destination, root) || beneath(root, destination)) {
+        throw new SeptError("Hands mount overlaps an image selected root");
+      }
+    }
   }
 }
 
@@ -191,6 +205,7 @@ export function validateDockerProfile(
 ): string {
   try {
     const inspected = handsRecord(value);
+    assertSelectedDomain(configuration);
     const state = handsRecord(inspected.State);
     const config = handsRecord(inspected.Config);
     if (
@@ -222,6 +237,15 @@ export function validateDockerProfile(
   }
 }
 
+function assertSelectedDomain(configuration: DockerHandsConfiguration): void {
+  if (configuration.dataDomain !== "private" && (configuration.imageSelected?.length ?? 0) > 0) {
+    throw new SeptError("Image selected roots require the private data domain");
+  }
+  if (configuration.dataDomain === "private" && (configuration.readWriteMounts?.length ?? 0) > 0) {
+    throw new SeptError("Private workspace cannot expose writable host binds");
+  }
+}
+
 /** Kernel caps are supplied through Docker, never fixture maxima or new resource configuration knobs. */
 export function kernelProfile(
   configuration: DockerHandsConfiguration,
@@ -234,6 +258,7 @@ export function kernelProfile(
     throw new SeptError("Hands image identity is unavailable");
   }
   return {
+    isolationRevision: "uid-dac-fixed-helper-v1",
     image,
     memory: boundedResource(host.Memory),
     pids: boundedResource(host.PidsLimit),

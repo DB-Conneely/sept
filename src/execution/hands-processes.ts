@@ -124,25 +124,6 @@ export function parseNamespaceLifetime(value: unknown): NamespaceLifetime {
   return { pidNamespace: input.pidNamespace, initStart: input.initStart };
 }
 
-/** Kernel immutable seals prevent outside writers substituting service channels after provenance preflight. */
-export async function validateSealedInputs(
-  configuration: DockerHandsConfiguration,
-  engine: DockerEngineControl,
-): Promise<void> {
-  if (configuration.dataDomain !== "private") {
-    return;
-  }
-  for (const mount of configuration.readOnlyMounts) {
-    const result = await engine.exec(configuration.containerId, {
-      command: ["/app/hands-guard-check", "--sealed", mount.destination],
-      maximum: 128,
-    });
-    if (result !== "sealed\n") {
-      throw new SeptError("Selected input lacks enforced kernel immutable provenance");
-    }
-  }
-}
-
 /** One exact non-TTY exec socket; commands retain bounded tagged bytes, control stderr is drained. */
 export class HandsAttachment {
   public readonly stdout = new PassThrough({ highWaterMark: 65536 });

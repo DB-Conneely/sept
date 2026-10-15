@@ -1,8 +1,7 @@
 /** Finite shared workspace and immutable generation capacity regressions. */
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdirSync, mkdtempSync, realpathSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { SeptError } from "../../src/durable/index.js";
 import {
@@ -15,56 +14,9 @@ import {
   recordKernelProfile,
   verifyKernelBinding,
 } from "../../src/execution/profile.js";
-const SAFE_HOST_CONFIG = {
-  Init: true,
-  Privileged: false,
-  PidMode: "",
-  IpcMode: "private",
-  UTSMode: "",
-  UsernsMode: "",
-  NetworkMode: "none",
-  ReadonlyRootfs: true,
-  CapDrop: ["ALL"],
-  SecurityOpt: ["no-new-privileges"],
-  Memory: 256 * 1024 * 1024,
-  PidsLimit: 64,
-  NanoCpus: 500_000_000,
-  Tmpfs: { "/tmp": "rw,nosuid,nodev,noexec,size=16777216,mode=1777" },
-};
-
-function profileFixture(): {
-  configuration: DockerHandsConfiguration;
-  inspected: Record<string, unknown>;
-  brain: string;
-} {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "sept-hands-profile-")));
-  for (const name of ["workspace", "resources", "brain"]) {
-    mkdirSync(join(root, name));
-  }
-  const configuration: DockerHandsConfiguration = {
-    profile: "docker-linux-warm-v1",
-    dataDomain: "mutable-file-bind",
-    engineSocket: "/run/docker.sock",
-    containerId: "a".repeat(64),
-    generation: "generation-1",
-    workspace: join(root, "workspace"),
-    resources: join(root, "resources"),
-    shell: false,
-    readOnlyMounts: [],
-  };
-  const inspected = {
-    Id: configuration.containerId,
-    Image: `sha256:${"f".repeat(64)}`,
-    State: { Running: true, StartedAt: configuration.generation },
-    Config: { User: "10002:10002", Env: [], Entrypoint: null, Cmd: ["sleep", "infinity"] },
-    HostConfig: SAFE_HOST_CONFIG,
-    Mounts: [
-      { Source: configuration.workspace, Destination: "/workspace", Type: "bind", RW: true },
-      { Source: configuration.resources, Destination: "/resources", Type: "bind", RW: false },
-    ],
-  };
-  return { configuration, inspected, brain: join(root, "brain") };
-}
+import { namespaceLifetimePath } from "../../src/execution/profile-configuration.js";
+import { profileFixture } from "./capability-profile-support.js";
+import { handsRecord } from "../../src/execution/protocol.js";
 
 void test("private workspace tmpfs is selected by data domain independently of shell and binds real caps", () => {
   const { configuration, inspected, brain } = profileFixture();
@@ -88,15 +40,16 @@ function privateInspection(
   configuration: DockerHandsConfiguration,
   inspected: Record<string, unknown>,
 ) {
+  const host = handsRecord(inspected.HostConfig);
   return {
     ...inspected,
     HostConfig: {
-      ...SAFE_HOST_CONFIG,
+      ...host,
       Memory: 2147483648,
       PidsLimit: 256,
       NanoCpus: 2500000000,
       Tmpfs: {
-        ...SAFE_HOST_CONFIG.Tmpfs,
+        ...handsRecord(host.Tmpfs),
         "/workspace":
           "rw,nosuid,nodev,noexec,size=134217728,nr_inodes=32768,mode=2770,uid=10002,gid=10002",
       },
@@ -129,17 +82,25 @@ function checkKernelReceipt(
     () => kernelProfile(privateConfiguration, { ...supplied, Image: "tag" }),
     SeptError,
   );
+  assert.throws(() => {
+    verifyKernelBinding(
+      privateConfiguration,
+      { ...supplied, Image: `sha256:${"e".repeat(64)}` },
+      policyPath,
+    );
+  }, /receipt changed/);
 }
 
 void test("finite consumer caps refuse absent/unlimited/fractional values and workspace mismatch", () => {
   const { configuration, inspected, brain } = profileFixture();
+  const host = handsRecord(inspected.HostConfig);
   for (const field of ["Memory", "PidsLimit", "NanoCpus"]) {
     for (const value of [0, -1, 0.5, Number.MAX_SAFE_INTEGER + 1]) {
       assert.throws(
         () =>
           validateDockerProfile(
             configuration,
-            { ...inspected, HostConfig: { ...SAFE_HOST_CONFIG, [field]: value } },
+            { ...inspected, HostConfig: { ...host, [field]: value } },
             configuration.workspace,
             [brain],
           ),
@@ -180,4 +141,88 @@ void test("parseHandsDataDomain refuses missing/unbounded domains and writable p
   ]) {
     assert.throws(() => parseHandsDataDomain(input), SeptError);
   }
+});
+
+void test("opening and live qualification refuse every mount covering an image alias", () => {
+  const { configuration, inspected, brain } = profileFixture();
+  const selected: DockerHandsConfiguration = {
+    ...configuration,
+    dataDomain: "private",
+    workspaceLimits: { bytes: 134217728, inodes: 32768 },
+    imageSelected: [{ alias: "baked" }],
+  };
+  const supplied = privateInspection(configuration, inspected);
+  for (const qualification of ["opening", "live"] as const) {
+    assert.equal(
+      validateDockerProfile(selected, supplied, configuration.workspace, [brain], {
+        qualification,
+      }),
+      "/workspace",
+    );
+    assertImageMountRefusal(selected, supplied, brain, qualification);
+    assert.throws(
+      () =>
+        validateDockerProfile(
+          selected,
+          { ...supplied, State: { Running: true, StartedAt: "replaced" } },
+          configuration.workspace,
+          [brain],
+          { qualification },
+        ),
+      /identity or generation/,
+    );
+  }
+});
+
+function assertImageMountRefusal(
+  selected: DockerHandsConfiguration,
+  supplied: ReturnType<typeof privateInspection>,
+  brain: string,
+  qualification: "opening" | "live",
+): void {
+  for (const destination of ["/", "/selected", "/selected/baked", "/selected/baked/child"]) {
+    assert.throws(
+      () =>
+        validateDockerProfile(
+          selected,
+          {
+            ...supplied,
+            Mounts: [
+              ...supplied.Mounts,
+              {
+                Source: selected.resources,
+                Destination: destination,
+                Type: "bind",
+                RW: false,
+              },
+            ],
+          },
+          selected.workspace,
+          [brain],
+          { qualification },
+        ),
+      /overlaps an image selected root/,
+    );
+  }
+}
+
+void test("old isolation receipts refuse verification and replacement while preserving history bytes", () => {
+  const { configuration, inspected, brain } = profileFixture();
+  const policyPath = join(brain, "capability-policy.json");
+  const kernel = kernelProfile(configuration, inspected);
+  recordKernelProfile(configuration, policyPath, kernel);
+  const path = join(namespaceLifetimePath(policyPath, configuration), "..", "kernel.json");
+  const previous = { version: 1, ...kernel, isolationRevision: undefined };
+  writeFileSync(path, JSON.stringify(previous));
+  const original = readFileSync(path);
+  assert.throws(() => {
+    verifyKernelBinding(configuration, inspected, policyPath);
+  }, /receipt changed/);
+  assert.throws(() => {
+    recordKernelProfile(configuration, policyPath, kernel);
+  }, /receipt changed/);
+  assert.throws(() => {
+    verifyKernelBinding({ ...configuration, generation: "fresh" }, inspected, policyPath);
+  }, SeptError);
+  assert.deepEqual(readFileSync(path), original);
 });

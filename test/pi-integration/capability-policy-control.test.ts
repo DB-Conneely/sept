@@ -30,7 +30,7 @@ import {
   capabilityHostFactory,
   assertCapabilityExpansion,
 } from "../../src/cli/permissions.js";
-import { validateSealedInputs } from "../../src/execution/hands-processes.js";
+import { validateSelectedInputs } from "../../src/execution/hands-selected-inputs.js";
 import { suppliedEngine } from "./backend-support.js";
 import { fixtureDirectories, fixtureStore } from "./support.js";
 
@@ -272,7 +272,7 @@ void test("kernel qualification fails closed and mutable individual files need n
     readOnlyMounts: [],
   };
   try {
-    await validateSealedInputs(configuration, engine);
+    await validateSelectedInputs(configuration, engine);
     await assert.rejects(qualifyKernelProfile(configuration, {}, engine), SeptError);
   } finally {
     await engine.close();
@@ -284,6 +284,11 @@ function assertBindingDomain(
   configuration: Parameters<typeof capabilityBinding>[0],
   fingerprint: string,
 ): void {
+  assert.equal(capabilityBinding({ ...configuration, imageSelected: [] }).fingerprint, fingerprint);
+  assert.notEqual(
+    capabilityBinding({ ...configuration, imageSelected: [{ alias: "baked" }] }).fingerprint,
+    fingerprint,
+  );
   assert.notEqual(
     capabilityBinding({ ...configuration, workspaceLimits: { bytes: 268435456, inodes: 32768 } })
       .fingerprint,

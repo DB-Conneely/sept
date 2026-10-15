@@ -70,43 +70,65 @@ static void protect_hands_entry(void) {
 }
 
 #ifdef HANDS_GUARD_CHECK
-/* Only kernel-sealed regular data is admitted for complete command/discovery traversal. */
-static void sealed_inode(int fd, dev_t device, unsigned int depth, unsigned int *count);
-static void sealed_directory(int fd, dev_t device, unsigned int depth, unsigned int *count) {
+/* Image provenance and host seals differ; both paths share the same bounded descriptor walk. */
+static void selected_inode(int fd, dev_t device, unsigned int depth, unsigned int *count,
+                           size_t length, int immutable);
+static void selected_directory(int fd, dev_t device, unsigned int depth, unsigned int *count,
+                               size_t length, int immutable) {
     DIR *directory = fdopendir(fd);
     if (directory == NULL) _exit(126);
     errno = 0;
     struct dirent *entry;
     while ((entry = readdir(directory)) != NULL) {
         if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) continue;
-        if (++*count > 4096) _exit(126);
+        size_t child_length = length + 1 + strlen(entry->d_name);
+        struct stat identity;
+        if (++*count > 4096 || child_length > 4096 ||
+            fstatat(dirfd(directory), entry->d_name, &identity, AT_SYMLINK_NOFOLLOW) != 0 ||
+            (!S_ISDIR(identity.st_mode) && !S_ISREG(identity.st_mode))) _exit(126);
         int child = openat(dirfd(directory), entry->d_name, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
         if (child < 0) _exit(126);
-        sealed_inode(child, device, depth + 1, count);
+        selected_inode(child, device, depth + 1, count, child_length, immutable);
         errno = 0;
     }
     if (errno != 0 || closedir(directory) != 0) _exit(126);
 }
-static void sealed_inode(int fd, dev_t device, unsigned int depth, unsigned int *count) {
+static void selected_inode(int fd, dev_t device, unsigned int depth, unsigned int *count,
+                           size_t length, int immutable) {
     struct stat identity;
     unsigned long flags = 0;
-    if (depth > 128 || fstat(fd, &identity) != 0 || identity.st_dev != device ||
-        ioctl(fd, FS_IOC_GETFLAGS, &flags) != 0 || (flags & FS_IMMUTABLE_FL) == 0) _exit(126);
+    if (depth > 128 || fstat(fd, &identity) != 0 || identity.st_dev != device) _exit(126);
+    if (immutable && (ioctl(fd, FS_IOC_GETFLAGS, &flags) != 0 ||
+                      (flags & FS_IMMUTABLE_FL) == 0)) _exit(126);
     if (S_ISDIR(identity.st_mode)) {
-        sealed_directory(fd, device, depth, count);
+        selected_directory(fd, device, depth, count, length, immutable);
     } else {
         if (!S_ISREG(identity.st_mode) || identity.st_nlink != 1 || close(fd) != 0) _exit(126);
     }
 }
 int main(int argc, char **argv) {
-    if (argc != 3 || strcmp(argv[1], "--sealed") != 0 ||
-        strncmp(argv[2], "/selected/", 10) != 0 || strchr(argv[2] + 10, '/') != NULL) return 126;
-    int root = open(argv[2], O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    if (argc != 3 || (strcmp(argv[1], "--sealed") != 0 &&
+                      strcmp(argv[1], "--image-snapshot") != 0) ||
+        strncmp(argv[2], "/selected/", 10) != 0) return 126;
+    const char *alias = argv[2] + 10;
+    size_t alias_length = strlen(alias);
+    int immutable = strcmp(argv[1], "--sealed") == 0;
+    if (alias_length == 0 || (!immutable && alias_length > 64) || strlen(argv[2]) > 4096) return 126;
+    for (size_t index = 0; index < alias_length; index++) {
+        char c = alias[index];
+        if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+              (c >= '0' && c <= '9') || c == '_' || c == '-')) return 126;
+    }
+    int parent = open("/selected", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
+    if (parent < 0) return 126;
+    int root = openat(parent, alias, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
     struct stat identity;
     unsigned int count = 0;
-    if (root < 0 || fstat(root, &identity) != 0) return 126;
-    sealed_inode(root, identity.st_dev, 0, &count);
-    if (write(STDOUT_FILENO, "sealed\n", 7) != 7) return 126;
+    if (root < 0 || fstat(root, &identity) != 0 || close(parent) != 0) return 126;
+    selected_inode(root, identity.st_dev, 0, &count, strlen(argv[2]), immutable);
+    const char *response = immutable ? "sealed\n" : "image-snapshot\n";
+    size_t response_length = strlen(response);
+    if (write(STDOUT_FILENO, response, response_length) != (ssize_t)response_length) return 126;
     return 0;
 }
 #endif

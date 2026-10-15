@@ -9,6 +9,7 @@ import {
   type CustomHand,
   type NamespaceLifetime,
 } from "./contracts.js";
+import { parseImageSelected } from "./hands-selected-inputs.js";
 import { parseNetworkConfiguration } from "./network-profile.js";
 import type { DockerEngineControl } from "./docker-engine.js";
 import { handsRecord } from "./protocol.js";
@@ -54,56 +55,57 @@ function selectedMounts(value: unknown): DockerHandsConfiguration["readOnlyMount
 function mountConfiguration(input: Record<string, unknown>) {
   const mounts = selectedMounts(input.readOnlyMounts);
   const writable = selectedMounts(input.readWriteMounts);
-  if (
-    mounts.length + writable.length > 8 ||
-    new Set([...mounts, ...writable].map((entry) => entry.destination)).size !==
-      mounts.length + writable.length
-  ) {
-    throw new SeptError("Selected mount aliases exceed their bound or collide");
-  }
+  const images = parseImageSelected(input.imageSelected, [...mounts, ...writable]);
   if (input.shell && writable.length > 0) {
     throw new SeptError("Arbitrary execution with persistent selected RW mounts is unsupported");
   }
-  return { mounts, writable };
+  if (images.length > 0 && input.dataDomain !== "private") {
+    throw new SeptError("Image selected roots require the private data domain");
+  }
+  return { mounts, writable, images };
 }
 
 /** Read only trusted local operator configuration; task text cannot choose a backend. */
 export function loadHandsConfiguration(path: string | undefined): DockerHandsConfiguration {
   try {
-    if (path === undefined || statSync(path).size > 16 * 1024) {
-      throw new SeptError("A supported supplied hands configuration is required");
-    }
-    const value: unknown = JSON.parse(readFileSync(path, "utf8"));
-    const input = handsRecord(value);
-    if (input.profile !== "docker-linux-warm-v1" || typeof input.shell !== "boolean") {
-      throw new SeptError("Hands profile is unsupported");
-    }
-    const containerId = immutableId(configuredText(input.containerId));
-    engineSocketIdentity(configuredText(input.engineSocket));
-    const { mounts, writable } = mountConfiguration(input);
-    const domain = parseHandsDataDomain(input);
-    return {
-      profile: input.profile,
-      containerId,
-      engineSocket: realpathSync(configuredText(input.engineSocket)),
-      generation: configuredText(input.generation),
-      workspace: directory(input.workspace),
-      ...domain,
-      resources: directory(input.resources),
-      shell: input.shell,
-      ...networkConfiguration(input.network),
-      readOnlyMounts: mounts,
-      ...(input.customHand === undefined
-        ? {}
-        : { customHand: parseCustomHand(input.customHand, mounts, input.shell) }),
-      ...(writable.length === 0 ? {} : { readWriteMounts: writable }),
-    };
+    return readHandsConfiguration(path);
   } catch (error: unknown) {
     if (error instanceof SeptError) {
       throw error;
     }
     throw new SeptError("Supplied hands configuration is unavailable", { cause: error });
   }
+}
+function readHandsConfiguration(path: string | undefined): DockerHandsConfiguration {
+  if (path === undefined || statSync(path).size > 16 * 1024) {
+    throw new SeptError("A supported supplied hands configuration is required");
+  }
+  const value: unknown = JSON.parse(readFileSync(path, "utf8"));
+  const input = handsRecord(value);
+  if (input.profile !== "docker-linux-warm-v1" || typeof input.shell !== "boolean") {
+    throw new SeptError("Hands profile is unsupported");
+  }
+  const containerId = immutableId(configuredText(input.containerId));
+  engineSocketIdentity(configuredText(input.engineSocket));
+  const { mounts, writable, images } = mountConfiguration(input);
+  const domain = parseHandsDataDomain(input);
+  return {
+    profile: input.profile,
+    containerId,
+    engineSocket: realpathSync(configuredText(input.engineSocket)),
+    generation: configuredText(input.generation),
+    workspace: directory(input.workspace),
+    ...domain,
+    resources: directory(input.resources),
+    shell: input.shell,
+    ...networkConfiguration(input.network),
+    readOnlyMounts: mounts,
+    imageSelected: images,
+    ...(input.customHand === undefined
+      ? {}
+      : { customHand: parseCustomHand(input.customHand, mounts, input.shell, images) }),
+    ...(writable.length === 0 ? {} : { readWriteMounts: writable }),
+  };
 }
 
 /** Derived projection receipt identity stays private and independent of task/model paths. */
@@ -121,12 +123,16 @@ export function parseCustomHand(
   value: unknown,
   mounts: DockerHandsConfiguration["readOnlyMounts"],
   shell: boolean,
+  images: NonNullable<DockerHandsConfiguration["imageSelected"]> = [],
 ): CustomHand {
   const input = handsRecord(value);
   const path = configuredText(input.path);
   if (
     !shell ||
-    !mounts.some((mount) => path.startsWith(`${mount.destination}/`)) ||
+    ![
+      ...mounts.map((mount) => mount.destination),
+      ...images.map((entry) => `/selected/${entry.alias}`),
+    ].some((root) => path.startsWith(`${root}/`)) ||
     path.split("/").some((part) => part === "." || part === "..")
   ) {
     throw new SeptError(
