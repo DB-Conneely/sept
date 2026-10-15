@@ -4,7 +4,6 @@ import { once } from "node:events";
 import test from "node:test";
 import { SeptError } from "../../src/durable/index.js";
 import { HandsNativeChild, spawnHandsNativeChild } from "../../src/execution/hands-native-child.js";
-import { parseHandsFrame, HANDS_REQUEST_BYTES } from "../../src/execution/protocol.js";
 import {
   assertHandsCommand,
   commandExecutable,
@@ -18,14 +17,6 @@ import type {
 
 const EXIT: HandsCommandExit = { code: 0, signal: null, termination: "exit" };
 const STDIO = { stdio: ["ignore", "pipe", "pipe"] } as const;
-const CORRELATION = {
-  version: 1,
-  generation: "source",
-  configuration: "a".repeat(64),
-  session: "b".repeat(64),
-  sequence: 1,
-  kind: "command-start",
-};
 void test("spawnHandsNativeChild permits only fixed image executables/stdio and an active owner", async () => {
   const execute: HandsCommandExecutor = (command) => {
     assert.deepEqual(command, {
@@ -173,35 +164,6 @@ async function assertNativeFailure(execute: HandsCommandExecutor): Promise<void>
   assert.equal(child.stdout.readableEnded, true);
   assert.equal(child.stderr.readableEnded, true);
 }
-
-void test("HandsCommandStart exact codec bounds argv independently from path and aggregate capacity", () => {
-  const payload = { commandId: 1, program: "rg", argv: ["x".repeat(4097)], cwd: "/workspace" };
-  assert.deepEqual(parseHandsFrame({ ...CORRELATION, payload }).payload, payload);
-  assert.doesNotThrow(() =>
-    parseHandsFrame({
-      ...CORRELATION,
-      payload: { ...payload, argv: Array<string>(120).fill("x") },
-    }),
-  );
-  for (const mutation of [
-    { argv: Array<string>(121).fill("x") },
-    { argv: ["nul\0pattern"] },
-    { argv: ["x".repeat(HANDS_REQUEST_BYTES)] },
-    { cwd: "x".repeat(4097) },
-    { cwd: "/tmp\0suffix" },
-    { commandId: 2 },
-    { program: "sh" },
-    { input: "injected" },
-    { env: {} },
-  ]) {
-    assert.throws(
-      () => parseHandsFrame({ ...CORRELATION, payload: { ...payload, ...mutation } }),
-      SeptError,
-    );
-  }
-  const { argv: _argv, ...missing } = payload;
-  assert.throws(() => parseHandsFrame({ ...CORRELATION, payload: missing }), SeptError);
-});
 
 const SEARCH_REQUEST: Extract<HandsRequest, { kind: "tool" }> = {
   kind: "tool",

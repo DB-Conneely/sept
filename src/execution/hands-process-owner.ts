@@ -132,7 +132,8 @@ export class HandsProcessOwner {
     });
   }
   private interrupt(state: CommandState, termination: HandsCommandExit["termination"]): void {
-    if (state.termination === "exit") {
+    // Native limit cancellation cannot hide a later fatal cause while output drains; retain the first fatal cause.
+    if (state.termination === "exit" || state.termination === "aborted") {
       state.termination = termination;
     }
     state.stop.abort();
