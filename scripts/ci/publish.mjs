@@ -1,9 +1,16 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { environment } from "./process.mjs";
+import {
+  npmView,
+  priorSubmission,
+  shouldSubmit,
+  submissionState,
+  waitForIntegrity,
+} from "./npm-registry.mjs";
 import {
   archiveConfiguration,
   imageConfiguration,
@@ -14,6 +21,7 @@ import {
   sameIntegrity,
   sha256,
   versionParts,
+  verifiedDirectory,
 } from "./release-contract.mjs";
 
 const artifactRoot =
@@ -65,22 +73,6 @@ function run(program, args, options) {
   return result.stdout.trim();
 }
 
-function npmView(specification, field) {
-  const result = attempt("npm", [
-    "view",
-    specification,
-    field,
-    "--json",
-    "--registry=https://registry.npmjs.org",
-  ]);
-  if (result.status === 0) {
-    return JSON.parse(result.stdout);
-  }
-  const failure = JSON.parse(result.stdout);
-  assert.equal(failure.error?.code, "E404", result.stderr);
-  return undefined;
-}
-
 function manifest(reference) {
   const result = attempt("docker", ["manifest", "inspect", reference]);
   if (result.status === 0) {
@@ -130,32 +122,66 @@ async function boundedText(response) {
   }
 }
 
-function publishNpm() {
+async function publishNpm() {
   const specification = `${verified.package.name}@${version}`;
-  const existing = npmView(specification, "dist.integrity");
-  const latest = npmView(verified.package.name, "dist-tags.latest");
+  const record = (item) => {
+    receipt.commands.push(item);
+    save();
+  };
+  const read = (budget) => npmView(specification, "dist.integrity", record, budget);
+  const binding = {
+    runId: process.env.GITHUB_RUN_ID,
+    commit: verified.commit,
+    version,
+    integrity: verified.package.integrity,
+  };
+  assert.match(binding.runId, /^[1-9]\d*$/);
+  const previous = priorSubmission(artifactRoot, binding);
+  const existing = read(15_000);
+  const latest = npmView(verified.package.name, "dist-tags.latest", record);
   receipt.advanceLatest = latest === undefined || !newer(latest, version);
   if (existing !== undefined) {
     sameIntegrity(verified.package.integrity, existing);
     receipt.npm = "already published with matching integrity";
     return;
   }
-  run(
-    "npm",
-    [
-      "publish",
-      join(directory, verified.package.file),
-      "--ignore-scripts",
-      "--access",
-      "public",
-      "--provenance",
-      "--tag",
-      receipt.advanceLatest ? "latest" : "ci",
-    ],
-    { env: npmPublishEnvironment(process.env) },
-  );
-  sameIntegrity(verified.package.integrity, npmView(specification, "dist.integrity"));
-  receipt.npm = "published and registry integrity confirmed";
+  const submit = shouldSubmit(previous, process.env.GITHUB_RUN_ATTEMPT);
+  const submission = previous ?? { binding, state: "submitted" };
+  const store = () =>
+    writeFileSync(join(output, "npm-submission.json"), JSON.stringify(submission, null, 2) + "\n");
+  store();
+  if (submit) {
+    submission.state = "submitted";
+    store();
+    const result = attempt(
+      "npm",
+      [
+        "publish",
+        join(directory, verified.package.file),
+        "--ignore-scripts",
+        "--access",
+        "public",
+        "--provenance",
+        "--json",
+        "--tag",
+        receipt.advanceLatest ? "latest" : "ci",
+      ],
+      { env: npmPublishEnvironment(process.env) },
+    );
+    submission.state = submissionState(result.status, result.stdout);
+    store();
+    assert.equal(result.status, 0, result.stderr);
+  }
+  receipt.npmAvailability = [];
+  await waitForIntegrity({
+    read,
+    expected: verified.package.integrity,
+    record: (item) => {
+      receipt.npmAvailability.push(item);
+      save();
+    },
+  });
+  receipt.npm = "public registry integrity confirmed after bounded scanning wait";
 }
 
 function registryConfiguration(reference) {
@@ -277,11 +303,7 @@ async function upload(release, name, bytes) {
 try {
   save();
   assert.ok(process.env.SEPT_CI_ARTIFACTS, "SEPT_CI_ARTIFACTS is required");
-  const attempts = readdirSync(artifactRoot)
-    .filter((name) => /^sept-verified-amd64-attempt[1-9]\d*$/.test(name))
-    .sort((left, right) => Number(left.split("attempt")[1]) - Number(right.split("attempt")[1]));
-  assert.ok(attempts.length > 0, "A retained verified artifact is required");
-  directory = resolve(artifactRoot, attempts.at(-1));
+  directory = verifiedDirectory(artifactRoot);
   verified = JSON.parse(readFileSync(join(directory, "verification.json"), "utf8"));
   version = verified.package?.version;
   tag = `v${version}`;
@@ -298,7 +320,7 @@ try {
   assert.ok(ghToken);
   sameIntegrity(verified.package.sha256, sha256(join(directory, verified.package.file)));
   sameIntegrity(verified.image.sha256, sha256(join(directory, verified.image.archive)));
-  publishNpm();
+  await publishNpm();
   publishImage();
   await publishRelease();
   receipt.passed = true;

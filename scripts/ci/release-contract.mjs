@@ -1,6 +1,18 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { closeSync, openSync, readSync } from "node:fs";
+import { closeSync, existsSync, openSync, readdirSync, readSync } from "node:fs";
+import { join } from "node:path";
+
+/** The pinned download action flattens one match but names directories for multiple matches. */
+export function verifiedDirectory(root) {
+  const attempts = readdirSync(root)
+    .filter((name) => /^sept-verified-amd64-attempt[1-9]\d*$/.test(name))
+    .sort((left, right) => Number(left.split("attempt")[1]) - Number(right.split("attempt")[1]));
+  const flat = existsSync(join(root, "verification.json"));
+  assert.ok(!(flat && attempts.length), "Ambiguous verified artifact layouts");
+  assert.ok(flat || attempts.length, "A retained verified artifact is required");
+  return flat ? root : join(root, attempts.at(-1));
+}
 
 /** Hash large saved images without buffering them in memory. */
 export function sha256(path) {

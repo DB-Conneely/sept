@@ -5,6 +5,13 @@ import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import {
+  priorSubmission,
+  registryValue,
+  shouldSubmit,
+  submissionState,
+  waitForIntegrity,
+} from "../../scripts/ci/npm-registry.mjs";
 import { pushVersion, stampVersion } from "../../scripts/ci/version.mjs";
 import {
   archiveConfiguration,
@@ -16,6 +23,7 @@ import {
   sameIntegrity,
   sha256,
   versionParts,
+  verifiedDirectory,
 } from "../../scripts/ci/release-contract.mjs";
 
 void test("main push numbers allocate repeatable patch versions and refuse malformed or overflowing input", () => {
@@ -270,4 +278,135 @@ void test("saved config bytes must match their digest, source commit, version an
   assert.throws(() => imageConfiguration(raw.trim(), identity, "0.1.1", commit));
   assert.throws(() => imageConfiguration(raw, identity, "0.1.2", commit));
   assert.throws(() => imageConfiguration(raw, identity, "0.1.1", "b".repeat(40)));
+});
+
+void test("npm registry reads distinguish pending E404 from authentication and malformed responses", () => {
+  assert.equal(registryValue(0, '"sha512-exact"'), "sha512-exact");
+  assert.equal(registryValue(1, '{"error":{"code":"E404"}}'), undefined);
+  for (const text of ["not-json", '""', "123", "null", "{}"]) {
+    assert.throws(() => registryValue(0, text));
+  }
+  for (const code of ["E401", "E403", "E500"]) {
+    assert.throws(() => registryValue(1, JSON.stringify({ error: { code } })));
+  }
+});
+
+void test("publication waits for exact integrity after missing versions without submitting anything", async () => {
+  let clock = 0;
+  let reads = 0;
+  const records = [];
+  const actual = await waitForIntegrity({
+    expected: "exact",
+    timeoutMs: 100,
+    intervalMs: 10,
+    now: () => clock,
+    pause: async (ms) => {
+      clock += ms + 0.25;
+    },
+    read: (budget) => {
+      assert.ok(budget <= 100);
+      assert.equal(Number.isInteger(budget), true);
+      reads += 1;
+      return reads < 3 ? undefined : "exact";
+    },
+    record: (item) => records.push(item),
+  });
+  assert.equal(actual, "exact");
+  assert.deepEqual(
+    records.map((item) => item.state),
+    ["pending", "pending", "visible"],
+  );
+  assert.equal(reads, 3);
+});
+
+void test("publication scanning timeout, wrong integrity and registry errors cannot become success", async () => {
+  let clock = 0;
+  const records = [];
+  await assert.rejects(
+    waitForIntegrity({
+      expected: "exact",
+      timeoutMs: 30,
+      intervalMs: 10,
+      now: () => clock,
+      pause: async (ms) => {
+        clock += ms;
+      },
+      read: () => undefined,
+      record: (item) => records.push(item),
+    }),
+    /do not republish/,
+  );
+  assert.equal(records.length, 3);
+  await assert.rejects(
+    waitForIntegrity({
+      expected: "exact",
+      read: () => "different",
+      record: (item) => assert.ok(item),
+    }),
+    /different bytes/,
+  );
+  await assert.rejects(
+    waitForIntegrity({
+      expected: "exact",
+      read: () => registryValue(1, '{"error":{"code":"E401"}}'),
+      record: (item) => assert.ok(item),
+    }),
+    /rejected the read/,
+  );
+});
+
+void test("retry submission state is bound to the exact run/source/version/integrity", () => {
+  const root = mkdtempSync(join(tmpdir(), "sept-submission-meta-"));
+  const directory = join(root, "sept-publication-attempt1");
+  mkdirSync(directory);
+  const binding = {
+    runId: "123",
+    commit: "a".repeat(40),
+    version: "0.1.1",
+    integrity: "sha512-exact",
+  };
+  const path = join(directory, "npm-submission.json");
+  writeFileSync(path, JSON.stringify({ binding, state: "accepted" }));
+  assert.equal(priorSubmission(root, binding).state, "accepted");
+  for (const key of ["runId", "commit", "version", "integrity"]) {
+    assert.throws(() => priorSubmission(root, { ...binding, [key]: "different" }));
+  }
+  writeFileSync(path, JSON.stringify({ binding, state: "invented" }));
+  assert.throws(() => priorSubmission(root, binding));
+  writeFileSync(path, "{bad");
+  assert.throws(() => priorSubmission(root, binding));
+});
+
+void test("accepted or ambiguous npm submission stays owned; only definite auth rejection permits retry", () => {
+  assert.equal(submissionState(0, ""), "accepted");
+  for (const code of ["E401", "ENEEDAUTH", "EOTP"]) {
+    assert.equal(submissionState(1, JSON.stringify({ error: { code } })), "rejected-auth");
+  }
+  assert.equal(submissionState(1, '{"error":{"code":"E403"}}'), "submitted");
+  assert.equal(submissionState(1, "ambiguous"), "submitted");
+  assert.equal(shouldSubmit(undefined, "1"), true);
+  assert.equal(shouldSubmit({ state: "accepted" }, "2"), false);
+  assert.equal(shouldSubmit({ state: "submitted" }, "2"), false);
+  assert.equal(shouldSubmit({ state: "rejected-auth" }, "2"), true);
+  assert.throws(() => shouldSubmit(undefined, "2"), /no submission receipt/);
+  assert.throws(() => shouldSubmit(undefined, "invalid"));
+});
+
+void test("the pinned download action's flat and grouped artifact layouts select the same verified identities", () => {
+  const flat = mkdtempSync(join(tmpdir(), "sept-flat-artifact-"));
+  writeFileSync(join(flat, "verification.json"), "{}");
+  assert.equal(verifiedDirectory(flat), flat);
+  const grouped = mkdtempSync(join(tmpdir(), "sept-grouped-artifact-"));
+  assert.throws(() => verifiedDirectory(grouped), /retained verified artifact/);
+  for (const attempt of [1, 2, 10]) {
+    mkdirSync(join(grouped, `sept-verified-amd64-attempt${attempt}`));
+  }
+  assert.equal(verifiedDirectory(grouped), join(grouped, "sept-verified-amd64-attempt10"));
+  writeFileSync(join(grouped, "verification.json"), "{}");
+  assert.throws(() => verifiedDirectory(grouped), /Ambiguous/);
+  const binding = { runId: "123", commit: "exact", version: "0.1.1", integrity: "sha512-exact" };
+  writeFileSync(join(flat, "npm-submission.json"), JSON.stringify({ binding, state: "accepted" }));
+  assert.equal(priorSubmission(flat, binding).state, "accepted");
+  mkdirSync(join(flat, "sept-publication-attempt1"));
+  assert.throws(() => priorSubmission(flat, binding), /Ambiguous/);
 });
