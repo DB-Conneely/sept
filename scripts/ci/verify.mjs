@@ -21,6 +21,11 @@ import {
 } from "./release-contract.mjs";
 
 const root = process.cwd();
+const architecture = process.env.SEPT_CI_ARCH;
+assert.ok(
+  ["amd64", "arm64"].includes(architecture),
+  "An explicit supported architecture is required",
+);
 const output = resolve(process.env.SEPT_CI_OUTPUT);
 mkdirSync(output, { mode: 0o700 });
 const receipt = {
@@ -46,7 +51,12 @@ let worker;
 
 async function main() {
   assert.equal(process.platform, "linux", "The full gate requires native Linux");
-  assert.equal(process.arch, "x64", "The published image is Linux/amd64");
+  assert.equal(
+    process.arch,
+    architecture === "amd64" ? "x64" : "arm64",
+    "Native architecture is required",
+  );
+  receipt.architecture = architecture;
   receipt.commit = process.env.GITHUB_SHA ?? run("git", ["rev-parse", "HEAD"]);
   const socket = realpathSync(process.env.SEPT_ENGINE_SOCKET ?? "/run/docker.sock");
   assert.equal(statSync(socket).isSocket(), true);
@@ -80,7 +90,7 @@ async function main() {
   const image = readFileSync(join(output, "image.iid"), "utf8").trim();
   assert.match(image, /^sha256:[a-f0-9]{64}$/);
   const facts = JSON.parse(docker(["image", "inspect", image]))[0];
-  assert.equal(facts.Architecture, "amd64");
+  assert.equal(facts.Architecture, architecture);
   assert.equal(facts.Os, "linux");
   receipt.image = { id: image, architecture: facts.Architecture, os: facts.Os };
   const gate = run("npm", ["run", "gate"], { env: environment({ SEPT_HANDS_TEST_IMAGE: image }) });
@@ -117,7 +127,13 @@ async function main() {
   const entries = JSON.parse(run("tar", ["-xOf", join(output, "image.tar"), "manifest.json"]));
   const identity = archiveConfiguration(entries, localTag);
   const raw = run("tar", ["-xOf", join(output, "image.tar"), identity.path], { rawOutput: true });
-  const configuration = imageConfiguration(raw, identity, receipt.package.version, receipt.commit);
+  const configuration = imageConfiguration(
+    raw,
+    identity,
+    receipt.package.version,
+    receipt.commit,
+    architecture,
+  );
   docker(["load", "--input", join(output, "image.tar")]);
   const loaded = JSON.parse(docker(["image", "inspect", localTag]))[0];
   sameImageConfiguration(configuration.config, loaded.Config);

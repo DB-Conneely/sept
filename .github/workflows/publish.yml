@@ -71,7 +71,7 @@ jobs:
       - run: npm install --global npm@11.21.0
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          pattern: sept-verified-amd64-attempt*
+          pattern: sept-verified-*-attempt*
           path: ${{ runner.temp }}/sept-artifacts
       - name: Restore same-run publication receipts on retry
         if: github.run_attempt != '1'

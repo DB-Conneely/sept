@@ -100,17 +100,20 @@ These commands are operator-owned setup for one **local** Docker Linux Engine, n
 
 ### Pin source, image and Engine authority
 
-Build images from a **complete pinned source checkout**, using an operator-selected commit. The npm artifact is intentionally not a Docker build context: it does not ship the test/compiler/helper-build context. A separate checkout at the required revision avoids modifying another working tree.
+Prefer the matching published image: install `sept-agent@0.1.2` and use `ghcr.io/db-conneely/sept:0.1.2`; Docker selects Linux AMD64 or ARM64 for the Engine. The host Node worker can run on macOS, with Docker Desktop supplying Linux hands. Choose its socket explicitly, usually `$HOME/.docker/run/docker.sock`, even if the default Docker context points to another server. Intel Mac task/effect execution remains unqualified; hosted Intel checks establish package/worker lifecycle only.
+
+For a custom build, use a **complete pinned source checkout**, using an operator-selected commit. The npm artifact is intentionally not a Docker build context: it does not ship the test/compiler/helper-build context. A separate checkout at the required revision avoids modifying another working tree.
 
 ```sh
 export SEPT_SOURCE=/absolute/path/to/pinned/full/sept-checkout
 export SEPT_SOURCE_REVISION=the-full-commit-you-selected
-export SEPT_ENGINE_SOCKET=/run/docker.sock  # explicitly choose your trusted local socket
+export SEPT_ENGINE_SOCKET=/run/docker.sock  # Linux; on macOS choose "$HOME/.docker/run/docker.sock"
 export SEPT_ENGINE_SOCKET="$(node -e 'console.log(require("node:fs").realpathSync(process.env.SEPT_ENGINE_SOCKET))')"
 export SEPT_ENGINE_HOST="unix://$SEPT_ENGINE_SOCKET"
 sept_docker() {
   env -u DOCKER_HOST -u DOCKER_CONTEXT docker --host "$SEPT_ENGINE_HOST" "$@"
 }
+# These source checks apply when building locally rather than pulling a published image.
 test "$(git -C "$SEPT_SOURCE" rev-parse HEAD)" = "$SEPT_SOURCE_REVISION"
 git -C "$SEPT_SOURCE" diff --exit-code -- Dockerfile package.json package-lock.json src image
 ```
@@ -171,13 +174,13 @@ JS
 Inspect these receipts: the daemon ID, Linux OS, supported API 1.44–1.52 and cgroup v2 must match the intended local authority. Verify the socket is OS-protected against untrusted replacement. Recheck it and the daemon before later setup/finalization. Configure Pi credentials/models privately as described in [models](models.md); never print their values into receipts.
 
 ```sh
-sept_docker build --no-cache --iidfile "$SEPT_EVIDENCE/image.iid" "$SEPT_SOURCE" \
-  > "$SEPT_EVIDENCE/build.log" 2>&1
-export SEPT_IMAGE="$(cat "$SEPT_EVIDENCE/image.iid")"
+export SEPT_IMAGE_REFERENCE=ghcr.io/db-conneely/sept:0.1.2
+sept_docker pull "$SEPT_IMAGE_REFERENCE" > "$SEPT_EVIDENCE/pull.log" 2>&1
+export SEPT_IMAGE="$(sept_docker image inspect --format '{{.Id}}' "$SEPT_IMAGE_REFERENCE")"
 sept_docker image inspect "$SEPT_IMAGE" > "$SEPT_EVIDENCE/image.json"
 ```
 
-Retain the exact image ID, Linux platform, source revision, helper/dependency/provenance identity and build result. The supplied image owns `/app`, UID10001 brain, UID10002 resident, UID10003:GID10002 commands, C guards and native-search overlay. Installing the host npm package does not produce that image.
+For a custom build, replace the pull with `sept_docker build --no-cache --iidfile "$SEPT_EVIDENCE/image.iid" "$SEPT_SOURCE"` and read `SEPT_IMAGE` from that file. Retain the exact image ID, Linux platform, source revision, helper/dependency/provenance identity and pull/build result. For published images, obtain the source and architecture-specific identities from the matching GitHub release’s `release.json`. The supplied image owns `/app`, UID10001 brain, UID10002 resident, UID10003:GID10002 commands, C guards and native-search overlay. Installing the host npm package does not produce that image.
 
 ### Create and seed one minimal generation
 

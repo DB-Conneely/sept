@@ -6,7 +6,9 @@ SEPT is a durable, single-slot task worker for Node.js, built on the native Pi D
 
 Requires Node.js **22.19.0 or newer**, ESM, Pi credentials or a suitable configured model, persistent local state, and an operator-supplied Docker Linux hands namespace. Valid hands are required even for text-only tasks. The package does not install Docker, serve models or provision hands.
 
-After npm publication, add SEPT to your application with `npm install --save-exact sept-agent`. The command is `sept` and the import name is `sept-agent`.
+The npm worker runs natively on Linux and macOS; task effects use Linux Docker containers. Apple Silicon uses the ARM64 image through Docker Desktop. Published image tags select AMD64 or ARM64 automatically. Native Windows and Intel Mac task execution remain unqualified. See [release verification](https://github.com/DB-Conneely/sept/blob/main/docs/releasing.md) for exact proof boundaries.
+
+Add SEPT to your application with `npm install --save-exact sept-agent`. The command is `sept` and the import name is `sept-agent`.
 
 To install a retained exact package artifact for a qualified source revision:
 

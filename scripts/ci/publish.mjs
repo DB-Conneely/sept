@@ -16,6 +16,7 @@ import {
   imageConfiguration,
   newer,
   registryDescriptor,
+  registryIndex,
   npmPublishEnvironment,
   releaseIdentity,
   sameIntegrity,
@@ -35,6 +36,7 @@ const save = () =>
   writeFileSync(join(output, "publication.json"), JSON.stringify(receipt, null, 2) + "\n");
 let directory;
 let verified;
+let platforms;
 let version;
 let tag;
 const repository = "DB-Conneely/sept";
@@ -185,56 +187,124 @@ async function publishNpm() {
   receipt.npm = "public registry integrity confirmed after bounded scanning wait";
 }
 
-function registryConfiguration(reference) {
+function registryPlatform(reference, architecture) {
   const document = manifest(reference);
-  if (!document) {
-    return undefined;
-  }
-  const descriptor = registryDescriptor(document);
+  if (!document) return undefined;
+  const descriptor = registryDescriptor(document, architecture);
   if (descriptor.kind === "configuration") {
-    return descriptor.digest;
+    const observed = JSON.parse(
+      run("docker", [
+        "buildx",
+        "imagetools",
+        "inspect",
+        reference,
+        "--format",
+        "{{json .Manifest}}",
+      ]),
+    );
+    assert.match(observed.digest, /^sha256:[a-f0-9]{64}$/);
+    return { digest: observed.digest, configuration: descriptor.digest };
   }
-  const platform = registryDescriptor(manifest(`${registryImage}@${descriptor.digest}`));
+  const platform = registryDescriptor(
+    manifest(`${registryImage}@${descriptor.digest}`),
+    architecture,
+  );
   assert.equal(platform.kind, "configuration", "Nested image indexes are not supported");
-  return platform.digest;
+  return { digest: descriptor.digest, configuration: platform.digest };
 }
 
-function publishImage() {
-  const archive = join(directory, verified.image.archive);
-  const entries = JSON.parse(run("tar", ["-xOf", archive, "manifest.json"]));
-  const identity = archiveConfiguration(entries, verified.image.localTag);
-  sameIntegrity(verified.image.configuration, identity.digest);
-  const extracted = attempt("tar", ["-xOf", archive, identity.path]);
-  assert.equal(extracted.status, 0);
-  const configuration = imageConfiguration(extracted.stdout, identity, version, verified.commit);
+function publishImages() {
   run("docker", ["login", "ghcr.io", "--username", process.env.GITHUB_ACTOR, "--password-stdin"], {
     input: ghToken,
   });
-  assert.equal(
-    run("docker", ["image", "ls", "--quiet", verified.image.localTag]),
-    "",
-    "Never replace an unrelated local tag",
+  const images = {};
+  for (const {
+    architecture,
+    directory: platformDirectory,
+    verified: platformVerified,
+  } of platforms) {
+    const archive = join(platformDirectory, platformVerified.image.archive);
+    const entries = JSON.parse(run("tar", ["-xOf", archive, "manifest.json"]));
+    const identity = archiveConfiguration(entries, platformVerified.image.localTag);
+    sameIntegrity(platformVerified.image.configuration, identity.digest);
+    const extracted = attempt("tar", ["-xOf", archive, identity.path]);
+    assert.equal(extracted.status, 0);
+    const configuration = imageConfiguration(
+      extracted.stdout,
+      identity,
+      version,
+      verified.commit,
+      architecture,
+    );
+    assert.equal(
+      run("docker", ["image", "ls", "--quiet", platformVerified.image.localTag]),
+      "",
+      "Never replace an unrelated local tag",
+    );
+    run("docker", ["load", "--input", archive]);
+    const facts = JSON.parse(
+      run("docker", ["image", "inspect", platformVerified.image.localTag]),
+    )[0];
+    assert.equal(facts.Architecture, architecture);
+    assert.equal(facts.Os, "linux");
+    assert.deepEqual(facts.RootFS.Layers, configuration.rootfs.diff_ids);
+    sameImageConfiguration(configuration.config, facts.Config);
+    const target = `${registryImage}:${version}-${architecture}`;
+    const existing = registryPlatform(target, architecture);
+    if (existing) {
+      sameIntegrity(identity.digest, existing.configuration);
+    } else {
+      run("docker", ["tag", platformVerified.image.localTag, target]);
+      run("docker", ["push", target]);
+    }
+    const published = registryPlatform(target, architecture);
+    sameIntegrity(identity.digest, published.configuration);
+    images[architecture] = {
+      reference: target,
+      ...published,
+      archiveSha256: platformVerified.image.sha256,
+      rootfs: configuration.rootfs.diff_ids,
+    };
+  }
+  const expected = Object.fromEntries(
+    Object.entries(images).map(([architecture, image]) => [architecture, image.digest]),
   );
-  run("docker", ["load", "--input", archive]);
-  const facts = JSON.parse(run("docker", ["image", "inspect", verified.image.localTag]))[0];
-  assert.equal(facts.Architecture, "amd64");
-  assert.equal(facts.Os, "linux");
-  assert.deepEqual(facts.RootFS.Layers, configuration.rootfs.diff_ids);
-  sameImageConfiguration(configuration.config, facts.Config);
   const target = `${registryImage}:${version}`;
-  const existing = registryConfiguration(target);
-  if (existing) {
-    sameIntegrity(identity.digest, existing);
-  } else {
-    run("docker", ["tag", verified.image.localTag, target]);
-    run("docker", ["push", target]);
-  }
-  sameIntegrity(identity.digest, registryConfiguration(target));
+  const existing = manifest(target);
+  if (existing) registryIndex(existing, expected);
+  else
+    run("docker", [
+      "buildx",
+      "imagetools",
+      "create",
+      "--tag",
+      target,
+      ...Object.values(expected).map((digest) => `${registryImage}@${digest}`),
+    ]);
+  const index = registryIndex(manifest(target), expected);
+  const observed = JSON.parse(
+    run("docker", ["buildx", "imagetools", "inspect", target, "--format", "{{json .Manifest}}"]),
+  );
+  assert.match(observed.digest, /^sha256:[a-f0-9]{64}$/);
+  registryIndex(observed, expected);
   if (receipt.advanceLatest) {
-    run("docker", ["tag", verified.image.localTag, `${registryImage}:latest`]);
-    run("docker", ["push", `${registryImage}:latest`]);
+    run("docker", [
+      "buildx",
+      "imagetools",
+      "create",
+      "--tag",
+      `${registryImage}:latest`,
+      `${registryImage}@${observed.digest}`,
+    ]);
+    registryIndex(manifest(`${registryImage}:latest`), expected);
   }
-  receipt.image = { reference: target, configuration: identity.digest, manifest: manifest(target) };
+  receipt.image = {
+    reference: target,
+    digest: observed.digest,
+    platforms: images,
+    manifest: index,
+  };
+  save();
 }
 
 async function publishRelease() {
@@ -247,7 +317,7 @@ async function publishRelease() {
     npm: verified.package,
     image: receipt.image,
   };
-  const body = `${verified.package.name}@${version}\n\nSource: ${verified.commit}\nDocker: ${registryImage}:${version} (Linux/amd64)\n\nNo deployment or live-provider/model verification is performed by this release workflow.`;
+  const body = `${verified.package.name}@${version}\n\nSource: ${verified.commit}\nDocker: ${registryImage}:${version} (Linux/amd64 and Linux/arm64)\n\nNo deployment or live-provider/model verification is performed by this release workflow.`;
   if (!release) {
     release = await api("/releases", {
       method: "POST",
@@ -304,25 +374,39 @@ async function upload(release, name, bytes) {
 try {
   save();
   assert.ok(process.env.SEPT_CI_ARTIFACTS, "SEPT_CI_ARTIFACTS is required");
-  directory = verifiedDirectory(artifactRoot);
-  verified = JSON.parse(readFileSync(join(directory, "verification.json"), "utf8"));
-  version = verified.package?.version;
-  tag = `v${version}`;
   assert.equal(process.env.GITHUB_REPOSITORY, repository);
   assert.equal(process.env.GITHUB_REF, "refs/heads/main");
   assert.equal(process.env.GITHUB_EVENT_NAME, "push");
-  assert.equal(verified.passed, true);
-  assert.equal(verified.commit, process.env.GITHUB_SHA);
-  versionParts(version);
-  assert.match(verified.package.file, /^sept-agent-\d+\.\d+\.\d+\.tgz$/);
-  assert.equal(verified.image.archive, "image.tar");
-  assert.match(verified.image.localTag, /^sept-ci-verified-[a-f0-9]{24}:\d+\.\d+\.\d+$/);
-  assert.equal(verified.image.localTag.split(":")[1], version);
   assert.ok(ghToken);
-  sameIntegrity(verified.package.sha256, sha256(join(directory, verified.package.file)));
-  sameIntegrity(verified.image.sha256, sha256(join(directory, verified.image.archive)));
+  platforms = ["amd64", "arm64"].map((architecture) => {
+    const directory = verifiedDirectory(artifactRoot, architecture);
+    const verified = JSON.parse(readFileSync(join(directory, "verification.json"), "utf8"));
+    assert.equal(verified.passed, true);
+    assert.equal(verified.commit, process.env.GITHUB_SHA);
+    assert.equal(verified.platform, "linux");
+    assert.equal(verified.architecture, architecture);
+    assert.equal(verified.arch, architecture === "amd64" ? "x64" : "arm64");
+    assert.equal(verified.image.architecture, architecture);
+    assert.equal(verified.image.os, "linux");
+    versionParts(verified.package.version);
+    assert.match(verified.package.file, /^sept-agent-\d+\.\d+\.\d+\.tgz$/);
+    assert.equal(verified.image.archive, "image.tar");
+    assert.match(verified.image.localTag, /^sept-ci-verified-[a-f0-9]{24}:\d+\.\d+\.\d+$/);
+    assert.equal(verified.image.localTag.split(":")[1], verified.package.version);
+    sameIntegrity(verified.package.sha256, sha256(join(directory, verified.package.file)));
+    sameIntegrity(verified.image.sha256, sha256(join(directory, verified.image.archive)));
+    return { architecture, directory, verified };
+  });
+  [{ directory, verified }] = platforms;
+  assert.deepEqual(
+    platforms[1].verified.package,
+    verified.package,
+    "Both native architectures must test exactly the same npm tarball",
+  );
+  version = verified.package.version;
+  tag = `v${version}`;
   await publishNpm();
-  publishImage();
+  publishImages();
   await publishRelease();
   receipt.passed = true;
 } catch (error) {

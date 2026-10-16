@@ -18,6 +18,7 @@ import {
   imageConfiguration,
   newer,
   registryDescriptor,
+  registryIndex,
   npmPublishEnvironment,
   releaseIdentity,
   sameIntegrity,
@@ -158,11 +159,15 @@ void test("untrusted checks cannot publish and main publication depends on compl
   );
   assert.match(publish, /branches: \[main\]/);
   assert.match(publish, /needs: checks/);
+  assert.match(checks, /needs: \[verify, macos\]/);
+  assert.match(checks, /runner: macos-15-intel/);
+  assert.match(checks, /runner: macos-15\n/);
+  assert.match(checks, /nice -n 10 node scripts\/ci\/verify-macos.mjs/);
   assert.match(publish, /release-version: \$\{\{ needs.version.outputs.version \}\}/);
   assert.doesNotMatch(checks + publish, /run_number|release-number|RELEASE_NUMBER/);
   assert.match(publish, /node scripts\/ci\/version.mjs --select/);
   assert.match(checks, /RELEASE_VERSION: \$\{\{ inputs.release-version \}\}/);
-  assert.match(publish, /pattern: sept-verified-amd64-attempt\*/);
+  assert.match(publish, /pattern: sept-verified-\*-attempt\*/);
   assert.doesNotMatch(
     checks + publish,
     /cancel-in-progress: true|npm publish|NPM_TOKEN|deploy|ollama|huggingface/i,
@@ -489,4 +494,58 @@ void test("the pinned download action's flat and grouped artifact layouts select
   assert.equal(priorSubmission(flat, binding).state, "accepted");
   mkdirSync(join(flat, "sept-publication-attempt1"));
   assert.throws(() => priorSubmission(flat, binding), /Ambiguous/);
+});
+
+void test("both native architectures are serialized and both verified artifacts are mandatory", () => {
+  const checks = readFileSync(
+    new URL("../../.github/workflows/checks.yml", import.meta.url),
+    "utf8",
+  );
+  assert.match(checks, /max-parallel: 1/);
+  assert.match(checks, /arch: amd64\n            runner: ubuntu-24.04\n/);
+  assert.match(checks, /arch: arm64\n            runner: ubuntu-24.04-arm/);
+  assert.match(checks, /SEPT_CI_ARCH: \$\{\{ matrix.arch \}\}/);
+  const root = mkdtempSync(join(tmpdir(), "sept-dual-artifacts-"));
+  mkdirSync(join(root, "sept-verified-amd64-attempt1"));
+  assert.throws(() => verifiedDirectory(root, "arm64"));
+  mkdirSync(join(root, "sept-verified-arm64-attempt1"));
+  assert.equal(verifiedDirectory(root, "arm64"), join(root, "sept-verified-arm64-attempt1"));
+  assert.throws(() => verifiedDirectory(root, "riscv64"));
+});
+
+void test("multiarchitecture index binds exactly both tested manifest digests", () => {
+  const expected = { amd64: "sha256:" + "a".repeat(64), arm64: "sha256:" + "b".repeat(64) };
+  const manifests = Object.entries(expected).map(([architecture, digest]) => ({
+    digest,
+    platform: { os: "linux", architecture },
+  }));
+  registryIndex({ manifests }, expected);
+  registryIndex({ manifests: [...manifests].reverse() }, expected);
+  for (const invalid of [
+    [],
+    [manifests[0]],
+    [manifests[0], manifests[0]],
+    [...manifests, manifests[0]],
+    [manifests[0], { ...manifests[1], digest: "sha256:" + "c".repeat(64) }],
+    [manifests[0], { ...manifests[1], platform: { os: "darwin", architecture: "arm64" } }],
+  ]) {
+    assert.throws(() => registryIndex({ manifests: invalid }, expected));
+  }
+  const platform = { config: { digest: expected.arm64 } };
+  assert.equal(registryDescriptor(platform, "arm64").digest, expected.arm64);
+  assert.throws(() => registryDescriptor({ manifests }, "arm64"));
+  const config = {
+    architecture: "arm64",
+    os: "linux",
+    config: {
+      Labels: {
+        "org.opencontainers.image.version": "0.1.2",
+        "org.opencontainers.image.revision": "d".repeat(40),
+      },
+    },
+  };
+  const raw = JSON.stringify(config);
+  const identity = { digest: "sha256:" + createHash("sha256").update(raw).digest("hex") };
+  assert.deepEqual(imageConfiguration(raw, identity, "0.1.2", "d".repeat(40), "arm64"), config);
+  assert.throws(() => imageConfiguration(raw, identity, "0.1.2", "d".repeat(40), "amd64"));
 });

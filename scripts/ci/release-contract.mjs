@@ -4,9 +4,10 @@ import { closeSync, existsSync, openSync, readdirSync, readSync } from "node:fs"
 import { join } from "node:path";
 
 /** The pinned download action flattens one match but names directories for multiple matches. */
-export function verifiedDirectory(root) {
+export function verifiedDirectory(root, architecture = "amd64") {
+  assert.ok(["amd64", "arm64"].includes(architecture));
   const attempts = readdirSync(root)
-    .filter((name) => /^sept-verified-amd64-attempt[1-9]\d*$/.test(name))
+    .filter((name) => new RegExp(`^sept-verified-${architecture}-attempt[1-9]\\d*$`).test(name))
     .sort((left, right) => Number(left.split("attempt")[1]) - Number(right.split("attempt")[1]));
   const flat = existsSync(join(root, "verification.json"));
   assert.ok(!(flat && attempts.length), "Ambiguous verified artifact layouts");
@@ -104,17 +105,18 @@ export function archiveConfiguration(entries, localTag) {
   return { path: entries[0].Config, digest: `sha256:${match[1]}` };
 }
 
-/** Accept one amd64 image, optionally accompanied by its one BuildKit provenance attestation. */
-export function registryDescriptor(document) {
+/** Accept one explicit platform image and at most its one bound BuildKit attestation. */
+export function registryDescriptor(document, architecture = "amd64") {
+  assert.ok(["amd64", "arm64"].includes(architecture));
   if (document.config) {
     assert.match(document.config.digest, /^sha256:[a-f0-9]{64}$/);
     return { kind: "configuration", digest: document.config.digest };
   }
   assert.ok(Array.isArray(document.manifests) && document.manifests.length <= 2);
   const images = document.manifests.filter(
-    (entry) => entry.platform?.os === "linux" && entry.platform?.architecture === "amd64",
+    (entry) => entry.platform?.os === "linux" && entry.platform?.architecture === architecture,
   );
-  assert.equal(images.length, 1, "Exactly one Linux/amd64 manifest is required");
+  assert.equal(images.length, 1, `Exactly one Linux/${architecture} manifest is required`);
   assert.match(images[0].digest, /^sha256:[a-f0-9]{64}$/);
   for (const entry of document.manifests) {
     if (entry === images[0]) {
@@ -129,10 +131,11 @@ export function registryDescriptor(document) {
 }
 
 /** Require the exact saved config bytes and the platform/source metadata before publication. */
-export function imageConfiguration(raw, identity, version, commit) {
+export function imageConfiguration(raw, identity, version, commit, architecture = "amd64") {
   sameIntegrity(identity.digest, `sha256:${createHash("sha256").update(raw).digest("hex")}`);
   const configuration = JSON.parse(raw);
-  assert.equal(configuration.architecture, "amd64");
+  assert.ok(["amd64", "arm64"].includes(architecture));
+  assert.equal(configuration.architecture, architecture);
   assert.equal(configuration.os, "linux");
   assert.equal(configuration.config.Labels["org.opencontainers.image.version"], version);
   assert.equal(configuration.config.Labels["org.opencontainers.image.revision"], commit);
@@ -156,4 +159,24 @@ export function sameImageConfiguration(expected, actual) {
     Volumes: null,
   };
   assert.deepEqual({ ...defaults, ...actual }, { ...defaults, ...expected });
+}
+
+/** The published index contains exactly the two tested immutable platform manifests. */
+export function registryIndex(document, expected) {
+  assert.ok(document && Array.isArray(document.manifests));
+  assert.deepEqual(Object.keys(expected).sort(), ["amd64", "arm64"]);
+  assert.equal(document.manifests.length, 2);
+  for (const architecture of ["amd64", "arm64"]) {
+    const entries = document.manifests.filter(
+      (entry) => entry.platform?.os === "linux" && entry.platform?.architecture === architecture,
+    );
+    assert.equal(entries.length, 1, `Exactly one Linux/${architecture} manifest is required`);
+    assert.match(entries[0].digest, /^sha256:[a-f0-9]{64}$/);
+    sameIntegrity(expected[architecture], entries[0].digest);
+    assert.ok(
+      entries[0].platform.variant === undefined ||
+        (architecture === "arm64" && entries[0].platform.variant === "v8"),
+    );
+  }
+  return document;
 }
