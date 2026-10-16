@@ -1,0 +1,10 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ES2023", "DOM"],
+    "rootDir": ".",
+    "outDir": "../extension-dist",
+    "noEmitOnError": true
+  },
+  "include": ["example.ts"]
+}

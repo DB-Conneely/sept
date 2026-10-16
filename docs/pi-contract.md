@@ -51,6 +51,7 @@ Version-authoritative references are the installed 1.1.0 public declarations, pa
 Use the installed 1.1.0 API, with normal bare imports from matching dependencies in the external application. For example:
 
 ```ts
+import { SeptError } from "sept-agent";
 import { defineExtension, defineTool, section } from "@earendil-works/pi-durable";
 import { Type } from "@earendil-works/pi-ai";
 
@@ -60,6 +61,9 @@ const marker = defineTool({
   parameters: Type.Object({ text: Type.String({ maxLength: 128 }) }),
   replay: "unsafe",
   async execute(args, api, context) {
+    if (api.env === undefined) {
+      throw new SeptError("This tool requires the supplied native environment");
+    }
     const result = await api.env.writeFile("/workspace/native-marker.txt", args.text, context);
     if (!result.ok) {
       throw result.error;
@@ -74,13 +78,13 @@ export const extension = defineExtension({
 });
 ```
 
-The [Node integration](../examples/node-app/README.md) owns the complete pinned authoring/build/copy/run commands. Copy that example into an external ESM app, install the exact SEPT tarball and matching `@earendil-works/pi-durable@1.1.0`/`@earendil-works/pi-ai@1.1.0` authoring dependencies, then run its build command. Compile to ESM `.js` (under a `type: module` package) or `.mjs` **physically beneath that app's private agentDir**, such as `brain/agent/extensions/example.js`. The loaded file's normal ancestor `node_modules` lookup must resolve its bare dependencies. Do not symlink out of agentDir, import an absolute native-dist path or depend on process-CWD repository fixtures. A `.ts` suffix is accepted only to the extent the running Node version supports it; compiled JS is the portable authoring route.
+The [Node integration](../examples/node-app/README.md) owns the complete pinned authoring/build/copy/run commands. Copy that example into an external ESM app, install the exact SEPT tarball and matching `@earendil-works/pi-durable@1.1.0`/`@earendil-works/pi-ai@1.1.0` authoring dependencies, then run its separate strict client/native commands. The native project supplies the upstream-required standard web declarations and an exactly pinned optional MCP declaration peer, while the public client stays Node-only; both retain strict NodeNext, `skipLibCheck:false` and `noEmitOnError:true`. Compile to ESM `.js` (under a `type: module` package) or `.mjs` **physically beneath that app's private agentDir**, such as `brain/agent/extensions/example.js`. The loaded file's normal ancestor `node_modules` lookup must resolve its bare dependencies. Do not symlink out of agentDir, import an absolute native-dist path or depend on process-CWD repository fixtures. A `.ts` suffix is accepted only to the extent the running Node version supports it; compiled JS is the portable authoring route.
 
 Discovery includes direct supported modules in agentDir's `extensions/`; alternatively set `settings.json` to `{ "extensions": ["custom/example.mjs"] }` for a physical agent-local file. Named `extension` and default native object exports are accepted. Names must match `[A-Za-z][A-Za-z0-9_.-]{0,127}` and be unique; `sept` and `sept-tools` are reserved. Settings 64 KiB, module 1 MiB, path 4096 characters, discovery/settings modules 64 and each registration array 64 remain hard bounds. Malformed objects and legacy coding-agent `ExtensionAPI` factory functions refuse. Port a legacy factory into native declarative tools/sections/hooks/wraps/tasks; do not add an adapter that bypasses native ownership.
 
 Native extensions are **trusted full-authority Node brain code**. Loading confinement controls who installs code; it does not sandbox JS. Effects routed through the supplied `api.env` use hands policy and task identity; direct Node effects retain application authority. Text read/write/path operations are supported; binary/handle/watch/shell environment operations return typed unsupported results. The seven parity tools have their own complete native hands-backed bodies. Instructions, skills, selected mounts and task text never install executable brain code or grant rights.
 
-Raw upstream Pi authoring headers are a separate graph from SEPT's strict public declarations. Their NodeNext JSON declaration imports, optional MCP declarations and DOM types require the example's explicit authoring-tooling diagnosis; do not claim SEPT's public declaration boundary repaired those stock headers or mask a strict SDK failure. Compilation alone is not acceptance: the native loader/registry/Harness must select the tool, include its section in an actual provider request, and produce the supported effect in hands.
+Raw upstream Pi authoring headers are a separate graph from SEPT's strict public declarations. The example documents the actual optional MCP peer and standard web declaration inputs needed by the native root graph, without adding DOM to the Node-only public client. Pi AI's separate model-catalog JSON declaration imports still lack NodeNext attributes; this authoring configuration does not repair that broader graph. Do not claim SEPT's public declaration boundary repaired stock native headers or mask a strict SDK failure. Compilation alone is not acceptance: the native loader/registry/Harness must select the tool, include its section in an actual provider request, and produce the supported effect in hands.
 
 Start a **fresh Node process** after edits to reliably reload an unchanged canonical module URL. `await worker.stop()` followed by `createWorker()` in the same process resumes state without promising edited code reload. Instructions/skills refresh on host reopen/successor under their separate resource contract. No hot reload/cache-busting is provided.
 

@@ -282,7 +282,7 @@ async function projectTrustedResources(agentDir: string, backend: ExecutionBacke
   }
   readableText(
     join(root, "SYSTEM.md"),
-    loader.getSystemPrompt() ?? "You are SEPT, a durable coding worker.",
+    loader.getSystemPrompt() ?? "You are SEPT, a durable task worker.",
   );
   readableText(join(root, "APPEND_SYSTEM.md"), loader.getAppendSystemPrompt().join("\n\n"));
   projectGlobalInstructions(agentDir, root);

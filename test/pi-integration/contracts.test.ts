@@ -73,6 +73,14 @@ await test("prompt renderers preserve standing task, control, handover, and exac
   };
   const handover = promptHandover(manifest.runId, messages);
   assert.match(initialPrompt(manifest, "recovered context"), /standing task/);
+  assert.match(initialPrompt(manifest), /durable Pi-backed task worker/);
+  for (const prompt of [
+    initialPrompt(manifest),
+    continuationPrompt(control, messages),
+    successorPrompt(manifest, handover, messages),
+  ]) {
+    assert.match(prompt, /fully accomplished and verified/);
+  }
   assert.match(continuationPrompt(control, messages), /exact operator text/);
   assert.match(successorPrompt(manifest, handover, messages), /Full durable predecessor handover/);
   assert.match(successorPrompt(manifest, handover, messages), /<pi-session>\/2\.durable\.json/);

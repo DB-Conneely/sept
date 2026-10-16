@@ -56,7 +56,13 @@ export default tseslint.config(
     },
   },
   {
-    files: ["eslint-rules/**/*.js", "scripts/**/*.{js,mjs}", "test/meta/**/*.mjs", "*.mjs"],
+    files: [
+      "eslint-rules/**/*.js",
+      "scripts/**/*.{js,mjs}",
+      "test/meta/**/*.mjs",
+      "examples/**/*.{ts,mjs}",
+      "*.mjs",
+    ],
     name: "sept/tooling-files",
     languageOptions: {
       ecmaVersion: 2023,

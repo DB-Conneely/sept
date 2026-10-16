@@ -1,0 +1,24 @@
+{
+  "name": "sept-node-app-example",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": "22.22.1"
+  },
+  "scripts": {
+    "build:client": "tsc -p tsconfig.json",
+    "build:extension": "tsc -p extensions/tsconfig.json",
+    "worker": "node worker.mjs",
+    "client": "node dist/client.js"
+  },
+  "dependencies": {
+    "sept-agent": "0.1.0",
+    "@earendil-works/pi-durable": "1.1.0",
+    "@earendil-works/pi-ai": "1.1.0"
+  },
+  "devDependencies": {
+    "typescript": "5.9.2",
+    "@types/node": "24.3.1",
+    "@modelcontextprotocol/sdk": "1.32.1"
+  }
+}
