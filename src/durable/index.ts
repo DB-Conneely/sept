@@ -85,3 +85,7 @@ export {
   type CapabilityRequestFacts,
   type CapabilityDecision,
 } from "./capability-requests.js";
+
+/** Existing strict codecs reused to decode public task and conversation projections. */
+export { validateManifest, validateSnapshot } from "./state-codecs.js";
+export { validateConversationEvent } from "./evidence-codecs.js";

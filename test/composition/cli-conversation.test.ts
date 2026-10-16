@@ -10,21 +10,19 @@ import { createServer, type Server, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
+import { createTaskClient, TaskClientError } from "../../src/client/index.js";
 import { waitFor } from "../runtime/support.js";
 import {
-  arrayField,
   closeServer,
   installedWorker,
   type InstalledWorker,
   killInstalled,
   listen,
-  numberField,
   openAiReply,
   prepareDirectories,
   record,
   responseRecord,
   stopInstalled,
-  stringField,
   waitForTask,
   writeProvider,
 } from "./cli-support.js";
@@ -149,25 +147,30 @@ async function firstWorkerPhase(
   const worker = fixture.start();
   const base = await worker.address;
   const taskText = "  installed initial message\nexact  ";
-  const response = await fetch(`${base}/v1/tasks`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${fixture.token}`, "Content-Type": "application/json" },
-    body: JSON.stringify({
+  const client = createTaskClient({ baseUrl: base, token: fixture.token });
+  const input = {
+    source: "installed-conversation",
+    eventId: "initial-task",
+    task: {
       task: taskText,
       workspace: fixture.workspace,
       provider: "local-part1",
       model: "fixture",
-      thinking: "off",
-    }),
-  });
-  assert.equal(response.status, 202);
-  const runId = stringField(await responseRecord(response), "runId");
+      thinking: "off" as const,
+    },
+  };
+  const receipt = await client.createTask(input);
+  const runId = receipt.runId;
   await waitForTask(base, runId, fixture.token, "waiting");
-  const replay = await fetch(`${base}/v1/tasks/${runId}/conversation?limit=250`, {
-    headers: { Authorization: `Bearer ${fixture.token}` },
-  });
-  const page = await responseRecord(replay);
-  const [initial, progress, waiting] = arrayField(page, "events");
+  assert.equal((await client.getTask(runId)).state.status, "waiting");
+  assert.deepEqual(await client.createTask(input), { ...receipt, duplicate: true });
+  await assert.rejects(
+    client.createTask({ ...input, task: { ...input.task, task: "identity collision" } }),
+    (error: unknown) =>
+      error instanceof TaskClientError && error.kind === "http" && error.status === 409,
+  );
+  const page = await client.getConversation(runId, { limit: 250 });
+  const [initial, progress, waiting] = page.events;
   assert.equal(conversationText(initial), taskText);
   assert.equal(conversationText(progress), "Progress remains visible across rotation.");
   assert.equal(conversationText(waiting), "Waiting safely for your follow-up.");
@@ -175,7 +178,7 @@ async function firstWorkerPhase(
   assert.match(durableEvents, /"rotation_steer_queued"/);
   assert.match(durableEvents, /"successor_session_started"/);
   await stopInstalled(worker.child);
-  return { nextCursor: numberField(page, "nextCursor"), runId, taskText };
+  return { nextCursor: page.nextCursor, runId, taskText };
 }
 
 async function interruptedPhase(
@@ -191,12 +194,16 @@ async function interruptedPhase(
     .then((response) => response.text())
     .catch(() => "");
   const followUp = "  exact installed follow-up\t  ";
-  const message = await fetch(`${base}/v1/tasks/${runId}/messages`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${fixture.token}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ message: followUp }),
-  });
-  assert.equal(message.status, 202);
+  const client = createTaskClient({ baseUrl: base, token: fixture.token });
+  const message = {
+    source: "installed-conversation",
+    eventId: "later-evidence",
+    runId,
+    message: followUp,
+  };
+  const accepted = await client.sendMessage(message);
+  assert.equal(accepted.duplicate, false);
+  assert.deepEqual(await client.sendMessage(message), { ...accepted, duplicate: true });
   await fixture.interrupted;
   const drain = await fetch(`${base}/v1/drain`, {
     method: "POST",
@@ -225,18 +232,22 @@ async function completedPhase(
   assert.match(await resumed.text(), /event: terminal/);
   await waitForTask(base, runId, fixture.token, "complete");
   await assertDrainedWorker(base, fixture.token);
-  const tail = await fetch(
-    `${base}/v1/tasks/${runId}/conversation?after=${String(nextCursor)}&limit=250`,
-    { headers: { Authorization: `Bearer ${fixture.token}` } },
-  );
-  const page = await responseRecord(tail);
-  const events = arrayField(page, "events").map((event) => record(event, "conversation event"));
-  assert.equal(events.find((event) => event.role === "user")?.text, followUp);
+  const client = createTaskClient({ baseUrl: base, token: fixture.token });
+  const page = await client.getConversation(runId, { after: nextCursor, limit: 250 });
   assert.equal(
-    events.find((event) => event.role === "assistant")?.text,
+    page.events.filter((event) => event.type === "message").find((event) => event.role === "user")
+      ?.text,
+    followUp,
+  );
+  assert.equal(
+    page.events
+      .filter((event) => event.type === "message")
+      .find((event) => event.role === "assistant")?.text,
     "The installed conversation is complete.",
   );
-  assert.equal(record(page.terminal, "terminal state").status, "complete");
+  assert.equal(page.terminal?.status, "complete");
+  assert.equal((await client.getTask(runId)).state.status, "complete");
+  assert.deepEqual(await client.cancel(runId), { runId, status: "complete", cancelled: false });
   await stopInstalled(worker.child);
 }
 

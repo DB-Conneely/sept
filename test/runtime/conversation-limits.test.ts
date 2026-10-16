@@ -109,6 +109,12 @@ void test("SSE rejects expired replay", async () => {
     });
     assert.equal(conversation.status, 410);
     assert.equal(stream.status, 410);
+    const expected = store.conversation(MAX_CONVERSATION_EVENTS, 1).retainedFrom;
+    assert.equal(
+      (await responseJson<{ retainedFrom: number }>(conversation)).retainedFrom,
+      expected,
+    );
+    assert.equal((await responseJson<{ retainedFrom: number }>(stream)).retainedFrom, expected);
   } finally {
     await started.service.stop();
   }

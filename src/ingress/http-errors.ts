@@ -20,7 +20,7 @@ export function respondWithError(response: ServerResponse, error: unknown): void
     return;
   }
   if (error instanceof ConversationCursorExpiredError) {
-    jsonResponse(response, 410, { error: error.message });
+    jsonResponse(response, 410, { error: error.message, retainedFrom: error.retainedFrom });
     return;
   }
   if (error instanceof WorkerConflictError) {
