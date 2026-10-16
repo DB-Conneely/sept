@@ -2,6 +2,12 @@
 
 SEPT emits operational telemetry without changing its durable recovery or audit records. `manifest.json`, `state.json`, `events.jsonl`, `rollover.json`, operator-message evidence, checkpoints, and handovers remain authoritative and are fsynced in their existing order. Telemetry can be sampled, dropped, unavailable, or retained for a shorter period without affecting execution or recovery.
 
+## Library and CLI ownership
+
+`createWorker({ telemetry })` accepts the public `Observability` interface. The embedding host constructs and owns that implementation and its shutdown; `worker.stop()` joins the worker's durable lifecycle but does not dispose caller-owned telemetry. Omission uses no-op telemetry. Importing `sept-agent` starts no logger/exporter or signal handler and reads no telemetry environment configuration. There is no public telemetry-construction framework in the package API.
+
+The CLI owns its environment-configured telemetry, process signals and bounded shutdown/flush. Its worker command calls the same factory with that injected facade. Environment examples below apply to the CLI; an embedding application's own telemetry construction controls its behavior. Attempt worker and application-owned telemetry/provider/listener cleanup independently so one failure cannot skip another finalizer. Durable files/events remain the recovery and audit authority even when telemetry fails or is unavailable. See [SDK lifecycle](sdk.md#worker-lifecycle).
+
 ## Signals and identity
 
 - **Logs:** bounded-field Pino JSON on stderr for container-runtime collection. The exact Node SQLite experimental notice is retained as a fixed `pi.sqlite.experimental` warning during the one shared driver import; unrelated Node warnings retain their platform behavior. The original warning emitter is restored after import success or failure. The public command result remains on stdout; SEPT creates no repository log files. Logs include `service.name`, `service.version`, `service.instance.id`, `sept.worker.id`, `process.pid`, lifecycle, and active trace/span IDs where available.
