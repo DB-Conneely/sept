@@ -13,10 +13,39 @@ concurrency:
   queue: max
 
 jobs:
+  version:
+    name: Select next successful release version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.select.outputs.version }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: 22.23.3
+          package-manager-cache: false
+      - run: npm install --global npm@11.21.0
+      - id: select
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SEPT_VERSION_RECEIPT: ${{ runner.temp }}/sept-version.json
+        run: node scripts/ci/version.mjs --select
+      - name: Retain version selection and failures
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sept-version-attempt${{ github.run_attempt }}
+          path: ${{ runner.temp }}/sept-version.json
+          if-no-files-found: error
+          retention-days: 30
   checks:
+    needs: version
     uses: ./.github/workflows/checks.yml
     with:
-      release-number: ${{ fromJSON(github.run_number) }}
+      release-version: ${{ needs.version.outputs.version }}
   publish:
     name: Publish verified artifacts
     concurrency:

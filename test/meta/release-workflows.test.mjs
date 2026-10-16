@@ -12,7 +12,7 @@ import {
   submissionState,
   waitForIntegrity,
 } from "../../scripts/ci/npm-registry.mjs";
-import { pushVersion, stampVersion } from "../../scripts/ci/version.mjs";
+import { releaseResponse, releaseVersion, stampVersion } from "../../scripts/ci/version.mjs";
 import {
   archiveConfiguration,
   imageConfiguration,
@@ -27,18 +27,52 @@ import {
   verifiedDirectory,
 } from "../../scripts/ci/release-contract.mjs";
 
-void test("main push numbers allocate repeatable patch versions and refuse malformed or overflowing input", () => {
-  assert.equal(pushVersion("0.1.0", 1), "0.1.1");
-  assert.equal(pushVersion("0.1.0", 2), "0.1.2");
-  assert.equal(pushVersion("2.4.9", 3), "2.4.12");
-  assert.equal(pushVersion("0.1.0", 2), pushVersion("0.1.0", 2));
+void test("only completed releases advance versions; failed checks and partial publications cannot consume patches", () => {
+  const commit = "a".repeat(40);
+  const release = {
+    tag_name: "v0.1.1",
+    draft: false,
+    prerelease: false,
+    target_commitish: "b".repeat(40),
+  };
+  assert.equal(releaseVersion("0.1.0", "0.1.0", undefined, commit), "0.1.1");
+  assert.equal(releaseVersion("0.1.0", "0.1.0", undefined, commit), "0.1.1");
+  assert.equal(releaseVersion("0.1.0", "0.1.1", release, commit), "0.1.2");
+  assert.equal(releaseVersion("0.1.0", "0.1.1", release, release.target_commitish), "0.1.1");
+  assert.throws(() => releaseVersion("0.1.0", "0.1.1", undefined, commit), /disagree/);
+  assert.throws(() => releaseVersion("0.1.0", "0.1.2", release, commit), /disagree/);
+  assert.throws(() => releaseVersion("0.1.0", "0.1.0", release, commit), /disagree/);
+  for (const changed of [
+    { draft: true },
+    { prerelease: true },
+    { tag_name: "garbage" },
+    { tag_name: "v0.1.1-beta" },
+    { target_commitish: "main" },
+  ]) {
+    assert.throws(() => releaseVersion("0.1.0", "0.1.1", { ...release, ...changed }, commit));
+  }
   for (const baseline of ["v0.1.0", "0.1", "0.01.0", "0.1.0-beta", "9007199254740992.0.0"]) {
-    assert.throws(() => pushVersion(baseline, 1));
+    assert.throws(() => releaseVersion(baseline, "0.1.0", undefined, commit));
   }
-  for (const increment of [-1, "01", "1.5", "1e3", "9007199254740992"]) {
-    assert.throws(() => pushVersion("0.1.0", increment));
+  assert.throws(() => releaseVersion("0.2.0", "0.1.1", release, commit));
+  assert.throws(() => releaseVersion("0.1.0", undefined, undefined, commit));
+  assert.throws(
+    () => releaseVersion("0.1.9007199254740991", "0.1.9007199254740991", undefined, commit),
+    /numeric bound/,
+  );
+  assert.throws(() => stampVersion(checkout(), "0.1.9007199254740992"), /numeric bound/);
+  assert.equal(releaseResponse(404, '{"message":"Not Found"}'), undefined);
+  assert.deepEqual(releaseResponse(200, JSON.stringify(release)), release);
+  for (const [status, text] of [
+    [401, "{}"],
+    [500, "{}"],
+    [404, "{}"],
+    [200, "[]"],
+    [200, "null"],
+    [200, "malformed"],
+  ]) {
+    assert.throws(() => releaseResponse(status, text));
   }
-  assert.throws(() => pushVersion("0.1.9007199254740991", 1));
 });
 
 function checkout() {
@@ -62,7 +96,7 @@ function checkout() {
 
 void test("version stamping updates lock and shipped examples while preserving dependency pins", () => {
   const root = checkout();
-  assert.equal(stampVersion(root, 7), "0.1.7");
+  assert.equal(stampVersion(root, "0.1.7"), "0.1.7");
   const manifest = JSON.parse(readFileSync(join(root, "package.json")));
   const lock = JSON.parse(readFileSync(join(root, "package-lock.json")));
   assert.equal(manifest.version, "0.1.7");
@@ -84,7 +118,7 @@ void test("inconsistent example metadata refuses before modifying any version fi
   writeFileSync(path, JSON.stringify({ dependencies: { "sept-agent": "wrong" } }));
   const packageBefore = readFileSync(join(root, "package.json"), "utf8");
   const firstBefore = readFileSync(join(root, "examples", "node-app", "package.json"), "utf8");
-  assert.throws(() => stampVersion(root, 1));
+  assert.throws(() => stampVersion(root, "0.1.1"));
   assert.equal(readFileSync(join(root, "package.json"), "utf8"), packageBefore);
   assert.equal(
     readFileSync(join(root, "examples", "node-app", "package.json"), "utf8"),
@@ -124,7 +158,10 @@ void test("untrusted checks cannot publish and main publication depends on compl
   );
   assert.match(publish, /branches: \[main\]/);
   assert.match(publish, /needs: checks/);
-  assert.match(publish, /release-number: \$\{\{ fromJSON\(github.run_number\) \}\}/);
+  assert.match(publish, /release-version: \$\{\{ needs.version.outputs.version \}\}/);
+  assert.doesNotMatch(checks + publish, /run_number|release-number|RELEASE_NUMBER/);
+  assert.match(publish, /node scripts\/ci\/version.mjs --select/);
+  assert.match(checks, /RELEASE_VERSION: \$\{\{ inputs.release-version \}\}/);
   assert.match(publish, /pattern: sept-verified-amd64-attempt\*/);
   assert.doesNotMatch(
     checks + publish,
