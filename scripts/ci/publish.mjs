@@ -19,6 +19,7 @@ import {
   npmPublishEnvironment,
   releaseIdentity,
   sameIntegrity,
+  sameImageConfiguration,
   sha256,
   versionParts,
   verifiedDirectory,
@@ -219,7 +220,7 @@ function publishImage() {
   assert.equal(facts.Architecture, "amd64");
   assert.equal(facts.Os, "linux");
   assert.deepEqual(facts.RootFS.Layers, configuration.rootfs.diff_ids);
-  assert.deepEqual(facts.Config, configuration.config);
+  sameImageConfiguration(configuration.config, facts.Config);
   const target = `${registryImage}:${version}`;
   const existing = registryConfiguration(target);
   if (existing) {

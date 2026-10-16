@@ -13,7 +13,12 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { command, environment, managed, ready, stop } from "./process.mjs";
-import { archiveConfiguration, imageConfiguration, sha256 } from "./release-contract.mjs";
+import {
+  archiveConfiguration,
+  imageConfiguration,
+  sameImageConfiguration,
+  sha256,
+} from "./release-contract.mjs";
 
 const root = process.cwd();
 const output = resolve(process.env.SEPT_CI_OUTPUT);
@@ -115,7 +120,7 @@ async function main() {
   const configuration = imageConfiguration(raw, identity, receipt.package.version, receipt.commit);
   docker(["load", "--input", join(output, "image.tar")]);
   const loaded = JSON.parse(docker(["image", "inspect", localTag]))[0];
-  assert.deepEqual(loaded.Config, configuration.config);
+  sameImageConfiguration(configuration.config, loaded.Config);
   assert.deepEqual(loaded.RootFS.Layers, configuration.rootfs.diff_ids);
   receipt.image.loadedId = loaded.Id;
   receipt.image.localTag = localTag;

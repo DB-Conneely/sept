@@ -138,3 +138,22 @@ export function imageConfiguration(raw, identity, version, commit) {
   assert.equal(configuration.config.Labels["org.opencontainers.image.revision"], commit);
   return configuration;
 }
+
+/** Classic Docker inspect expands defaults omitted by OCI configs; all other fields stay exact. */
+export function sameImageConfiguration(expected, actual) {
+  const defaults = {
+    Hostname: "",
+    Domainname: "",
+    Image: "",
+    AttachStdin: false,
+    AttachStdout: false,
+    AttachStderr: false,
+    Tty: false,
+    OpenStdin: false,
+    StdinOnce: false,
+    Entrypoint: null,
+    OnBuild: null,
+    Volumes: null,
+  };
+  assert.deepEqual({ ...defaults, ...actual }, { ...defaults, ...expected });
+}

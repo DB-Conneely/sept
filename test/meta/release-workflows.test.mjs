@@ -21,6 +21,7 @@ import {
   npmPublishEnvironment,
   releaseIdentity,
   sameIntegrity,
+  sameImageConfiguration,
   sha256,
   versionParts,
   verifiedDirectory,
@@ -278,6 +279,48 @@ void test("saved config bytes must match their digest, source commit, version an
   assert.throws(() => imageConfiguration(raw.trim(), identity, "0.1.1", commit));
   assert.throws(() => imageConfiguration(raw, identity, "0.1.2", commit));
   assert.throws(() => imageConfiguration(raw, identity, "0.1.1", "b".repeat(40)));
+});
+
+void test("classic Docker inspect defaults preserve exact image behavior and reject every other difference", () => {
+  const compact = {
+    User: "10001:10001",
+    Env: ["NODE_ENV=production"],
+    Cmd: ["./sept", "worker"],
+    ExposedPorts: { "8090/tcp": {} },
+    WorkingDir: "/app",
+    Labels: { "org.opencontainers.image.version": "0.1.1" },
+    ArgsEscaped: true,
+    Healthcheck: { Test: ["CMD", "./sept", "health"] },
+  };
+  const defaults = {
+    Hostname: "",
+    Domainname: "",
+    Image: "",
+    AttachStdin: false,
+    AttachStdout: false,
+    AttachStderr: false,
+    Tty: false,
+    OpenStdin: false,
+    StdinOnce: false,
+    Entrypoint: null,
+    OnBuild: null,
+    Volumes: null,
+  };
+  const expanded = { ...defaults, ...compact };
+  sameImageConfiguration(compact, compact);
+  sameImageConfiguration(compact, expanded);
+  sameImageConfiguration(expanded, compact);
+  for (const [key, value] of Object.entries(defaults)) {
+    const changed = value === false ? true : value === "" ? "changed" : ["changed"];
+    assert.throws(() => sameImageConfiguration(compact, { ...expanded, [key]: changed }));
+    assert.throws(() => sameImageConfiguration({ ...compact, [key]: changed }, expanded));
+  }
+  for (const key of Object.keys(compact)) {
+    assert.throws(() => sameImageConfiguration(compact, { ...expanded, [key]: "changed" }));
+    const missing = Object.fromEntries(Object.entries(expanded).filter(([name]) => name !== key));
+    assert.throws(() => sameImageConfiguration(compact, missing));
+  }
+  assert.throws(() => sameImageConfiguration(compact, { ...expanded, Unknown: false }));
 });
 
 void test("npm registry reads distinguish pending E404 from authentication and malformed responses", () => {
