@@ -47,7 +47,7 @@ New runs use native Pi Durable SQLite and `*.durable.json` conversation locators
 
 The public [client](sdk.md) sends stable-ID writes through webhooks, not the non-idempotent direct task/message routes. A new webhook returns202; an identical replay returns200 with the original IDs and `duplicate:true`. A task receipt remains `{ "kind":"task", "runId":"...", "status":"active", "duplicate":true }` after later completion. `GET /v1/tasks/:runId` is the authority for current state. A message receipt is `{ "kind":"operator_message", "runId":"...", "messageId":"...", "duplicate":false }`. Cancel returns `{ "runId":"...", "status":"cancelling", "cancelled":true }` with202 while still settling; true alone does not certify terminal cancellation.
 
-Successful reads return200, new direct task/message admissions202 and drain200. Errors preserve `{ "error": "bounded message" }`:400 malformed/invalid input,401 bearer failure,404 missing route/run,409 slot/drain/state/collision conflict,413 oversized body,415 wrong JSON content type,429 capacity and500 internal failure. Conversation expiry returns410 with additive machine-readable metadata:
+Successful reads return200, new direct task/message admissions202 and drain202. Errors preserve `{ "error": "bounded message" }`:400 malformed/invalid input,401 bearer failure,404 missing route/run,409 slot/drain/state/collision conflict,413 oversized body,415 wrong JSON content type,429 capacity and500 internal failure. Conversation expiry returns410 with additive machine-readable metadata:
 
 ```json
 { "error": "conversation cursor expired; earliest retained cursor is 25", "retainedFrom": 25 }
