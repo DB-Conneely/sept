@@ -23,23 +23,22 @@ import {
   revokeDockerBinding,
   reconcileDockerBinding,
 } from "../../src/execution/docker-control.js";
+import { runPermissions, assertCapabilityExpansion } from "../../src/cli/permissions.js";
 import {
-  runPermissions,
   initializeCapabilities,
   assertCapabilityAdmission,
   capabilityHostFactory,
-  assertCapabilityExpansion,
-} from "../../src/cli/permissions.js";
+} from "../../src/worker/index.js";
 import { validateSelectedInputs } from "../../src/execution/hands-selected-inputs.js";
 import { suppliedEngine } from "./backend-support.js";
 import { fixtureDirectories, fixtureStore } from "./support.js";
 
 void test("local operator show and installed admission keep missing policy dormant", async () => {
   const root = mkdtempSync(join(tmpdir(), "sept-policy-control-"));
-  const store = await initializeCapabilities({}, root);
+  const store = await initializeCapabilities(root, undefined);
   assert.equal(store.read(), undefined);
   writeFileSync(join(root, "prior-runtime.json"), "{}");
-  assert.equal((await initializeCapabilities({}, root)).read(), undefined);
+  assert.equal((await initializeCapabilities(root, undefined)).read(), undefined);
   assert.throws(() => {
     assertCapabilityAdmission(store, undefined);
   }, SeptError);

@@ -4,39 +4,10 @@
  * and exit presentation while delegating every command to public mechanism boundaries.
  */
 
-import { readFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import { executeCommand, resolveAgentDirectory } from "./cli/commands.js";
-import { CliError } from "./cli/errors.js";
 import { parseCliInvocation } from "./cli/options.js";
 import { classifyError, createTelemetry, NOOP_TELEMETRY } from "./observability/index.js";
-
-interface PackageMetadata {
-  piVersion: string;
-  septVersion: string;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function packageMetadata(): PackageMetadata {
-  const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
-  const parsed: unknown = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8"));
-  if (!isRecord(parsed)) {
-    throw new CliError("SEPT package metadata is invalid");
-  }
-  const version = parsed.version;
-  const dependencies = parsed.dependencies;
-  const piVersion = isRecord(dependencies)
-    ? dependencies["@earendil-works/pi-coding-agent"]
-    : undefined;
-  if (typeof version !== "string" || typeof piVersion !== "string") {
-    throw new CliError("SEPT package metadata is invalid");
-  }
-  return { piVersion, septVersion: version };
-}
+import { packageMetadata } from "./package-metadata.js";
 
 let telemetry = NOOP_TELEMETRY;
 

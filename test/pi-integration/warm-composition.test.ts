@@ -15,7 +15,8 @@ import {
 } from "../../src/execution/index.js";
 import { DockerEngineControl } from "../../src/execution/docker-engine.js";
 import { assertHandsRunProfile, recordHandsBinding } from "../../src/execution/docker-control.js";
-import { assertCapabilityAdmission, runPermissions } from "../../src/cli/permissions.js";
+import { runPermissions } from "../../src/cli/permissions.js";
+import { assertCapabilityAdmission } from "../../src/worker/index.js";
 import { permissionDecision, resumePermissionRun } from "../../src/cli/permission-decisions.js";
 import { reconcilePermissionWait } from "../../src/runtime/worker-recovery.js";
 import { suppliedEngine } from "./backend-support.js";

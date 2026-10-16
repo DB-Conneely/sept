@@ -6,18 +6,20 @@
 
 import { join, resolve } from "node:path";
 import { acquireStateRootLease, RunStore } from "../durable/index.js";
-import { SeptService, validateRequest, publicTaskProjection } from "../ingress/index.js";
+import { validateRequest, publicTaskProjection } from "../ingress/index.js";
 import { ModelAccessService, type AuthenticationMethod } from "../model-access/index.js";
 import { classifyError, type Observability } from "../observability/index.js";
 import { assertCompatibleStateRoot, getAgentDir, inspectPi } from "../pi-integration/index.js";
 import { CycleController } from "../runtime/index.js";
 import { createTerminalAuthInteraction } from "./auth-interaction.js";
 import {
-  runPermissions,
   initializeCapabilities,
   assertCapabilityAdmission,
   capabilityHostFactory,
-} from "./permissions.js";
+  createWorker,
+  type Worker,
+} from "../worker/index.js";
+import { runPermissions } from "./permissions.js";
 import { resumePermissionRun, assertLocalRunSlot } from "./permission-decisions.js";
 import { CliError } from "./errors.js";
 import type { CliInvocation } from "./options.js";
@@ -126,12 +128,15 @@ function stateRoot(options: Record<string, string>): string {
   );
 }
 
-function registerWorkerStop(service: SeptService, telemetry: Observability): void {
+function registerWorkerStop(service: Worker, telemetry: Observability): void {
   let stopping: Promise<void> | undefined;
   const stop = (): void => {
     stopping ??= (async () => {
-      await service.stop();
-      await telemetry.shutdown();
+      try {
+        await service.stop();
+      } finally {
+        await telemetry.shutdown();
+      }
     })().catch((error: unknown) => {
       telemetry.log(
         "process.failed",
@@ -147,39 +152,26 @@ function registerWorkerStop(service: SeptService, telemetry: Observability): voi
 }
 
 async function runWorker(context: CommandContext): Promise<void> {
-  const policy = await initializeCapabilities(context.options, stateRoot(context.options));
-  const workspaceRoot = resolve(
-    context.options["workspace-root"] ?? process.env.SEPT_WORKSPACE_ROOT ?? process.cwd(),
-  );
   const host = context.options.host;
   const port = integer(context.options.port);
-  // The factory is invoked only after service.start binds, including restart adoption with port 0.
-  const service: SeptService = new SeptService({
+  const handsConfigurationPath = context.options.hands ?? process.env.SEPT_HANDS_CONFIGURATION;
+  const worker = await createWorker({
     stateRoot: stateRoot(context.options),
     agentDir: context.agentDir,
-    workspaceRoot,
-    token: process.env.SEPT_TOKEN ?? "",
-    hostFactory: capabilityHostFactory(
-      stateRoot(context.options),
-      context.options.hands ?? process.env.SEPT_HANDS_CONFIGURATION,
-      () => service.boundEndpoint(),
+    workspaceRoot: resolve(
+      context.options["workspace-root"] ?? process.env.SEPT_WORKSPACE_ROOT ?? process.cwd(),
     ),
-    capabilityAdmission: () => {
-      assertCapabilityAdmission(
-        policy,
-        context.options.hands ?? process.env.SEPT_HANDS_CONFIGURATION,
-      );
-    },
-    piVersion: context.piVersion,
+    token: process.env.SEPT_TOKEN ?? "",
     telemetry: context.telemetry,
+    ...(handsConfigurationPath === undefined ? {} : { handsConfigurationPath }),
     ...(host === undefined ? {} : { host }),
     ...(port === undefined ? {} : { port }),
   });
-  const address = await service.start();
+  const address = worker.address;
   process.stdout.write(
     `SEPT Pi worker listening on http://${address.host}:${String(address.port)}\n`,
   );
-  registerWorkerStop(service, context.telemetry);
+  registerWorkerStop(worker, context.telemetry);
 }
 
 function directRequest(options: Record<string, string>): Record<string, unknown> {
@@ -250,7 +242,10 @@ async function executeDirectRun(context: CommandContext, store: RunStore): Promi
 async function runDirect(context: CommandContext): Promise<void> {
   const root = stateRoot(context.options);
   assertCompatibleStateRoot(root, context.telemetry);
-  const policy = await initializeCapabilities(context.options, root);
+  const policy = await initializeCapabilities(
+    root,
+    context.options.hands ?? process.env.SEPT_HANDS_CONFIGURATION,
+  );
   const releaseRoot = acquireStateRootLease(root);
   try {
     assertLocalRunSlot(root, context.options.resume);
@@ -261,8 +256,11 @@ async function runDirect(context: CommandContext): Promise<void> {
     const resumed = await resumePermissionRun(context, root, context.agentDir);
     await executeDirectRun(context, resumed ?? (await createDirectRun(context, root)));
   } finally {
-    releaseRoot();
-    await context.telemetry.shutdown();
+    try {
+      releaseRoot();
+    } finally {
+      await context.telemetry.shutdown();
+    }
   }
 }
 
