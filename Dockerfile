@@ -93,6 +93,7 @@ RUN apt-get update \
     && chown -R 10001:10001 /pi-agent /state /workspace
 
 WORKDIR /app
+COPY LICENSE NOTICE ./
 COPY --from=fd-tools /usr/local/bin/fd /usr/local/libexec/sept/fd
 COPY --chown=10001:10001 sept ./sept
 COPY --from=build --chown=10001:10001 /app/package.json /app/package-lock.json ./

@@ -188,6 +188,10 @@ export class PiSessionHost implements SessionHost {
 
   /** Durably abort and join native model/tool work before SEPT publishes cancellation settlement. */
   public abort(): Promise<void> {
+    // Closing already joins native work; addressing that stopped Harness can reject after durable cancellation.
+    if (this.closing !== undefined) {
+      return this.closing;
+    }
     this.aborting ??= this.native.conversation.abort(BACKGROUND_CONTEXT, { background: true });
     return this.aborting;
   }

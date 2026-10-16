@@ -9,6 +9,7 @@ import { posix } from "node:path";
 import test from "node:test";
 
 const mechanisms = new Set([
+  "client",
   "durable",
   "execution",
   "ingress",
@@ -16,6 +17,7 @@ const mechanisms = new Set([
   "observability",
   "pi-integration",
   "runtime",
+  "worker",
 ]);
 
 function sourceFiles(directory = "src"): string[] {
@@ -73,4 +75,16 @@ void test("source mechanisms cross boundaries only through public index modules"
     [],
     "observability must not import SEPT business mechanisms",
   );
+});
+
+void test("task client imports only its own transport and durable validation boundary", () => {
+  for (const source of sourceFiles("src/client")) {
+    for (const specifier of relativeImports(source)) {
+      const target = posix.normalize(posix.join(posix.dirname(source), specifier));
+      assert.ok(
+        target.startsWith("src/client/") || target === "src/durable/index.js",
+        `${source} pulls worker composition into the independent client: ${specifier}`,
+      );
+    }
+  }
 });

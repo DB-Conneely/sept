@@ -287,3 +287,85 @@ test("patched Pi bodies use the optional minimal child callback with unchanged n
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+const publicEntries = {
+  ".": "./dist/src/index",
+  "./client": "./dist/src/client/index",
+  "./hands": "./dist/src/hands",
+};
+const packageFiles = [
+  "dist/src",
+  "src",
+  "sept",
+  "README.md",
+  "CONTRIBUTING.md",
+  "LICENSE",
+  "NOTICE",
+  "docs/index.md",
+  "docs/sdk.md",
+  "docs/models.md",
+  "docs/worker-api.md",
+  "docs/pi-contract.md",
+  "docs/architecture.md",
+  "docs/observability.md",
+  "examples/node-app",
+  "examples/incident-investigator",
+  "image/pi-native-search/README.md",
+  "image/pi-native-search/native-search.patch",
+  "image/pi-native-search/overlay.tgz",
+  "image/pi-native-search/provenance.json",
+];
+
+test("consumer package seals three ESM entries and reuses the current prepack compiler", () => {
+  assert.deepEqual(Object.keys(packageJson.exports), Object.keys(publicEntries));
+  for (const [entry, target] of Object.entries(publicEntries)) {
+    assert.deepEqual(Object.keys(packageJson.exports[entry]), ["types", "import"]);
+    assert.deepEqual(packageJson.exports[entry], {
+      types: `${target}.d.ts`,
+      import: `${target}.js`,
+    });
+  }
+  assert.deepEqual(packageJson.files, packageFiles);
+  assert.equal(packageJson.private, undefined);
+  assert.equal(packageJson.license, "MIT");
+  assert.deepEqual(packageJson.repository, {
+    type: "git",
+    url: "git+https://github.com/DB-Conneely/sept.git",
+  });
+  assert.equal(packageJson.scripts.prepack, "npm run build");
+  for (const hook of ["preinstall", "install", "postinstall", "prepare", "postpack"]) {
+    assert.equal(packageJson.scripts[hook], undefined);
+  }
+  const lock = JSON.parse(readFileSync(join(root, "package-lock.json"), "utf8"));
+  for (const field of [
+    "name",
+    "version",
+    "license",
+    "engines",
+    "bin",
+    "dependencies",
+    "devDependencies",
+  ]) {
+    assert.deepEqual(lock.packages[""][field], packageJson[field]);
+  }
+});
+
+test("root NOTICE retains exact upstream MIT bytes and final Docker stage carries both notices", () => {
+  const notice = readFileSync(join(root, "NOTICE"), "utf8");
+  const retained = notice.slice(notice.indexOf("MIT License\n")).trimEnd();
+  assert.equal(
+    createHash("sha256").update(retained).digest("hex"),
+    provenance.upstream.licenseSha256,
+  );
+  assert.match(notice, /upstream npm archive omits a LICENSE file/);
+  assert.match(notice, /image\/pi-native-search\/provenance\.json/);
+  const dockerfile = readFileSync(join(root, "Dockerfile"), "utf8");
+  const finalStage = dockerfile.slice(dockerfile.lastIndexOf("FROM node:22-bookworm-slim"));
+  assert.match(finalStage, /COPY LICENSE NOTICE \.\//);
+});
+
+test("cold consumers pin the stock codemode exports required by Pi coding-agent", () => {
+  const lock = JSON.parse(readFileSync(join(root, "package-lock.json"), "utf8"));
+  assert.equal(packageJson.dependencies["@earendil-works/pi-codemode"], "1.1.0");
+  assert.equal(lock.packages["node_modules/@earendil-works/pi-codemode"].version, "1.1.0");
+});

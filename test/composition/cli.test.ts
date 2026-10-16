@@ -265,3 +265,25 @@ void test("worker policy setup refusal closes its supplied namespace before retu
   };
   verifySetupRefusal(owned, setupFailure);
 });
+
+void test("package entry declarations and source-map targets accompany the installed CLI", () => {
+  const pkg = parseRecord(readFileSync(resolve("package.json"), "utf8"), "package metadata");
+  const exports = record(pkg.exports, "public package entries");
+  for (const [entry, stem] of [
+    [".", "dist/src/index"],
+    ["./client", "dist/src/client/index"],
+    ["./hands", "dist/src/hands"],
+  ]) {
+    assert.ok(entry !== undefined && stem !== undefined);
+    const conditions = record(exports[entry], "entry conditions");
+    assert.equal(conditions.types, `./${stem}.d.ts`);
+    assert.equal(conditions.import, `./${stem}.js`);
+    assert.equal(existsSync(resolve(`${stem}.d.ts`)), true);
+    const map = parseRecord(readFileSync(resolve(`${stem}.js.map`), "utf8"), "source map");
+    assert.ok(Array.isArray(map.sources));
+    for (const source of map.sources) {
+      assert.equal(typeof source, "string");
+      assert.equal(existsSync(resolve(stem, "..", String(source))), true);
+    }
+  }
+});

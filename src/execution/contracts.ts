@@ -1,3 +1,5 @@
+import type { CustomHand, DockerHandsConfiguration } from "../hands-api.js";
+export type { CustomHand, DockerHandsConfiguration } from "../hands-api.js";
 import type {
   HandsCommandStart,
   HandsCommandExit,
@@ -28,12 +30,6 @@ export interface HandsResources {
   skills: string;
 }
 
-/** One operator-registered program, read from a selected kernel-RO root and hash-bound before execution. */
-export interface CustomHand {
-  path: string;
-  sha256: string;
-  replay: "safe" | "unsafe";
-}
 /** One effect or resource request. Principal, cwd and generation are supplied by trusted composition. */
 export type HandsRequest =
   | { kind: "resources"; workspaceRead?: boolean; grants?: CapabilityGrant[] }
@@ -92,37 +88,6 @@ export interface ExecutionBackend {
 export interface HandsToolResult {
   content: ToolResultMessage["content"];
   isError?: boolean;
-}
-
-/** Trusted operator configuration for the one supported Linux reference profile. */
-export interface DockerHandsConfiguration {
-  profile: "docker-linux-warm-v1";
-  /** Explicit OS-protected local Engine endpoint; ambient Docker contexts never select authority. */
-  engineSocket: string;
-  containerId: string;
-  generation: string;
-  workspace: string;
-  /** Private data is one consumer-seeded tmpfs; mutable binds admit individual anchored file effects only. */
-  dataDomain: "private" | "mutable-file-bind";
-  /** Required for private data; exact kernel byte/inode limits are bound to the namespace generation. */
-  workspaceLimits?: { bytes: number; inodes: number };
-  resources: string;
-  shell: boolean;
-  /** Complete reachable brain/control/metadata inventory; exact kernel exclusions are checked per effect. */
-  network?: {
-    networkId: string;
-    protectedAddresses: string[];
-    dnsServers: string[];
-    /** Complete protected service ports are required when DNS shares an excluded address. */
-    protectedEndpoints?: { address: string; port: number }[];
-  };
-  readOnlyMounts: { source: string; destination: string }[];
-  /** Read-only roots baked into the exact admitted image; no host source or runtime seeding. */
-  imageSelected?: { alias: string }[];
-  /** Optional single custom hand, never repository/native brain extension code. */
-  customHand?: CustomHand;
-  /** Persistent RW selected mounts are supported only without arbitrary execution. */
-  readWriteMounts?: { source: string; destination: string }[];
 }
 
 export { HandsBackendUnavailableError, type HandsLossFacts } from "./hands-loss.js";

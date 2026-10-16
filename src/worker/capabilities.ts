@@ -9,7 +9,6 @@ import {
   loadHandsConfiguration,
   validateCapabilities,
 } from "../execution/index.js";
-import { PiSessionHost } from "../pi-integration/index.js";
 import type { HostFactory } from "../runtime/index.js";
 
 function newStateRoot(root: string): boolean {
@@ -90,6 +89,8 @@ export function capabilityHostFactory(
   controlEndpoint?: () => { address: string; port: number } | undefined,
 ): HostFactory {
   return async (manifest, store, agentDir, existing, telemetry) => {
+    // Import Pi before acquiring backend authority, so module-load failure cannot leak a backend.
+    const { PiSessionHost } = await import("../pi-integration/index.js");
     const configuration = loadHandsConfiguration(configurationPath);
     const backend = await DockerExecutionBackend.create(
       configuration,

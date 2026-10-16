@@ -31,3 +31,6 @@ export {
   reconcileDockerBinding,
   assertHandsRunProfile,
 } from "./docker-control.js";
+
+/** Exact-family filter generation for trusted consumer-owned network setup. */
+export { networkFirewall } from "./network-profile.js";

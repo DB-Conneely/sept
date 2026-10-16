@@ -1,7 +1,6 @@
 /** Embeds the same complete authenticated single-slot worker used by the installed CLI. */
 import { SeptError } from "../durable/index.js";
-import { SeptService } from "../ingress/index.js";
-import type { Observability } from "../observability/index.js";
+import type { SeptService } from "../ingress/index.js";
 import { packageMetadata } from "../package-metadata.js";
 import {
   assertCapabilityAdmission,
@@ -9,29 +8,8 @@ import {
   initializeCapabilities,
 } from "./capabilities.js";
 
-/** Explicit library configuration; the caller owns paths, credentials, signals and telemetry. */
-export interface WorkerOptions {
-  stateRoot: string;
-  agentDir: string;
-  workspaceRoot: string;
-  token: string;
-  handsConfigurationPath?: string;
-  host?: string;
-  port?: number;
-  telemetry?: Observability;
-}
-
-/** Listener address available after binding and synchronous durable restart adoption. */
-export interface WorkerAddress {
-  readonly host: string;
-  readonly port: number;
-}
-
-/** One ready worker; stopping settles its durable boundary without cancelling or draining tasks. */
-export interface Worker {
-  readonly address: WorkerAddress;
-  stop(): Promise<void>;
-}
+import type { Worker, WorkerOptions } from "../worker-api.js";
+export type { Worker, WorkerOptions, WorkerAddress } from "../worker-api.js";
 
 function assertExplicitOptions(options: WorkerOptions): void {
   for (const value of [options.stateRoot, options.agentDir, options.workspaceRoot]) {
@@ -51,6 +29,8 @@ function assertExplicitOptions(options: WorkerOptions): void {
 export async function createWorker(options: WorkerOptions): Promise<Worker> {
   assertExplicitOptions(options);
   const metadata = packageMetadata();
+  // Pi registers process handlers on import; load composition only after the caller starts a worker.
+  const { SeptService } = await import("../ingress/index.js");
   const policy = await initializeCapabilities(options.stateRoot, options.handsConfigurationPath);
   // The closure observes the actual bound endpoint before restart adoption can launch native work.
   const service: SeptService = new SeptService({
