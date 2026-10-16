@@ -6,7 +6,9 @@ SEPT is a durable, single-slot task worker for Node.js, built on the native Pi D
 
 Requires Node.js **22.19.0 or newer**, ESM, Pi credentials or a suitable configured model, persistent local state, and an operator-supplied Docker Linux hands namespace. Valid hands are required even for text-only tasks. The package does not install Docker, serve models or provision hands.
 
-Install the exact package artifact for the source revision you intend to run:
+After npm publication, add SEPT to your application with `npm install --save-exact sept-agent`. The command is `sept` and the import name is `sept-agent`.
+
+To install a retained exact package artifact for a qualified source revision:
 
 ```sh
 npm install --save-exact /absolute/path/sept-agent-0.1.0.tgz
@@ -88,3 +90,5 @@ The bearer comes from `SEPT_TOKEN`, never a CLI token option. Every HTTP route r
 Support is scoped to qualified source/image/host combinations; see [version and support](docs/index.md#version-and-support). The npm artifact is a consumer package; build the Docker image from a pinned complete repository checkout. Host npm Pi stays stock; the [four native-search image assets](image/pi-native-search/README.md) describe the image-only overlay. No publication or deployment is performed by these instructions.
 
 SEPT is [MIT licensed](LICENSE). [NOTICE](NOTICE) retains the known upstream attribution and image-overlay provenance.
+
+Maintainers: [automatic checks and publishing setup](https://github.com/DB-Conneely/sept/blob/main/docs/releasing.md) describes main-push releases, npm trusted publishing and GHCR configuration. Publishing does not deploy a service.

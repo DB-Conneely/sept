@@ -1,0 +1,59 @@
+name: SEPT publish
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# Queue accepted main pushes; never cancel an in-progress publication.
+concurrency:
+  group: sept-publish
+  queue: max
+
+jobs:
+  checks:
+    uses: ./.github/workflows/checks.yml
+    with:
+      release-number: ${{ fromJSON(github.run_number) }}
+  publish:
+    name: Publish verified artifacts
+    concurrency:
+      group: sept-heavy
+      queue: max
+    needs: checks
+    if: github.repository == 'DB-Conneely/sept' && github.ref == 'refs/heads/main' && !github.event.deleted
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      packages: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: 22.23.3
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+      - run: npm install --global npm@11.21.0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: sept-verified-amd64-attempt*
+          path: ${{ runner.temp }}/sept-artifacts
+      - name: Publish the exact tested tarball and saved image
+        env:
+          SEPT_CI_ARTIFACTS: ${{ runner.temp }}/sept-artifacts
+          GH_TOKEN: ${{ github.token }}
+        run: nice -n 10 node scripts/ci/publish.mjs
+      - name: Retain publication receipts and partial failures
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sept-publication-attempt${{ github.run_attempt }}
+          path: ${{ runner.temp }}/sept-artifacts/publication/
+          if-no-files-found: error
+          retention-days: 30

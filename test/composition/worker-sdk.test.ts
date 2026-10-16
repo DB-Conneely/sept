@@ -37,9 +37,13 @@ function options(): WorkerOptions {
 
 void test("packageMetadata resolves installed identity independently of the caller cwd", () => {
   const cwd = process.cwd();
+  const manifest: unknown = JSON.parse(
+    readFileSync(new URL("../../../package.json", import.meta.url), "utf8"),
+  );
+  const septVersion = stringField(record(manifest, "checkout package metadata"), "version");
   try {
     process.chdir(tmpdir());
-    assert.deepEqual(packageMetadata(), { piVersion: "1.1.0", septVersion: "0.1.0" });
+    assert.deepEqual(packageMetadata(), { piVersion: "1.1.0", septVersion });
   } finally {
     process.chdir(cwd);
   }

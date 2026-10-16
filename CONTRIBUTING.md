@@ -42,3 +42,7 @@ Only root, client and hands are public npm entries. Public API changes need stri
 Compilation and isolated tests support delivery; the actual installed runtime path is the completion criterion. Exercise the changed installed CLI/public import through production Pi and supplied hands. Container input changes require a fresh no-cache image and affected installed proof. The npm tarball excludes the Docker build context; build from full source and inspect final package inventory, source maps, legal/provenance files and allowed imports.
 
 Record exact source/tar/image/dependency identity, cwd/commands, actual child exit/signal/join, original failures and separately observed finalizers. Do not turn wrapper exit0 into a product verdict. Export needed tmpfs data before stopping the exact owned generation; independently close worker, provider/listener, attachments/leases and namespace even if one cleanup fails. Preserve stopped-generation proof, mutex inodes, evidence, recovery and unrelated resources. Never prune/delete them as incidental cleanup. See [operator finalization](docs/pi-contract.md#export-and-finalize-the-owned-generation).
+
+## Automated package releases
+
+[Release setup and retry policy](https://github.com/DB-Conneely/sept/blob/main/docs/releasing.md) describes the GitHub-hosted Linux/amd64 gate and main-push npm/GHCR/GitHub release workflow. It uses no live provider or local model. The publish job consumes the exact tested tarball and saved image; deployment remains manual.
