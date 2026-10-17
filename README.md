@@ -6,7 +6,7 @@ SEPT is a durable, single-slot task worker for Node.js, built on the native Pi D
 
 Requires Node.js **22.19.0 or newer**, ESM, Pi credentials or a suitable configured model, persistent local state, and an operator-supplied Docker Linux hands namespace. Valid hands are required even for text-only tasks. The package does not install Docker or serve models. Optional local setup commands prepare the supported hands profile.
 
-The npm worker runs natively on Linux and macOS; task effects use Linux Docker containers. Apple Silicon uses the ARM64 image through Docker Desktop. Published image tags select AMD64 or ARM64 automatically. Native Windows and Intel Mac task execution remain unqualified. See [release verification](https://github.com/DB-Conneely/sept/blob/main/docs/releasing.md) for exact proof boundaries.
+The npm worker runs natively on Linux and macOS; task effects use Linux Docker containers. Apple Silicon uses the ARM64 image through Docker Desktop. Published image tags select AMD64 or ARM64 automatically. Native Windows and Intel Mac task execution remain unqualified. Hosted Mac release checks cover installed package lifecycle; Docker task execution is qualified separately.
 
 Add SEPT to your application with `npm install --save-exact sept-agent`. The command is `sept` and the import name is `sept-agent`.
 
@@ -16,7 +16,7 @@ To install a retained exact package artifact for a qualified source revision:
 npm install --save-exact /absolute/path/sept-agent-0.1.0.tgz
 ```
 
-This works without assuming a registry publication. For development from a complete checkout, use `npm ci` then `npm run build`. Configure [models and Pi authentication](docs/models.md), then follow the [supplied-hands setup](docs/pi-contract.md#executable-supplied-hands-setup), including the explicit first-boot policy **before starting a worker or direct run**.
+This works without assuming a registry publication. For development from a complete checkout, use `npm ci` then `npm run build`. Prepare hands and its explicit first-boot policy **before starting a worker or direct run**, then configure Pi authentication in the private agent directory.
 
 For a fresh empty workspace, the optional helper replaces the manual Docker flags, identity capture and initial permission setup. Have Docker CLI/Engine running and a compatible matching SEPT image already available locally:
 
@@ -26,7 +26,9 @@ sept hands init --root /absolute/new/sept-instance \
   --image ghcr.io/db-conneely/sept:0.1.3 --access files > worker-paths.json
 ```
 
-Use the four path fields in `worker-paths.json` with `createWorker`, supply your own token, and configure model credentials in its returned `agentDir`. `files` grants workspace read/write; `none` grants neither. Both disable shell and networking. The helper never pulls images or imports an existing project. After awaiting `worker.stop()`, run `sept hands finish --root /absolute/new/sept-instance` to retain a private workspace tar archive and stop the exact owned container. Containers and receipts are preserved. See [helper limits and recovery](docs/pi-contract.md#optional-local-setup-helper).
+Use the four path fields in `worker-paths.json` with `createWorker`, supply your own token, and configure model credentials in its returned `agentDir`. `files` grants workspace read/write; `none` grants neither. Both disable shell and networking. The helper never pulls images or imports an existing project. After awaiting `worker.stop()`, run `sept hands finish --root /absolute/new/sept-instance` to retain a private workspace tar archive and stop the exact owned container. Containers and receipts are preserved.
+
+Choose the actual canonical local Unix socket explicitly; Docker Desktop commonly uses `$HOME/.docker/run/docker.sock`. The instance root must be new, absolute and have trusted ancestors. This fixed profile provides a 128 MiB/32768-inode tmpfs workspace, 16 MiB scratch, 1 GiB memory, 128 PIDs and 2 CPUs. Finish refuses a live worker or replacement generation and reports export and stop outcomes separately in `evidence/finish.json`. Failed initialization retains recovery receipts. The helper does not orchestrate recovery, seed imports, custom mounts, network or shell access. Cancellation/backend loss may destroy workspace bytes before export.
 
 The supplied brain image runs as UID10001 and stores durable evidence at `/state/runs`. Container operation requires persistent storage, for example `-v sept-state:/state`, plus explicit private Pi credential storage and assigned workspaces. Supply hands as a separate namespace using the linked setup.
 
@@ -56,7 +58,7 @@ for (const signal of ["SIGINT", "SIGTERM"]) {
 console.log(worker.address);
 ```
 
-Required roots/token must be nonempty; use canonical absolute paths and a persistent external state root. Readiness covers the listener/router and synchronous durable adoption; asynchronous Pi/backend execution is observed through task state. `stop()` joins the existing durable boundary. See [SDK lifecycle and ownership](docs/sdk.md#worker-lifecycle).
+Required roots/token must be nonempty; use canonical absolute paths and a persistent external state root. Readiness covers the listener/router and synchronous durable adoption; asynchronous Pi/backend execution is observed through task state. `stop()` joins the existing durable boundary. Reopening durable state requires a fresh compatible hands generation and current-revision permission activation; the helper only prepares fresh instances.
 
 ## Submit from TypeScript
 
@@ -82,7 +84,20 @@ const current = await client.getTask(admission.runId);
 console.log(current.state.status);
 ```
 
-Keep `source`/`eventId` stable across retries. Admission receipts retain their original `active` status; `getTask` reports current state. A timeout or abort can occur after durable acceptance. The [SDK guide](docs/sdk.md) covers all five client methods, finite cursor-gap recovery, limits and error classifications.
+Keep `source`/`eventId` stable across retries. Admission receipts retain their original `active` status; `getTask` reports current state. A timeout or abort can occur after durable acceptance. The package ships public client types and contracts for messages, cancellation and conversation retrieval.
+
+## Model authentication
+
+Use the same private agent directory returned by setup for every model command and worker. For Claude through Anthropic:
+
+```sh
+sept auth login --provider anthropic --method api-key --agent-dir "$PI_CODING_AGENT_DIR"
+sept models list --provider anthropic --agent-dir "$PI_CODING_AGENT_DIR"
+sept models select --provider anthropic --model YOUR_MODEL_ID --agent-dir "$PI_CODING_AGENT_DIR"
+sept models validate --agent-dir "$PI_CODING_AGENT_DIR"
+```
+
+Choose an available model ID from the list. Login reads hidden TTY input or stdin; never put credentials in arguments, task text or evidence. Pi owns provider credentials and requests, including compatible local/custom providers configured in that agent directory's `models.json`. Model selection can also be supplied as a complete `provider`/`model` pair in a task. Keep agent storage outside hands and out of Git/images.
 
 ## CLI and integrations
 
@@ -97,10 +112,10 @@ sept worker --state-dir "$SEPT_STATE_DIR" --agent-dir "$PI_CODING_AGENT_DIR" \
 
 The bearer comes from `SEPT_TOKEN`, never a CLI token option. Every HTTP route requires it. One state root has one owner and one resident slot, including while waiting. The [Node application](examples/node-app/README.md) and [incident investigator](examples/incident-investigator/README.md) show the two integration patterns; each owns its finite work and cleanup.
 
-[Formal documentation and AI navigation](docs/index.md) · [HTTP/SSE API](docs/worker-api.md) · [Pi, hands and security contract](docs/pi-contract.md) · [Architecture](docs/architecture.md) · [Observability](docs/observability.md) · [Contributing](CONTRIBUTING.md)
+[Contributing and release procedure](CONTRIBUTING.md) · [Node application](examples/node-app/README.md) · [Incident investigator](examples/incident-investigator/README.md)
 
-Support is scoped to qualified source/image/host combinations; see [version and support](docs/index.md#version-and-support). The npm artifact is a consumer package; build the Docker image from a pinned complete repository checkout. Host npm Pi stays stock; the [four native-search image assets](image/pi-native-search/README.md) describe the image-only overlay. No publication or deployment is performed by these instructions.
+Support is scoped to qualified source/image/host combinations. The npm artifact is a consumer package; build the Docker image from a pinned complete repository checkout. Host npm Pi stays stock; the [four native-search image assets](image/pi-native-search/README.md) describe the image-only overlay. No publication or deployment is performed by these instructions.
 
 SEPT is [MIT licensed](LICENSE). [NOTICE](NOTICE) retains the known upstream attribution and image-overlay provenance.
 
-Maintainers: [automatic checks and publishing setup](https://github.com/DB-Conneely/sept/blob/main/docs/releasing.md) describes main-push releases, npm trusted publishing and GHCR configuration. Publishing does not deploy a service.
+Maintainers: [Contributing](CONTRIBUTING.md#automated-package-releases) describes main-push checks and publication. Publishing does not deploy a service. The local `docs/` directory is private working material, excluded from Git and the npm package.

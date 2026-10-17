@@ -30,9 +30,9 @@ npm run build:extension
 
 No installed header, ambient shim, alias or skipped declaration check is used. This configuration resolves the declarations actually reached by the extension; it does not repair Pi AI's separate model-catalog JSON imports without NodeNext attributes. Importing that broader catalog still needs upstream repair. SEPT's public package declarations remain independently checked with Node-only types.
 
-Follow [supplied-hands setup](../../docs/pi-contract.md#executable-supplied-hands-setup) with `SEPT_OPERATIONS_ROOT="$SEPT_APP"`. Use a **fresh separate** state/workspace/initially-empty resources/profile/generation for this example. Before any worker initialization, installed `sept permissions show` must show absent revision0, then installed `permissions set --revision 0` grants scoped workspace read/write true, selected empty, execute/network false. Confirm `freshBackendRequired:false` and the unchanged running generation. Keep `shell:false` and network none. Never widen the incident app's policy for this example.
+Follow the [fresh-instance setup](../../README.md#install-and-prepare) with `--root "$SEPT_APP/instance" --access files`, choosing the actual local Engine socket and locally available image. Use a fresh separate instance for this example. The helper activates workspace read/write before worker initialization and leaves selected mounts, shell and networking disabled. Never widen the incident app's policy for this example.
 
-Set `PI_CODING_AGENT_DIR`, `SEPT_STATE_DIR`, `SEPT_WORKSPACE_ROOT`, `SEPT_HANDS_CONFIGURATION` to the setup's absolute paths, and supply `SEPT_TOKEN` privately. Configure the desired provider/model through [Pi model configuration](../../docs/models.md) in that agent directory. The physical agent directory must be below this external app, so normal ancestor lookup finds its matching `node_modules`.
+Set `PI_CODING_AGENT_DIR`, `SEPT_STATE_DIR`, `SEPT_WORKSPACE_ROOT`, `SEPT_HANDS_CONFIGURATION` to the setup's absolute `agentDir`, `stateRoot`, `workspaceRoot`, `handsConfigurationPath` fields, and supply `SEPT_TOKEN` privately. Configure the desired provider/model through [model authentication](../../README.md#model-authentication) in that agent directory. The physical agent directory must be below this external app, so normal ancestor lookup finds its matching `node_modules`.
 
 ```sh
 test -f extension-dist/example.js
@@ -56,9 +56,9 @@ export SEPT_EVENT_ID=node-marker-001
 node dist/client.js
 ```
 
-The client requires authoritative complete state and prints its bounded public conversation. Actual acceptance additionally requires the section in the real provider request, Harness selecting `write_marker`, and exported hands bytes exactly `SEPT_NATIVE_EXAMPLE` plus newline. Compilation or directly calling the extension object cannot establish this. Use the setup's explicit-socket export command to retain `/workspace` before stopping the exact owned generation.
+The client requires authoritative complete state and prints its bounded public conversation. Actual acceptance additionally requires the section in the real provider request, Harness selecting `write_marker`, and exported hands bytes exactly `SEPT_NATIVE_EXAMPLE` plus newline. Compilation or directly calling the extension object cannot establish this.
 
-Send SIGINT/SIGTERM to the worker host; it awaits `worker.stop()` and removes its handlers. Readiness covers listener/router and durable adoption admission; native execution may still fail afterward and is observed through the task API. Normal stop retains idle hands. Follow the setup's independent worker/provider/listener/lease/attachment and exact-generation export/stop finalizers, verify stopped/PID0, and retain stopped resources/mutexes/recovery. Cancel/loss can stop hands earlier, so later export is not guaranteed.
+Send SIGINT/SIGTERM to the worker host; it awaits `worker.stop()` and removes its handlers. Readiness covers listener/router and durable adoption admission; native execution may still fail afterward and is observed through the task API. Normal stop retains idle hands. After the host has joined, run `sept hands finish --root "$SEPT_APP/instance"` to retain the private workspace archive and verify the exact owned generation stopped/PID0. Preserve its receipts and archive. Cancel/loss can stop hands earlier, so later export is not guaranteed.
 
 After editing an extension, stop/join the host and start a **fresh Node process**. Stable canonical module-URL caching survives Pi host replacement and same-process stop/reopen; reopening resumes durable state without promising edited-code reload. There is no hot reload.
 
