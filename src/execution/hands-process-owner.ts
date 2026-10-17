@@ -15,10 +15,7 @@ import type {
   NamespaceLifetime,
 } from "./contracts.js";
 
-interface ProcessIdentity {
-  pid: number;
-  start: string;
-}
+type ProcessIdentity = ReturnType<typeof parseProcessIdentity>;
 interface CommandOptions {
   network: boolean;
   timeout?: number;
@@ -169,6 +166,8 @@ export class HandsProcessOwner {
   }
   private async waitCommand(attachment: HandsAttachment, state: CommandState): Promise<void> {
     while (!state.stop.signal.aborted) {
+      // EOF may arrive while inspection is in flight; only a later Engine read can prove a closed stream lost its exec.
+      const closedBeforeInspection = state.attachmentClosed;
       const inspected = await this.engine.inspectExec(attachment.execId);
       if (inspected.ContainerID !== this.configuration.containerId) {
         throw new SeptError("Hands command exec identity changed");
@@ -176,7 +175,7 @@ export class HandsProcessOwner {
       if (inspected.Running === false) {
         return;
       }
-      if (state.attachmentClosed) {
+      if (closedBeforeInspection) {
         attachment.assertJoined();
         throw new SeptError("Hands command stream closed before its exec joined");
       }
