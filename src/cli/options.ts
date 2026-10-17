@@ -6,6 +6,7 @@
 import { CliError } from "./errors.js";
 
 const OPTION_KEYS = {
+  hands: ["root", "engine-socket", "image", "access"],
   worker: ["hands", "agent-dir", "host", "port", "state-dir", "workspace-root"],
   run: [
     "hands",
@@ -83,7 +84,8 @@ export function parseCliInvocation(argv: string[]): CliInvocation | undefined {
   if (!isCommand(command)) {
     return undefined;
   }
-  const hasAction = command === "models" || command === "auth" || command === "permissions";
+  const hasAction =
+    command === "models" || command === "auth" || command === "permissions" || command === "hands";
   const action = hasAction ? argv[3] : undefined;
   const options = parseOptions(argv.slice(hasAction ? 4 : 3), OPTION_KEYS[command]);
   return action === undefined ? { command, options } : { command, action, options };

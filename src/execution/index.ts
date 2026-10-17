@@ -34,3 +34,13 @@ export {
 
 /** Exact-family filter generation for trusted consumer-owned network setup. */
 export { networkFirewall } from "./network-profile.js";
+
+/** Local setup uses the same authenticated Engine and pinned namespace cleanup as the worker. */
+export { DockerEngineControl } from "./docker-engine.js";
+export {
+  captureNamespaceLifetime,
+  stopCapturedNamespace,
+  parseNamespaceLifetime,
+} from "./hands-processes.js";
+
+export { guardedCommand } from "./hands-guarded-command.js";

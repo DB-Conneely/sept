@@ -98,6 +98,30 @@ Before native adoption or mutation, SEPT reads engine/version, bounded locators/
 
 These commands are operator-owned setup for one **local** Docker Linux Engine, not deployment or a provisioner. Run from an external ESM application with the exact SEPT tarball installed and its `node_modules/.bin` on PATH. Use POSIX shell, Node and tar; Linux operators also need access to the trusted Engine socket. Docker Desktop operators must choose their actual canonical local Unix socket explicitly. No remote daemon/backend is supported. The brain process needs socket access and private state/agent directories; Docker must traverse the resources bind path as its actual host actor. Check every ancestor's owner/mode and actual memory/PID/disk headroom before initialization. Example limits below are finite values, not throughput promises.
 
+### Optional local setup helper
+
+For a new empty workspace, `sept hands init` performs the mechanical portion of the recipe below. It is an explicit local operator action, separate from worker startup; `createWorker` stays unchanged. Docker CLI must be on the operator's PATH, the local Linux Engine must already run, and the compatible image must already exist locally. The helper does not pull/build images or deploy anything.
+
+```sh
+sept hands init --root /absolute/new/sept-instance \
+  --engine-socket /run/docker.sock \
+  --image ghcr.io/db-conneely/sept:0.1.3 --access files
+```
+
+Choose the actual local Unix socket explicitly (Docker Desktop commonly uses `$HOME/.docker/run/docker.sock`). The fresh absolute root must have canonical trusted ancestors; existing roots and aliases are refused. Its private `state`, `agent`, `workspace` and `evidence` children separate brain state/credentials from the empty read-only `resources` bind. The root/resources are traversable, while state, credentials, receipts and archives remain private. The helper uses the fixed `docker-linux-warm-v1` profile: private 128 MiB/32768-inode tmpfs workspace, 16 MiB scratch, 1 GiB memory, 128 PIDs, 2 CPUs, no network, no shell or selected mounts. Normal runtime validation still verifies actual kernel/image provenance.
+
+`--access files` activates workspace read/write through the existing local permissions writer before first worker initialization. `--access none` explicitly activates neither right for evidence-only tasks. No token or model credential is generated, inherited by hands, or included in output. JSON output contains `stateRoot`, `agentDir`, `workspaceRoot`, `handsConfigurationPath` plus container/generation/access evidence. Configure Pi/model credentials in the returned agent directory and pass the four existing path options plus your own token to `createWorker`.
+
+After joining the worker and its owned providers/listeners:
+
+```sh
+sept hands finish --root /absolute/new/sept-instance
+```
+
+Finish refuses a live worker lease, verifies captured Engine/socket/container/kernel-generation ownership, streams available workspace bytes into a bounded private `evidence/workspace-<uuid>.tar` without extracting paths on the host, and independently attempts pinned shutdown with stopped/PID0 verification. It retains the archive, stopped container, state and receipts; it never removes/prunes anything. Successful repeated finish verifies the same stopped generation and returns the retained result. A replacement generation is refused without export or stop. Export/stop outcomes remain separate in `evidence/finish.json`; an unavailable/failed export remains an error even when stopping succeeds. Cancellation or earlier backend loss may already have destroyed tmpfs bytes.
+
+A failed init retains `evidence/setup.json` and `evidence/initialization-failure.json`; cleanup attempts only proven ownership and reports whether manual reconciliation remains necessary. Init never reuses that root. The helper supplies no seed importer, recovery/restart orchestration, custom mounts/hands, shell/network options, or image acquisition. For those existing advanced profiles, use the explicit operator recipe below. Preserve archives privately and inspect archive entries before any manual recovery extraction.
+
 ### Pin source, image and Engine authority
 
 Prefer the matching published image: install `sept-agent@0.1.2` and use `ghcr.io/db-conneely/sept:0.1.2`; Docker selects Linux AMD64 or ARM64 for the Engine. The host Node worker can run on macOS, with Docker Desktop supplying Linux hands. Choose its socket explicitly, usually `$HOME/.docker/run/docker.sock`, even if the default Docker context points to another server. Intel Mac task/effect execution remains unqualified; hosted Intel checks establish package/worker lifecycle only.
@@ -297,7 +321,7 @@ Independently verify public listener closure, no live durable controller/state-r
 
 ## Supplied hands reference profile
 
-`./sept worker` and `./sept run` accept trusted operator `--hands /absolute/configuration.json` (or `SEPT_HANDS_CONFIGURATION`). No configuration means execution refuses before native scheduling while authenticated health/history/model access remain available. SEPT never creates, restarts or removes containers. The one supported profile is `docker-linux-warm-v1`, one dedicated sole-run Docker Linux hands container, immutable container ID plus exact `State.StartedAt` generation. The consumer supplies this shape:
+`./sept worker` and `./sept run` accept trusted operator `--hands /absolute/configuration.json` (or `SEPT_HANDS_CONFIGURATION`). No configuration means execution refuses before native scheduling while authenticated health/history/model access remain available. The worker never creates, restarts or removes containers. The optional local setup helper above creates its explicitly owned fresh container and stops it at operator finish. The one supported profile is `docker-linux-warm-v1`, one dedicated sole-run Docker Linux hands container, immutable container ID plus exact `State.StartedAt` generation. The consumer supplies this shape:
 
 ```json
 {"profile":"docker-linux-warm-v1","engineSocket":"/var/run/docker.sock","containerId":"64 lowercase hex characters","generation":"Docker State.StartedAt","workspace":"/canonical/consumer-seed-and-export-directory","dataDomain":"private","workspaceLimits":{"bytes":134217728,"inodes":32768},"resources":"/canonical/dedicated/initially-empty/projection","shell":false,"readOnlyMounts":[],"imageSelected":[]}

@@ -19,6 +19,7 @@ import {
   createWorker,
   type Worker,
 } from "../worker/index.js";
+import { runHands } from "./hands.js";
 import { runPermissions } from "./permissions.js";
 import { resumePermissionRun, assertLocalRunSlot } from "./permission-decisions.js";
 import { CliError } from "./errors.js";
@@ -291,6 +292,9 @@ async function runHealth(context: CommandContext): Promise<void> {
 /** Execute one parsed command through public mechanism boundaries without retaining credentials. */
 export async function executeCommand(context: CommandContext): Promise<void> {
   switch (context.command) {
+    case "hands":
+      writeJson(await runHands(context));
+      return;
     case "permissions":
       writeJson(await runPermissions(context, stateRoot(context.options), context.agentDir));
       return;

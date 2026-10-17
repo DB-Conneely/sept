@@ -1,4 +1,4 @@
-/** Consumer-owned Docker fixtures for actual installed CLI proofs; production never provisions hands. */
+/** Consumer-owned Docker fixtures for actual installed CLI proofs; independent of the optional local setup helper. */
 
 import {
   loadHandsConfiguration,

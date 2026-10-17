@@ -47,6 +47,8 @@ const EXEC = "b".repeat(64);
 /** Bounded supporting daemon facts; never evidence of installed kernel containment. */
 export interface EngineFixture {
   daemon: string;
+  /** Optional setup label/image facts for local operator ownership regressions. */
+  setupOwner?: string;
   generation: string;
   running: boolean;
   exitCode: number;
@@ -236,6 +238,12 @@ function fixtureInspection(response: ServerResponse, facts: EngineFixture): void
   response.end(
     JSON.stringify({
       Id: ID,
+      ...(facts.setupOwner === undefined
+        ? {}
+        : {
+            Image: `sha256:${"a".repeat(64)}`,
+            Config: { Labels: { "sept.setup.owner": facts.setupOwner } },
+          }),
       State: {
         Running: facts.running,
         StartedAt: facts.generation,

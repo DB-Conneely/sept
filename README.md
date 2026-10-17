@@ -4,7 +4,7 @@ SEPT is a durable, single-slot task worker for Node.js, built on the native Pi D
 
 ## Install and prepare
 
-Requires Node.js **22.19.0 or newer**, ESM, Pi credentials or a suitable configured model, persistent local state, and an operator-supplied Docker Linux hands namespace. Valid hands are required even for text-only tasks. The package does not install Docker, serve models or provision hands.
+Requires Node.js **22.19.0 or newer**, ESM, Pi credentials or a suitable configured model, persistent local state, and an operator-supplied Docker Linux hands namespace. Valid hands are required even for text-only tasks. The package does not install Docker or serve models. Optional local setup commands prepare the supported hands profile.
 
 The npm worker runs natively on Linux and macOS; task effects use Linux Docker containers. Apple Silicon uses the ARM64 image through Docker Desktop. Published image tags select AMD64 or ARM64 automatically. Native Windows and Intel Mac task execution remain unqualified. See [release verification](https://github.com/DB-Conneely/sept/blob/main/docs/releasing.md) for exact proof boundaries.
 
@@ -17,6 +17,16 @@ npm install --save-exact /absolute/path/sept-agent-0.1.0.tgz
 ```
 
 This works without assuming a registry publication. For development from a complete checkout, use `npm ci` then `npm run build`. Configure [models and Pi authentication](docs/models.md), then follow the [supplied-hands setup](docs/pi-contract.md#executable-supplied-hands-setup), including the explicit first-boot policy **before starting a worker or direct run**.
+
+For a fresh empty workspace, the optional helper replaces the manual Docker flags, identity capture and initial permission setup. Have Docker CLI/Engine running and a compatible matching SEPT image already available locally:
+
+```sh
+sept hands init --root /absolute/new/sept-instance \
+  --engine-socket /run/docker.sock \
+  --image ghcr.io/db-conneely/sept:0.1.3 --access files > worker-paths.json
+```
+
+Use the four path fields in `worker-paths.json` with `createWorker`, supply your own token, and configure model credentials in its returned `agentDir`. `files` grants workspace read/write; `none` grants neither. Both disable shell and networking. The helper never pulls images or imports an existing project. After awaiting `worker.stop()`, run `sept hands finish --root /absolute/new/sept-instance` to retain a private workspace tar archive and stop the exact owned container. Containers and receipts are preserved. See [helper limits and recovery](docs/pi-contract.md#optional-local-setup-helper).
 
 The supplied brain image runs as UID10001 and stores durable evidence at `/state/runs`. Container operation requires persistent storage, for example `-v sept-state:/state`, plus explicit private Pi credential storage and assigned workspaces. Supply hands as a separate namespace using the linked setup.
 
