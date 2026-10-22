@@ -1,6 +1,6 @@
 # External Node application
 
-This ESM application embeds the complete worker, calls it through the public task client, and loads a trusted native Pi marker tool and prompt section. Tested authoring runtime: Node **22.22.1**, TypeScript **5.9.2**, Node types **24.3.1**, Pi Durable/AI **1.1.0**. The host npm Pi packages stay stock. Use a separately qualified Docker Linux hands image; npm installation does not build the image or provision an Engine/model server.
+This ESM application embeds the complete worker, calls it through the public task client, and loads a trusted native Pi marker tool and prompt section. Authoring toolchain: Node **22.23.3**, npm **11.21.0**, TypeScript **5.9.2**, Node types **24.3.1**, Pi Durable/AI **1.1.0**. The host npm Pi packages stay stock. Use a separately qualified Docker Linux hands image; npm installation does not build the image or provision an Engine/model server.
 
 ## Copy and install
 

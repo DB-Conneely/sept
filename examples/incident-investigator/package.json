@@ -2,8 +2,9 @@
   "name": "sept-incident-investigator-example",
   "private": true,
   "type": "module",
+  "packageManager": "npm@11.21.0",
   "engines": {
-    "node": "22.22.1"
+    "node": "22.23.3"
   },
   "scripts": {
     "wait": "node investigate.mjs wait",

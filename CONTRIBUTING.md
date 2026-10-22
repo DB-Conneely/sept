@@ -4,6 +4,8 @@ Use a complete source checkout and Node.js >=22.19.0. Read the repository-only [
 
 ## Setup and gates
 
+Use Node.js **22.23.3** (recorded in `.nvmrc`) and npm **11.21.0** to match CI. The published package's minimum Node.js version remains 22.19.0.
+
 ```sh
 npm ci
 npm run check

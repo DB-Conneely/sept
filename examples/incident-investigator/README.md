@@ -2,7 +2,7 @@
 
 A small existing-service integration over `sept-agent/client`, using only bounded redacted inline evidence. It submits E1 and a cutoff/unknowns, observes authoritative WAIT, sends exact later E2 with a stable identity, then requires a same-run/session report citing both IDs. It collects no data and performs no remediation.
 
-Use Node **22.22.1** and the exact SEPT tarball. Copy this directory outside the repository and ancestor module lookup, set `SEPT_TARBALL` to its absolute tarball path, then install:
+Use Node **22.23.3**, npm **11.21.0** and the exact SEPT tarball. Copy this directory outside the repository and ancestor module lookup, set `SEPT_TARBALL` to its absolute tarball path, then install:
 
 ```sh
 cd "$SEPT_INCIDENT_APP"

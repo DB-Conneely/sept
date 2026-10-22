@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "description": "Durable Pi-native single-slot task worker",
   "type": "module",
+  "packageManager": "npm@11.21.0",
   "engines": {
     "node": ">=22.19.0"
   },
