@@ -16,6 +16,8 @@ To install a retained exact package artifact for a qualified source revision:
 npm install --save-exact /absolute/path/sept-agent-0.1.0.tgz
 ```
 
+The package includes a [sealed Pi 1.1.0 security distribution](vendor/README.md) whose only upstream change is the undici dependency pin to 8.12.2. Pi source and tool bodies stay upstream; no consumer override or install hook is required.
+
 This works without assuming a registry publication. For development from a complete checkout, use `npm ci` then `npm run build`. Prepare hands and its explicit first-boot policy **before starting a worker or direct run**, then configure Pi authentication in the private agent directory.
 
 For a fresh empty workspace, the optional helper replaces the manual Docker flags, identity capture and initial permission setup. Have Docker CLI/Engine running and a compatible matching SEPT image already available locally:
@@ -114,7 +116,7 @@ The bearer comes from `SEPT_TOKEN`, never a CLI token option. Every HTTP route r
 
 [Contributing and release procedure](CONTRIBUTING.md) · [Node application](examples/node-app/README.md) · [Incident investigator](examples/incident-investigator/README.md)
 
-Support is scoped to qualified source/image/host combinations. The npm artifact is a consumer package; build the Docker image from a pinned complete repository checkout. Host npm Pi stays stock; the [four native-search image assets](image/pi-native-search/README.md) describe the image-only overlay. No publication or deployment is performed by these instructions.
+Support is scoped to qualified source/image/host combinations. The npm artifact is a consumer package; build the Docker image from a pinned complete repository checkout. Host npm Pi retains stock executable bodies with the sealed undici metadata correction; the [four native-search image assets](image/pi-native-search/README.md) describe the image-only overlay. No publication or deployment is performed by these instructions.
 
 SEPT is [MIT licensed](LICENSE). [NOTICE](NOTICE) retains the known upstream attribution and image-overlay provenance.
 

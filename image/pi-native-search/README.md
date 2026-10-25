@@ -9,9 +9,10 @@ Without the optional callback, Pi retains its original spawn behavior; SEPT bind
 it to current command authority and refuses a missing active binding.
 
 This is an explicit image dependency patch, revision `sept-native-search-v1`, not
-a registry package identity or consumer install hook. Root manifests, lockfile,
-`npm ci`, dependency edges, package name/version and host installation are unchanged.
-`provenance.json` is the single record of the upstream registry integrity, original
+a registry package identity or consumer install hook. Pi source/tool bodies and
+package name/version remain upstream 1.1.0. The separate [security distribution](../../vendor/README.md)
+changes only the undici dependency pin to 8.12.2 for host, image and npm consumers.
+`provenance.json` remains the record of the original upstream registry integrity, original
 and effective four-file hashes, patch revision/hash and overlay SHA256/SHA512.
 Changed files omit obsolete source map references; Docker removes their four maps.
 The build verifies the exact regular-file archive allowlist before extraction,

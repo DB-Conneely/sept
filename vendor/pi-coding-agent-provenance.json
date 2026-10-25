@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "upstream": {
+    "name": "@earendil-works/pi-coding-agent",
+    "version": "1.1.0",
+    "registryUrl": "https://registry.npmjs.org/@earendil-works/pi-coding-agent/-/pi-coding-agent-1.1.0.tgz",
+    "integrity": "sha512-SeEi/4hdcHNgA9UWlefZl7ZZpm3dzi2OoxNjDHsBJ9o298LNOtbL4DGKgitlEj6uCTccvtw6f2hlCkTPVJ2RXg=="
+  },
+  "distribution": {
+    "path": "vendor/pi-coding-agent-1.1.0-undici-8.12.2.tgz",
+    "sha256": "e7fe47c3b74ac52b855baf8927ebe2f664990e2166d271da976396bc8f1538b0",
+    "integrity": "sha512-3Z8w3p+vYQ5gCoJKrcKsjf7mRT8qYqS2xnryCoCqwLtwBS7p3YV/7bdNMmLsGf2ZzVK1h2sQJliD504hHMW0zw=="
+  },
+  "change": {
+    "path": "package/package.json",
+    "field": "dependencies.undici",
+    "from": "8.10.2",
+    "to": "8.12.2",
+    "originalManifestSha256": "c662a36f8bc47843393a60dc8616a34dfcc8376e8fcc96dbc2f1020c60e38e2a"
+  },
+  "unchanged": {
+    "files": 1253,
+    "contentSha256": "10bfaee05403cb20d1adc4724b6f47a8fbca86d907c3c61e121dac2cf2194416"
+  }
+}

@@ -22,9 +22,10 @@ RUN apt-get update \
 
 WORKDIR /app
 COPY package.json package-lock.json tsconfig.json ./
+COPY vendor ./vendor
 RUN npm ci
 COPY image/pi-native-search /tmp/pi-native-search
-# The locked graph stays unchanged; only these four reviewed dependency files are overlaid.
+# The security distribution changes only undici metadata; this overlay changes four tool files.
 RUN node --input-type=module <<'JS'
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -43,9 +44,13 @@ assert.deepEqual(names.sort(), expected);
 assert.equal(entries.length, expected.length);
 assert.ok(entries.every((entry) => entry.startsWith("-")));
 const lock = JSON.parse(readFileSync("package-lock.json", "utf8")).packages["node_modules/@earendil-works/pi-coding-agent"];
+const distribution = JSON.parse(readFileSync("vendor/pi-coding-agent-provenance.json", "utf8"));
+for (const [key, value] of Object.entries(distribution.upstream)) assert.equal(p.upstream[key], value);
 assert.equal(p.upstream.version, lock.version);
-assert.equal(p.upstream.registryUrl, lock.resolved);
-assert.equal(p.upstream.integrity, lock.integrity);
+assert.equal(lock.resolved, `file:${distribution.distribution.path}`);
+assert.equal(lock.integrity, distribution.distribution.integrity);
+assert.equal(lock.dependencies.undici, distribution.change.to);
+assert.equal(hash(distribution.distribution.path, "sha256"), distribution.distribution.sha256);
 for (const [path, hashes] of Object.entries(p.files)) assert.equal(hash(`node_modules/@earendil-works/pi-coding-agent/${path}`, "sha256"), hashes.originalSha256);
 JS
 RUN tar -xzf /tmp/pi-native-search/overlay.tgz -C node_modules/@earendil-works/pi-coding-agent \
@@ -97,6 +102,7 @@ COPY LICENSE NOTICE ./
 COPY --from=fd-tools /usr/local/bin/fd /usr/local/libexec/sept/fd
 COPY --chown=10001:10001 sept ./sept
 COPY --from=build --chown=10001:10001 /app/package.json /app/package-lock.json ./
+COPY --from=build --chown=10001:10001 /app/vendor ./vendor
 COPY --from=build --chown=10001:10001 /app/node_modules ./node_modules
 COPY --from=build --chown=10001:10001 /app/dist ./dist
 COPY --from=build /app/hands-guard.so /app/hands-guard.so

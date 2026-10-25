@@ -20,6 +20,9 @@ import test from "node:test";
 const packageJson = JSON.parse(
   readFileSync(new URL("../../package.json", import.meta.url), "utf8"),
 );
+const piDistribution = JSON.parse(
+  readFileSync(new URL("../../vendor/pi-coding-agent-provenance.json", import.meta.url), "utf8"),
+);
 const tsconfig = JSON.parse(readFileSync(new URL("../../tsconfig.json", import.meta.url), "utf8"));
 
 const dependencyFields = [
@@ -37,7 +40,10 @@ test("all registry dependencies are pinned exactly", () => {
       const isExactVersion = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(
         specifier,
       );
-      const isLocalProtocol = /^(?:file|link|workspace):/.test(specifier);
+      const isLocalProtocol =
+        field === "dependencies" &&
+        name === piDistribution.upstream.name &&
+        specifier === `file:${piDistribution.distribution.path}`;
       if (!isExactVersion && !isLocalProtocol) {
         violations.push(`${field}.${name}=${specifier}`);
       }
@@ -110,7 +116,10 @@ test("image native search overlay pins its lock identity, exact regular files an
     "overlay.tgz",
     "provenance.json",
   ]);
-  assert.equal(packageJson.dependencies[provenance.upstream.name], upstream.version);
+  assert.equal(
+    packageJson.dependencies[provenance.upstream.name],
+    `file:${piDistribution.distribution.path}`,
+  );
   assert.equal(
     Object.keys(lock.packages).filter((path) =>
       path.endsWith("node_modules/@earendil-works/pi-coding-agent"),
@@ -119,8 +128,11 @@ test("image native search overlay pins its lock identity, exact regular files an
   );
   assert.equal(provenance.upstream.name, "@earendil-works/pi-coding-agent");
   assert.equal(provenance.upstream.version, upstream.version);
-  assert.equal(provenance.upstream.registryUrl, upstream.resolved);
-  assert.equal(provenance.upstream.integrity, upstream.integrity);
+  for (const [key, value] of Object.entries(piDistribution.upstream)) {
+    assert.equal(provenance.upstream[key], value);
+  }
+  assert.equal(upstream.resolved, `file:${piDistribution.distribution.path}`);
+  assert.equal(upstream.integrity, piDistribution.distribution.integrity);
   assert.equal(provenance.patch.revision, "sept-native-search-v1");
   assert.deepEqual(Object.keys(provenance.files).sort(), nativeFiles);
   assert.equal(hashFile(join(assetDirectory, "native-search.patch")), provenance.patch.sha256);
@@ -307,6 +319,7 @@ const packageFiles = [
   "image/pi-native-search/native-search.patch",
   "image/pi-native-search/overlay.tgz",
   "image/pi-native-search/provenance.json",
+  "vendor",
 ];
 
 test("consumer package seals three ESM entries and reuses the current prepack compiler", () => {

@@ -1,10 +1,30 @@
 // Copied outside the checkout before execution: every bare import resolves the installed tarball.
 import assert from "node:assert/strict";
-import { mkdirSync } from "node:fs";
-import { resolve } from "node:path";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { createRequire } from "node:module";
+import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { createWorker, SeptError } from "sept-agent";
 import { createTaskClient, TaskClientError } from "sept-agent/client";
 import { loadHandsConfiguration, networkFirewall } from "sept-agent/hands";
+
+// Resolve from SEPT's installed entry so consumer hoisting cannot conceal an unsafe Pi edge.
+const septRequire = createRequire(fileURLToPath(import.meta.resolve("sept-agent")));
+const piManifestPath = septRequire.resolve
+  .paths("@earendil-works/pi-coding-agent")
+  .map((path) => join(path, "@earendil-works/pi-coding-agent/package.json"))
+  .find((path) => existsSync(path));
+assert.ok(piManifestPath);
+const piManifest = JSON.parse(readFileSync(piManifestPath, "utf8"));
+const undiciPath = createRequire(piManifestPath).resolve("undici/package.json");
+assert.equal(piManifest.version, "1.1.0");
+assert.equal(piManifest.dependencies.undici, "8.12.2");
+assert.equal(JSON.parse(readFileSync(undiciPath, "utf8")).version, "8.12.2");
+const durablePath = septRequire.resolve("@earendil-works/pi-durable/package.json");
+assert.equal(
+  createRequire(durablePath).resolve("@earendil-works/chord/package.json"),
+  septRequire.resolve("@earendil-works/chord/package.json"),
+);
 
 const token = process.env.SEPT_TOKEN;
 assert.ok(token);
@@ -53,6 +73,7 @@ if (process.argv[2]) {
 console.log(
   JSON.stringify({
     passed: true,
+    pi: { manifest: piManifestPath, version: piManifest.version, undici: undiciPath },
     entries: Object.fromEntries(
       ["sept-agent", "sept-agent/client", "sept-agent/hands"].map((name) => [
         name,

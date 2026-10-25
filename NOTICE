@@ -9,6 +9,11 @@ abe508e1b89912adde45528136c3221eb69acdd7. Exact source URL, license hash and
 image-only native-search modification provenance are recorded in
 image/pi-native-search/provenance.json and image/pi-native-search/README.md.
 
+The shipped security distribution changes only the upstream package manifest
+dependency pin for undici from 8.10.2 to 8.12.2. Every other package body remains
+byte-identical. Original registry and effective archive identities are recorded
+in vendor/pi-coding-agent-provenance.json; reproduction is in vendor/README.md.
+
 MIT License
 
 Copyright (c) 2025 Mario Zechner
