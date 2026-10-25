@@ -84,7 +84,9 @@ export function packDistribution(root, output) {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   if (process.argv[2] === "--reject-unsealed") {
-    console.error("Use npm run pack -- <output-directory> to produce the sealed consumer package.");
+    console.error(
+      "Use npm run pack:consumer -- <output-directory> to produce the sealed consumer package.",
+    );
     process.exitCode = 1;
   } else {
     console.log(JSON.stringify(packDistribution(process.cwd(), resolve(process.argv[2] ?? "."))));

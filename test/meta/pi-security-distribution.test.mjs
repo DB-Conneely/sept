@@ -119,5 +119,5 @@ void test("canonical package is deterministic, contains only two sealed bundles 
     { encoding: "utf8" },
   );
   assert.equal(result.status, 1);
-  assert.match(result.stderr, /Use npm run pack/);
+  assert.match(result.stderr, /Use npm run pack:consumer/);
 });

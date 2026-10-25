@@ -339,7 +339,7 @@ test("consumer package seals three ESM entries and requires the canonical pack c
     type: "git",
     url: "git+https://github.com/DB-Conneely/sept.git",
   });
-  assert.equal(packageJson.scripts.pack, "npm run build && node scripts/ci/pack.mjs");
+  assert.equal(packageJson.scripts["pack:consumer"], "npm run build && node scripts/ci/pack.mjs");
   assert.equal(packageJson.scripts.prepack, "node scripts/ci/pack.mjs --reject-unsealed");
   for (const hook of ["preinstall", "install", "postinstall", "prepare", "postpack"]) {
     assert.equal(packageJson.scripts[hook], undefined);

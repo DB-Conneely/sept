@@ -27,7 +27,7 @@ npm audit
 
 Create the evidence directory first; keep build/image receipts. Check the actual actor traversal, cgroup v2 and memory/PID/disk headroom. Gate fixture Engine selection follows the test host's configuration; the supplied-hands consumer recipe uses its explicit socket. Full native Linux/amd64 is the gate target; the bounded native Mac ARM Docker Linux smoke is separate. A full Darwin suite is not a release gate.
 
-After each coherent module: `npm run check`, directly affected tests, structural/TSDoc review, then unchanged `npm run gate`. The gate includes build, all compiled tests, meta-tests and `npm audit --omit=dev`. Before handoff also run `git diff --check` and full audit. A red/unrun gate is incomplete. Serialize independently launched heavy build/gate/provider work under nice 10; retain unchanged test concurrency 4. Join every job and independent finalizer. `npm run build` and `npm run pack` clean `dist`; wait for all dist consumers before running them.
+After each coherent module: `npm run check`, directly affected tests, structural/TSDoc review, then unchanged `npm run gate`. The gate includes build, all compiled tests, meta-tests and `npm audit --omit=dev`. Before handoff also run `git diff --check` and full audit. A red/unrun gate is incomplete. Serialize independently launched heavy build/gate/provider work under nice 10; retain unchanged test concurrency 4. Join every job and independent finalizer. `npm run build` and `npm run pack:consumer` clean `dist`; wait for all dist consumers before running them.
 
 ## Ownership and change expectations
 
@@ -53,4 +53,4 @@ Keep the source version baseline unchanged; CI allocates the next patch from com
 
 On partial publication or npm scanning delay, inspect and retry the original run's failed jobs with its retained artifacts. Never submit an accepted or uncertain npm version again, overwrite immutable images, or use a new push to bypass an incomplete publication. An incomplete release blocks allocating another version. Main publications queue without cancelling older runs. Repository/npm trusted-publisher access remains an operator prerequisite.
 
-Produce a local consumer archive with `npm run pack -- /absolute/output-directory`. CI uses `node scripts/ci/pack.mjs <output-directory>` after the tested build. This deterministic staging step bundles only sealed Pi 1.1.0 and undici 8.12.2; other Pi dependencies retain shared normal resolution. Direct `npm pack` refuses an unsealed source artifact.
+Produce a local consumer archive with `npm run pack:consumer -- /absolute/output-directory`. CI uses `node scripts/ci/pack.mjs <output-directory>` after the tested build. This deterministic staging step bundles only sealed Pi 1.1.0 and undici 8.12.2; other Pi dependencies retain shared normal resolution. Direct `npm pack` refuses an unsealed source artifact.

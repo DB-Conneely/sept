@@ -23,7 +23,7 @@
     "test": "npm run build && node --test --test-concurrency=4 dist/test/**/*.test.js && node --test test/meta/*.test.mjs",
     "gate": "npm run check && npm test && npm audit --omit=dev",
     "prepack": "node scripts/ci/pack.mjs --reject-unsealed",
-    "pack": "npm run build && node scripts/ci/pack.mjs"
+    "pack:consumer": "npm run build && node scripts/ci/pack.mjs"
   },
   "dependencies": {
     "@earendil-works/chord": "1.1.0",
