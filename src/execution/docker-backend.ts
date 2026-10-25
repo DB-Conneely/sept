@@ -107,6 +107,8 @@ export class DockerExecutionBackend implements ExecutionBackend {
     );
     let backend: DockerExecutionBackend | undefined;
     try {
+      // A rejected prior owner cannot acquire watcher/cleanup authority over the selected namespace.
+      await recordHandsBinding(store, configuration, cwd, engine);
       backend = new DockerExecutionBackend(
         configuration,
         engine,
@@ -119,7 +121,7 @@ export class DockerExecutionBackend implements ExecutionBackend {
         store,
         controlEndpoint,
       );
-      await backend.start(store);
+      await backend.start();
       return backend;
     } catch (error: unknown) {
       await closeFailedHandsOpening(engine, release, backend?.watcher, () =>
@@ -129,8 +131,8 @@ export class DockerExecutionBackend implements ExecutionBackend {
     }
   }
 
-  private async start(store: RunStore): Promise<void> {
-    await recordHandsBinding(store, this.configuration, this.cwd, this.engine);
+  private async start(): Promise<void> {
+    this.assertPolicy();
     this.channel = await WarmHandsChannel.open(
       this.configuration,
       this.engine,

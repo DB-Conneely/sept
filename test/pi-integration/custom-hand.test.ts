@@ -185,10 +185,7 @@ void test("durable binding and shared explicit wake retain counters and closed i
       { pidNamespace: "pid:[42]", initStart: "123" },
     );
     await recordHandsBinding(store, configuration, "/workspace", engine);
-    await assert.rejects(
-      recordHandsBinding(store, configuration, "/workspace", engine),
-      /fresh namespace/,
-    );
+    await recordHandsBinding(store, configuration, "/workspace", engine);
   } finally {
     await engine.close();
   }

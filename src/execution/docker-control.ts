@@ -2,6 +2,8 @@ import { guardedCommand } from "./hands-guarded-command.js";
 /** Kernel qualification and exact-generation ownership over the one explicit Engine control port. */
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { isDeepStrictEqual } from "node:util";
+import { qualifiedRunBinding } from "./hands-binding.js";
 import { acquireStateRootLease, atomicWrite, type RunStore, SeptError } from "../durable/index.js";
 import type { DockerHandsConfiguration, NamespaceLifetime } from "./contracts.js";
 import { DockerEngineControl } from "./docker-engine.js";
@@ -13,7 +15,6 @@ import {
   readBoundedHandsRecord as readBinding,
   recordNamespaceLifetime,
   readNamespaceLifetime,
-  namespaceLifetimePath,
 } from "./profile-configuration.js";
 import { captureNamespaceLifetime, stopCapturedNamespace } from "./hands-processes.js";
 import { validateSelectedInputs, HANDS_IMAGE_ISOLATION_PROBE } from "./hands-selected-inputs.js";
@@ -184,6 +185,7 @@ export async function recordHandsBinding(
   assertHandsRunProfile(store);
   const path = join(store.runDir, "hands-binding.json");
   const policyPath = join(dirname(store.runDir), "capability-policy.json");
+  const qualified = qualifiedRunBinding(store, configuration, cwd, engine, policyPath);
   if (existsSync(path)) {
     const binding = readBinding(path);
     if (typeof binding.containerId !== "string" || typeof binding.generation !== "string") {
@@ -193,26 +195,24 @@ export async function recordHandsBinding(
     if (binding.daemonId !== engine.daemonId || binding.socketIdentity !== engine.socketIdentity) {
       throw new SeptError("Previous hands Engine receipt is absent or incompatible");
     }
-    await reconcileDockerBinding(
-      { containerId: binding.containerId, generation: binding.generation },
-      configuration,
-      { policyPath },
-      engine,
-    );
+    const sameGeneration =
+      binding.containerId === configuration.containerId &&
+      binding.generation === configuration.generation;
+    if (sameGeneration) {
+      // Re-entry owns the prior run receipt; equal namespace names alone never grant authority.
+      if (!isDeepStrictEqual(binding, qualified)) {
+        throw new SeptError("Previous hands run ownership is absent or incompatible");
+      }
+    } else {
+      await reconcileDockerBinding(
+        { containerId: binding.containerId, generation: binding.generation },
+        configuration,
+        { policyPath },
+        engine,
+      );
+    }
   }
-  atomicWrite(path, {
-    kernel: readBinding(
-      join(namespaceLifetimePath(policyPath, configuration), "..", "kernel.json"),
-    ),
-    profile: configuration.profile,
-    containerId: configuration.containerId,
-    generation: configuration.generation,
-    daemonId: engine.daemonId,
-    socketIdentity: engine.socketIdentity,
-    cwd,
-    runId: store.runId,
-    lifetime: readNamespaceLifetime(configuration, engine, policyPath),
-  });
+  atomicWrite(path, qualified);
 }
 
 /** Refuse incompatible captured run authority before recovery, decisions, retry or native state writes. */

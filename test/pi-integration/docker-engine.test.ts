@@ -182,7 +182,7 @@ async function assertEngineReceipt(
   assert.ok(readBoundedHandsRecord(namespaceLifetimePath(runPolicy, config)).lifetime);
   assert.deepEqual(parseNamespaceLifetime(lifetime), lifetime);
   await recordHandsBinding(store, config, "/workspace", engine);
-  await assert.rejects(recordHandsBinding(store, config, "/workspace", engine), /fresh namespace/);
+  await recordHandsBinding(store, config, "/workspace", engine);
 }
 void test("explicit socket provenance rejects files, relative paths and publicly writable endpoints", async () => {
   const fixture = await suppliedEngine();
