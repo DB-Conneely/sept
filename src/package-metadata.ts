@@ -1,7 +1,5 @@
 /** Installed package identity is read only when requested, independent of the caller's cwd. */
 import { readFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import { SeptError } from "./durable/index.js";
 
 interface PackageMetadata {
@@ -13,19 +11,28 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** Resolve the installed package and Pi versions without starting CLI or worker behavior. */
+function packageVersion(path: URL, name: string): string {
+  const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+  if (!isRecord(parsed) || parsed.name !== name || typeof parsed.version !== "string") {
+    throw new SeptError("SEPT package metadata is invalid");
+  }
+  return parsed.version;
+}
+
+/** Resolve installed versions without importing Pi or starting CLI or worker behavior. */
 export function packageMetadata(): PackageMetadata {
-  const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
   try {
-    const parsed: unknown = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8"));
-    const dependencies = isRecord(parsed) ? parsed.dependencies : undefined;
-    const piVersion = isRecord(dependencies)
-      ? dependencies["@earendil-works/pi-coding-agent"]
-      : undefined;
-    if (!isRecord(parsed) || typeof parsed.version !== "string" || typeof piVersion !== "string") {
-      throw new SeptError("SEPT package metadata is invalid");
-    }
-    return { piVersion, septVersion: parsed.version };
+    const septVersion = packageVersion(
+      new URL("../../package.json", import.meta.url),
+      "sept-agent",
+    );
+    // A dependency spec can be a sealed file archive; only the installed manifest owns its version.
+    const piEntry = import.meta.resolve("@earendil-works/pi-coding-agent");
+    const piVersion = packageVersion(
+      new URL("../package.json", piEntry),
+      "@earendil-works/pi-coding-agent",
+    );
+    return { piVersion, septVersion };
   } catch (error: unknown) {
     throw new SeptError("SEPT package metadata is invalid", { cause: error });
   }
