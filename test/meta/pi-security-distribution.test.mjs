@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { packDistribution } from "../../scripts/ci/pack.mjs";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const provenance = JSON.parse(
@@ -77,4 +78,46 @@ void test("source lock and Docker select the shipped security distribution witho
   assert.match(dockerfile, /COPY --from=build --chown=10001:10001 \/app\/vendor \.\/vendor/);
   const consumer = readFileSync(join(root, "scripts/ci/consumer.mjs"), "utf8");
   assert.match(consumer, /createRequire\(piManifestPath\)\.resolve\("undici\/package.json"\)/);
+});
+
+void test("canonical package is deterministic, contains only two sealed bundles and shares every other dependency", () => {
+  const first = mkdtempSync(join(tmpdir(), "sept-package-first-"));
+  const second = mkdtempSync(join(tmpdir(), "sept-package-second-"));
+  const [packed] = packDistribution(root, first);
+  const [repeated] = packDistribution(root, second);
+  assert.ok(packed.size <= 10 * 1024 * 1024);
+  assert.equal(
+    hash(readFileSync(join(first, packed.filename))),
+    hash(readFileSync(join(second, repeated.filename))),
+  );
+  assert.deepEqual(packed.bundled.sort(), ["@earendil-works/pi-coding-agent", "undici"]);
+  const archive = join(first, packed.filename);
+  const names = execFileSync("tar", ["-tzf", archive], { encoding: "utf8" }).trim().split("\n");
+  assert.ok(!names.some((name) => name.startsWith("package/vendor/") && name.endsWith(".tgz")));
+  assert.ok(!names.some((name) => name.includes("node_modules/@esbuild/")));
+  const stage = mkdtempSync(join(tmpdir(), "sept-package-content-"));
+  execFileSync("tar", ["-xzf", archive, "-C", stage]);
+  const manifest = JSON.parse(readFileSync(join(stage, "package/package.json"), "utf8"));
+  assert.equal(manifest.dependencies[provenance.upstream.name], "1.1.0");
+  assert.equal(manifest.dependencies.undici, "8.12.2");
+  for (const pin of Object.values(manifest.dependencies)) assert.match(pin, /^\d+\.\d+\.\d+$/);
+  const prefix = "package/node_modules/@earendil-works/pi-coding-agent/";
+  const piNames = names.filter((name) => name.startsWith(prefix));
+  assert.equal(piNames.length, 1254);
+  const bodies = piNames
+    .filter((name) => name !== prefix + "package.json")
+    .sort()
+    .map((name) => ["package/" + name.slice(prefix.length), hash(readFileSync(join(stage, name)))]);
+  assert.equal(hash(JSON.stringify(bodies)), provenance.unchanged.contentSha256);
+  const pi = JSON.parse(readFileSync(join(stage, prefix, "package.json"), "utf8"));
+  for (const [name, specifier] of Object.entries(pi.dependencies)) {
+    assert.equal(manifest.dependencies[name], specifier.replace(/^\^/, ""));
+  }
+  const result = spawnSync(
+    process.execPath,
+    [join(root, "scripts/ci/pack.mjs"), "--reject-unsealed"],
+    { encoding: "utf8" },
+  );
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Use npm run pack/);
 });

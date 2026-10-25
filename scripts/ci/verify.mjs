@@ -101,9 +101,7 @@ async function main() {
     "Release gates cannot silently skip Docker tests",
   );
   run("npm", ["audit"]);
-  const packed = JSON.parse(
-    run("npm", ["pack", "--ignore-scripts", "--json", "--pack-destination", output]),
-  );
+  const packed = JSON.parse(run(process.execPath, ["scripts/ci/pack.mjs", output]));
   assert.equal(packed.length, 1);
   const tarball = join(output, packed[0].filename);
   receipt.package = {

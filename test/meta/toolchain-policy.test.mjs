@@ -319,10 +319,11 @@ const packageFiles = [
   "image/pi-native-search/native-search.patch",
   "image/pi-native-search/overlay.tgz",
   "image/pi-native-search/provenance.json",
-  "vendor",
+  "vendor/README.md",
+  "vendor/pi-coding-agent-provenance.json",
 ];
 
-test("consumer package seals three ESM entries and reuses the current prepack compiler", () => {
+test("consumer package seals three ESM entries and requires the canonical pack compiler", () => {
   assert.deepEqual(Object.keys(packageJson.exports), Object.keys(publicEntries));
   for (const [entry, target] of Object.entries(publicEntries)) {
     assert.deepEqual(Object.keys(packageJson.exports[entry]), ["types", "import"]);
@@ -338,7 +339,8 @@ test("consumer package seals three ESM entries and reuses the current prepack co
     type: "git",
     url: "git+https://github.com/DB-Conneely/sept.git",
   });
-  assert.equal(packageJson.scripts.prepack, "npm run build");
+  assert.equal(packageJson.scripts.pack, "npm run build && node scripts/ci/pack.mjs");
+  assert.equal(packageJson.scripts.prepack, "node scripts/ci/pack.mjs --reject-unsealed");
   for (const hook of ["preinstall", "install", "postinstall", "prepare", "postpack"]) {
     assert.equal(packageJson.scripts[hook], undefined);
   }

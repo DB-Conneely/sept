@@ -22,7 +22,8 @@
     "check": "npm run typecheck && npm run lint && npm run format:check",
     "test": "npm run build && node --test --test-concurrency=4 dist/test/**/*.test.js && node --test test/meta/*.test.mjs",
     "gate": "npm run check && npm test && npm audit --omit=dev",
-    "prepack": "npm run build"
+    "prepack": "node scripts/ci/pack.mjs --reject-unsealed",
+    "pack": "npm run build && node scripts/ci/pack.mjs"
   },
   "dependencies": {
     "@earendil-works/chord": "1.1.0",
@@ -84,6 +85,7 @@
     "image/pi-native-search/native-search.patch",
     "image/pi-native-search/overlay.tgz",
     "image/pi-native-search/provenance.json",
-    "vendor"
+    "vendor/README.md",
+    "vendor/pi-coding-agent-provenance.json"
   ]
 }

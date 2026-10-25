@@ -21,5 +21,11 @@
   "unchanged": {
     "files": 1253,
     "contentSha256": "10bfaee05403cb20d1adc4724b6f47a8fbca86d907c3c61e121dac2cf2194416"
+  },
+  "patchedDependency": {
+    "name": "undici",
+    "version": "8.12.2",
+    "path": "vendor/undici-8.12.2.tgz",
+    "integrity": "sha512-XtuDWVdqTLr3NAxm2ly9/hU6kUsJOgGh1RASzMBbsw6aWCOaQzHdW+QQDfdERjfJ2V5vL5pRPa4RetO9UfivDg=="
   }
 }
